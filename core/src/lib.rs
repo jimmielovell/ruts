@@ -5,26 +5,37 @@ use tower_cookies::{Cookie, Cookies};
 mod session;
 pub use session::{CookieOptions, Id, Session};
 
+pub mod store;
+
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
 use pin_project_lite::pin_project;
 
+use self::store::SessionStore;
+
 /// Middleware to use [`Session`].
 #[derive(Clone, Debug)]
-pub struct SessionService<S> {
+pub struct SessionService<S, Store: SessionStore> {
     inner: S,
     /// Session name in cookie. Defaults to `id`.
     cookie_options: Option<CookieOptions>,
+    /// Session store.
+    store: Arc<Store>,
 }
 
-impl<S> SessionService<S> {
+impl<S, Store> SessionService<S, Store>
+where
+    Store: SessionStore,
+{
     /// Create a new session manager.
-    pub fn new(inner: S) -> Self {
+    pub fn new(inner: S, store: Arc<Store>) -> Self {
         Self {
             inner,
             cookie_options: None,
+            store,
         }
     }
 
@@ -35,9 +46,10 @@ impl<S> SessionService<S> {
     }
 }
 
-impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for SessionService<S>
+impl<ReqBody, ResBody, S, Store> Service<Request<ReqBody>> for SessionService<S, Store>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    Store: SessionStore,
 {
     type Error = S::Error;
     type Response = S::Response;
@@ -51,7 +63,7 @@ where
     }
 
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
-        let mut session = Session::default();
+        let mut session = Session::new(self.store.clone(), None, None);
         let cookie_options = self.cookie_options;
         let mut cookies = None;
 
@@ -63,7 +75,8 @@ where
                     let session_id = cookie.clone().value().parse::<Id>().ok();
 
                     if session_id.is_some() {
-                        session = Session::new(session_id, Some(cookie_options));
+                        session =
+                            Session::new(self.store.clone(), session_id, Some(cookie_options));
                     }
                 } else {
                     session.set_cookie_options(cookie_options);
@@ -83,15 +96,20 @@ where
 
 /// Layer to apply [`SessionService`] middleware.
 #[derive(Clone, Debug, Default)]
-pub struct SessionLayer {
+pub struct SessionLayer<Store: SessionStore> {
     cookie_options: Option<CookieOptions>,
+    store: Arc<Store>,
 }
 
-impl SessionLayer {
+impl<Store> SessionLayer<Store>
+where
+    Store: SessionStore,
+{
     /// Create a new session manager layer.
-    pub fn new() -> Self {
+    pub fn new(store: Store) -> Self {
         Self {
             cookie_options: None,
+            store: Arc::new(store),
         }
     }
 
@@ -101,11 +119,14 @@ impl SessionLayer {
     }
 }
 
-impl<S> Layer<S> for SessionLayer {
-    type Service = SessionService<S>;
+impl<S, Store> Layer<S> for SessionLayer<Store>
+where
+    Store: SessionStore,
+{
+    type Service = SessionService<S, Store>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        let service = SessionService::new(inner);
+        let service = SessionService::new(inner, self.store.clone());
 
         if let Some(cookie_options) = self.cookie_options {
             service.with_cookie_options(cookie_options)
@@ -144,7 +165,9 @@ where
                 if let Some(cookies) = this.cookies.as_mut() {
                     let cookie_builder = Cookie::build((cookie_options.name, id.to_string()))
                         .secure(cookie_options.secure)
-                        .http_only(cookie_options.http_only);
+                        .http_only(cookie_options.http_only)
+                        .same_site(cookie_options.same_site)
+                        .expires(cookie_options.expires);
 
                     let cookie_builder = if let Some(domain) = cookie_options.domain {
                         cookie_builder.domain(domain)

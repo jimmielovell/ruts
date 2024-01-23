@@ -1,11 +1,14 @@
-use std::{str::FromStr, sync::Arc};
+use std::{
+    str::FromStr,
+    sync::{atomic::AtomicBool, Arc},
+};
 
-use async_trait::async_trait;
-use axum_core::extract::FromRequestParts;
+use cookie::SameSite;
 use dashmap::DashMap;
-use http::{request::Parts, StatusCode};
 use parking_lot::Mutex;
 use rand::{distributions::Standard, thread_rng, Rng};
+
+use crate::store::SessionStore;
 
 /// A parsed on-demand session id.
 #[derive(Clone, Debug)]
@@ -21,7 +24,7 @@ impl Id {
     pub fn parse(id: &str) -> Option<Self> {
         if id.len() == 128 {
             Some(Self(id.to_owned()))
-        } else {
+        } else {j
             None
         }
     }
@@ -42,13 +45,18 @@ impl FromStr for Id {
 }
 
 /// A parsed on-demand session store.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Session {
-    inner: Arc<Mutex<Inner>>,
+    inner: Arc<Inner>,
+    store: Arc<dyn SessionStore>,
 }
 
 impl Session {
-    pub fn new(id: Option<Id>, cookie_options: Option<CookieOptions>) -> Self {
+    pub fn new(
+        store: Arc<impl SessionStore>,
+        id: Option<Id>,
+        cookie_options: Option<CookieOptions>,
+    ) -> Self {
         let inner = Inner {
             id,
             cookie_options,
@@ -56,6 +64,7 @@ impl Session {
         };
         Self {
             inner: Arc::new(Mutex::new(inner)),
+            store,
         }
     }
 
@@ -94,6 +103,7 @@ impl Session {
         inner.id.clone()
     }
 
+    /// Set the session cookie options. Mainly used internally.
     pub fn set_cookie_options(&self, cookie_options: CookieOptions) -> Self {
         let mut inner = self.inner.lock();
         inner.cookie_options = Some(cookie_options);
@@ -106,57 +116,71 @@ impl Session {
     }
 }
 
-#[async_trait]
-impl<S> FromRequestParts<S> for Session
-where
-    S: Sync + Send,
-{
-    type Rejection = (http::StatusCode, &'static str);
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        parts.extensions.get::<Session>().cloned().ok_or((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Can't extract session. Is `SessionLayer` enabled?",
-        ))
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct CookieOptions {
+    pub http_only: bool,
     pub name: &'static str,
     pub domain: Option<&'static str>,
     pub path: Option<&'static str>,
+    pub same_site: SameSite,
     pub secure: bool,
-    pub http_only: bool,
+    pub expires: cookie::Expiration,
+    pub max_age: Option<cookie::time::Duration>,
 }
 
 impl Default for CookieOptions {
     fn default() -> Self {
         Self {
+            http_only: true,
             name: "id",
             domain: None,
             path: None,
+            same_site: SameSite::Lax,
             secure: true,
-            http_only: true,
+            expires: cookie::Expiration::Session,
+            max_age: None,
         }
     }
 }
 
 impl CookieOptions {
-    pub fn new(
-        name: &'static str,
-        domain: Option<&'static str>,
-        path: Option<&'static str>,
-        secure: bool,
-        http_only: bool,
-    ) -> Self {
-        Self {
-            name,
-            domain,
-            path,
-            secure,
-            http_only,
-        }
+    pub fn build() -> Self {
+        Self::default()
+    }
+
+    pub fn name(mut self, name: &'static str) -> Self {
+        self.name = name;
+        self
+    }
+
+    pub fn http_only(mut self, http_only: bool) -> Self {
+        self.http_only = http_only;
+        self
+    }
+
+    pub fn same_site(mut self, same_site: SameSite) -> Self {
+        self.same_site = same_site;
+        self
+    }
+
+    pub fn secure(mut self, secure: bool) -> Self {
+        self.secure = secure;
+        self
+    }
+
+    pub fn domain(mut self, domain: &'static str) -> Self {
+        self.domain = Some(domain);
+        self
+    }
+
+    pub fn path(mut self, path: &'static str) -> Self {
+        self.path = Some(path);
+        self
+    }
+
+    pub fn expires(mut self, expires: cookie::Expiration) -> Self {
+        self.expires = expires;
+        self
     }
 }
 
@@ -164,7 +188,7 @@ impl CookieOptions {
 struct Inner {
     id: Option<Id>,
     data: Option<DashMap<String, String>>,
-    changed: bool,
+    changed: AtomicBool,
     cookie_options: Option<CookieOptions>,
 }
 

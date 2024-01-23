@@ -1,9 +1,31 @@
-[package]
-name = "ruse"
+[workspace]
+members = ["axum-extract", "core", "stores"]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
+authors = ["Jimmie Lovell <jimmieomlovell@gmail.com>"]
+license = "MIT"
+homepage = "https://github.com/jimmielovell/ruse"
+keywords = ["axum", "session", "sessions", "cookie", "tower"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+repository = "https://github.com/jimmielovell/ruse"
+readme = "README.md"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[package]
+name = "ruse"
+description = "🥠 Sessions as a `tower` and `axum` middleware."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+documentation.workspace = true
+readme.workspace = true
 
 [dependencies]
 async-trait = "0.1.77"
