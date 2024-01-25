@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use dashmap::DashMap;
 
-use crate::store::{Record, SessionStore, StoreError};
+use ruse_core::{Record, SessionStore, StoreError};
 
 #[derive(Clone, Debug)]
 pub struct RedisStore {

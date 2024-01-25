@@ -1,5 +1,5 @@
 use axum::{routing::get, Router};
-use ruse::{cookie, memory::MemoryStore, CookieOptions, Session, SessionLayer};
+use ruse::{cookie, CookieOptions, MemoryStore, Session, SessionLayer};
 use tower_cookies::CookieManagerLayer;
 
 #[tokio::main]

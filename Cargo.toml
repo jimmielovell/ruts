@@ -1,5 +1,5 @@
 [workspace]
-members = ["axum-extract", "core", "stores"]
+members = [".", "ruse-core", "stores"]
 resolver = "2"
 
 [workspace.package]
@@ -24,22 +24,32 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 repository.workspace = true
-documentation.workspace = true
 readme.workspace = true
 
-[dependencies]
+[workspace.dependencies]
+ruse = { version = "=0.1.0", path = "." }
+ruse_core = { version = "=0.1.0", path = "ruse-core" }
+stores = { version = "=0.1.0", path = "stores" }
+
 async-trait = "0.1.77"
-axum = { version = "0.7.3", features = ["http2", "macros"] }
-axum-core = "0.4.3"
-blake3 = { version = "1.5.0", features = ["rayon"] }
 cookie = "0.18.0"
 dashmap = { version = "5.5.3", features = ["serde"] }
 http = "1.0.0"
-parking_lot = "0.12.1"
-pin-project-lite = "0.2.13"
-rand = "0.8.5"
+parking_lot = { version = "0.12.1", features = ["serde"] }
 serde = "1.0.195"
 tokio = { version = "1.35.1", features = ["full"] }
-tower = "0.4.13"
+
+[dependencies]
+cookie = "0.18.0"
+ruse_core = { workspace = true }
+stores = { workspace = true }
+tracing = { version = "0.1.40", features = ["log"] }
+
+axum = "0.7.4"
+tokio.workspace = true
 tower-cookies = "0.10.0"
-tracing = "0.1.40"
+
+[dev-dependencies]
+axum = "0.7.4"
+tokio.workspace = true
+tower-cookies = "0.10.0"

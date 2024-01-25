@@ -1,7 +1,4 @@
-use std::{
-    str::FromStr,
-    sync::{atomic::AtomicBool, Arc},
-};
+use std::{str::FromStr, sync::Arc};
 
 use cookie::SameSite;
 use dashmap::DashMap;
@@ -24,7 +21,7 @@ impl Id {
     pub fn parse(id: &str) -> Option<Self> {
         if id.len() == 128 {
             Some(Self(id.to_owned()))
-        } else {j
+        } else {
             None
         }
     }
@@ -47,7 +44,7 @@ impl FromStr for Id {
 /// A parsed on-demand session store.
 #[derive(Clone, Debug)]
 pub struct Session {
-    inner: Arc<Inner>,
+    inner: Arc<Mutex<Inner>>,
     store: Arc<dyn SessionStore>,
 }
 
@@ -188,7 +185,7 @@ impl CookieOptions {
 struct Inner {
     id: Option<Id>,
     data: Option<DashMap<String, String>>,
-    changed: AtomicBool,
+    changed: bool,
     cookie_options: Option<CookieOptions>,
 }
 

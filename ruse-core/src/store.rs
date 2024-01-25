@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use std::fmt::Debug;
 
 pub enum StoreError {
     NotFound,
@@ -11,7 +12,7 @@ pub struct Record {
 }
 
 #[async_trait]
-pub trait SessionStore: Clone + Send + Sync + 'static {
+pub trait SessionStore: Debug + Send + Sync + 'static {
     async fn load(&self, id: &str) -> Option<Record>;
     async fn save(&self, record: Record) -> Result<(), StoreError>;
     async fn delete(&self, id: &str) -> Result<(), StoreError>;

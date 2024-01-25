@@ -5,7 +5,10 @@ use tower_cookies::{Cookie, Cookies};
 mod session;
 pub use session::{CookieOptions, Id, Session};
 
-pub mod store;
+mod store;
+pub use store::*;
+
+pub mod extract;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -13,8 +16,6 @@ use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
 use pin_project_lite::pin_project;
-
-use self::store::SessionStore;
 
 /// Middleware to use [`Session`].
 #[derive(Clone, Debug)]

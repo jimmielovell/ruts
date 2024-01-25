@@ -1,0 +1,20 @@
+[package]
+name = "ruse_core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait.workspace = true
+axum-core = "0.4.3"
+blake3 = "1.5.0"
+cookie.workspace = true
+dashmap.workspace = true
+http.workspace = true
+parking_lot.workspace = true
+pin-project-lite = "0.2.13"
+rand = "0.8.5"
+serde = "1.0.195"
+tokio.workspace = true
+tower = "0.4.13"
+tower-cookies = "0.10.0"
+tracing = "0.1.40"

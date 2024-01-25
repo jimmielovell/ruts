@@ -1,7 +1,4 @@
-mod core;
-pub use core::*;
-
-mod stores;
+pub use ruse_core::*;
 pub use stores::*;
 
 pub use cookie;
