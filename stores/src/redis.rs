@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use dashmap::DashMap;
+use fred::types::FromRedis;
 
 use ruse_core::{Record, SessionStore, StoreError};
 

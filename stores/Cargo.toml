@@ -8,5 +8,6 @@ edition = "2021"
 [dependencies]
 async-trait.workspace = true
 dashmap.workspace = true
+fred = "8.0.1"
 ruse_core.workspace = true
 tokio.workspace = true

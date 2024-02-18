@@ -3,7 +3,10 @@ use tower::{Layer, Service};
 use tower_cookies::{Cookie, Cookies};
 
 mod session;
-pub use session::{CookieOptions, Id, Session};
+pub use session::{CookieOptions, Session};
+
+mod id;
+pub use id::Id;
 
 mod store;
 pub use store::*;
@@ -16,6 +19,14 @@ use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
 use pin_project_lite::pin_project;
+
+#[derive(Clone, Debug)]
+pub struct InnerSessionUtil {
+    id: Option<Id>,
+    cookie_options: Option<CookieOptions>,
+    changed: bool,
+    store: Arc<dyn SessionStore>,
+}
 
 /// Middleware to use [`Session`].
 #[derive(Clone, Debug)]
@@ -64,33 +75,20 @@ where
     }
 
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
-        let mut session = Session::new(self.store.clone(), None, None);
-        let cookie_options = self.cookie_options;
-        let mut cookies = None;
+        // let mut session = Session::new(self.store.clone(), None, self.cookie_options);
+        let cookie_options = self.cookie_options.clone();
+        let inner_session_util = InnerSessionUtil {
+            id: None,
+            cookie_options: self.cookie_options.clone(),
+            changed: false,
+            store: self.store.clone(),
+        };
 
-        if let Some(cookie_options) = cookie_options.clone() {
-            cookies = req.extensions().get::<Cookies>().cloned();
-
-            if let Some(cookies) = cookies.clone() {
-                if let Some(cookie) = cookies.get(cookie_options.name).map(Cookie::into_owned) {
-                    let session_id = cookie.clone().value().parse::<Id>().ok();
-
-                    if session_id.is_some() {
-                        session =
-                            Session::new(self.store.clone(), session_id, Some(cookie_options));
-                    }
-                } else {
-                    session.set_cookie_options(cookie_options);
-                }
-            }
-        }
-
-        req.extensions_mut().insert(session.clone());
+        req.extensions_mut().insert(inner_session_util);
 
         ResponseFuture {
             future: self.inner.call(req),
-            session,
-            cookies,
+            cookie_options,
         }
     }
 }
@@ -143,8 +141,7 @@ pin_project! {
   pub struct ResponseFuture<F> {
     #[pin]
     future: F,
-    session: Session,
-    cookies: Option<Cookies>,
+    cookie_options: Option<CookieOptions>,
   }
 }
 
@@ -158,34 +155,38 @@ where
         let this = self.project();
         let res = ready!(this.future.poll(cx)?);
 
-        let session = this.session;
+        let cookie_options = this.cookie_options;
 
-        if session.is_changed() {
-            if let Some(cookie_options) = session.cookie_options() {
-                let id = Id::new();
-                if let Some(cookies) = this.cookies.as_mut() {
-                    let cookie_builder = Cookie::build((cookie_options.name, id.to_string()))
-                        .secure(cookie_options.secure)
-                        .http_only(cookie_options.http_only)
-                        .same_site(cookie_options.same_site)
-                        .expires(cookie_options.expires);
+        // if session.is_changed() {
+        // TODO: Save session to store
 
-                    let cookie_builder = if let Some(domain) = cookie_options.domain {
-                        cookie_builder.domain(domain)
-                    } else {
-                        cookie_builder
-                    };
+        if let Some(cookie_options) = cookie_options {
+            let id = Id::new();
+            let mut cookies = res.extensions().get::<Cookies>().cloned();
 
-                    let cookie_builder = if let Some(path) = cookie_options.path {
-                        cookie_builder.path(path)
-                    } else {
-                        cookie_builder
-                    };
+            if let Some(cookies) = cookies.as_mut() {
+                let cookie_builder = Cookie::build((cookie_options.name, id.to_string()))
+                    .secure(cookie_options.secure)
+                    .http_only(cookie_options.http_only)
+                    .same_site(cookie_options.same_site)
+                    .expires(cookie_options.expires);
 
-                    cookies.add(cookie_builder.build());
-                }
+                let cookie_builder = if let Some(domain) = cookie_options.domain {
+                    cookie_builder.domain(domain)
+                } else {
+                    cookie_builder
+                };
+
+                let cookie_builder = if let Some(path) = cookie_options.path {
+                    cookie_builder.path(path)
+                } else {
+                    cookie_builder
+                };
+
+                cookies.add(cookie_builder.build());
             }
         }
+        // }
 
         Poll::Ready(Ok(res))
     }

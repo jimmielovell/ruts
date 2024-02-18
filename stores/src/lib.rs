@@ -3,3 +3,5 @@ pub use memory::MemoryStore;
 
 mod redis;
 pub use redis::RedisStore;
+
+pub use fred;
