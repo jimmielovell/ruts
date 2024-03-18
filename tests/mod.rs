@@ -1,67 +1,108 @@
-use axum::{routing::get, Router};
+use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
+use axum::{routing::get, Router, Json};
 use axum_core::body::Body;
-use http::{header, HeaderMap};
+use cookie::SameSite;
+use cookie::time::Duration;
+use fred::{clients::RedisClient, interfaces::ClientLike};
+use http::{header, HeaderMap, Request, StatusCode};
+use serde::{Deserialize, Serialize};
+use tower::ServiceExt;
+use tower_cookies::{cookie, Cookie, CookieManagerLayer};
+use ruse::{CookieOptions, Session, redis::RedisStore, SessionLayer};
 use http_body_util::BodyExt;
-use time::Duration;
-use tower_cookies::{cookie, Cookie};
-use tower_sessions::{Expiry, Session, SessionManagerLayer, SessionStore};
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct User {
+    id: i64,
+    name: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+enum Theme {
+    Light,
+    #[default]
+    Dark,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct AppSession {
+    user: Option<User>,
+    ip: Option<IpAddr>,
+    theme: Option<Theme>,
+}
 
 fn routes() -> Router {
     Router::new()
-        .route("/", get(|_: Session| async move { "Hello, world!" }))
-        .route(
-            "/insert",
-            get(|session: Session| async move {
-                session.insert("foo", 42).await.unwrap();
-            }),
-        )
-        .route(
-            "/get",
-            get(|session: Session| async move {
-                format!("{}", session.get::<usize>("foo").await.unwrap().unwrap())
-            }),
-        )
-        .route(
-            "/get_value",
-            get(|session: Session| async move {
-                format!("{:?}", session.get_value("foo").await.unwrap())
-            }),
-        )
-        .route(
-            "/remove",
-            get(|session: Session| async move {
-                session.remove::<usize>("foo").await.unwrap();
-            }),
-        )
-        .route(
-            "/remove_value",
-            get(|session: Session| async move {
-                session.remove_value("foo").await.unwrap();
-            }),
-        )
-        .route(
-            "/cycle_id",
-            get(|session: Session| async move {
-                session.cycle_id().await.unwrap();
-            }),
-        )
-        .route(
-            "/flush",
-            get(|session: Session| async move {
-                session.flush().await.unwrap();
-            }),
-        )
+        .route("/set", get(|session: Session| async move {
+            let app = AppSession {
+                user: Some(User {
+                    id: 33826744,
+                    name: String::from("Jimmie Lovell"),
+                }),
+                ip: Some(IpAddr::from(Ipv4Addr::new(127, 0, 0, 1))),
+                theme: Some(Theme::Dark),
+            };
+
+            session
+                .insert("app", app)
+                .await
+                .map_err(|e| e.to_string()).unwrap();
+        }))
+        .route("/add", get(|session: Session| async move {
+            let app = AppSession {
+                user: Some(User {
+                    id: 37325314,
+                    name: String::from("Jenipher Mawia"),
+                }),
+                ip: Some(IpAddr::from(Ipv4Addr::new(127, 0, 1, 1))),
+                theme: Some(Theme::Light),
+            };
+
+            session
+                .insert("app-2", app)
+                .await
+                .map_err(|e| e.to_string()).unwrap();
+        }))
+        .route("/get", get(|session: Session| async move {
+            let user: Option<User> = session.get("app").await.map_err(|e| e.to_string()).unwrap();
+            Json(user.unwrap())
+        }))
+        .route("/remove", get(|session: Session| async move {
+            session
+                .remove("app-2")
+                .await
+                .map_err(|e| e.to_string()).unwrap();
+        }))
+        // .route("/regenerate", get(regenerate_session))
+        .route("/delete", get(|session: Session| async move {
+            session
+                .delete()
+                .await
+                .map_err(|e| e.to_string()).unwrap();
+        }))
 }
 
-pub fn build_app<Store: SessionStore + Clone>(
-    mut session_manager: SessionManagerLayer<Store>,
-    max_age: Option<Duration>,
-) -> Router {
-    if let Some(max_age) = max_age {
-        session_manager = session_manager.with_expiry(Expiry::OnInactivity(max_age));
-    }
+pub async fn app() -> Router {
+    let cookie_options = CookieOptions::build()
+        .name("test_sess")
+        .http_only(false)
+        .same_site(cookie::SameSite::Lax)
+        .secure(false)
+        .max_age(1 * 60);
 
-    routes().layer(session_manager)
+    let client = RedisClient::default();
+    client.init().await.unwrap();
+
+    let store = RedisStore::new(Arc::new(client));
+    let session_layer = SessionLayer::new(Arc::new(store)).with_cookie_options(cookie_options);
+
+    routes()
+        .layer(session_layer)
+        .layer(CookieManagerLayer::new())
+
+    // let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    // axum::serve(listener, app).await.unwrap();
 }
 
 pub async fn body_string(body: Body) -> String {
@@ -79,232 +120,220 @@ pub fn get_session_cookie(headers: &HeaderMap) -> Result<Cookie<'_>, cookie::Par
         .and_then(Cookie::parse_encoded)
 }
 
-#[macro_export]
-macro_rules! route_tests {
-    ($create_app:expr) => {
-        use axum::body::Body;
-        use http::{header, Request, StatusCode};
-        use time::Duration;
-        use tower::ServiceExt;
-        use tower_cookies::{cookie::SameSite, Cookie};
-        use $crate::common::{body_string, get_session_cookie};
+#[tokio::test]
+async fn no_session_set() {
+    let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+    let res = app()
+        .await
+        .oneshot(req)
+        .await
+        .unwrap();
 
-        #[tokio::test]
-        async fn no_session_set() {
-            let req = Request::builder().uri("/").body(Body::empty()).unwrap();
-            let res = $create_app(Some(Duration::hours(1)))
-                .await
-                .oneshot(req)
-                .await
-                .unwrap();
+    assert!(res
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .next()
+        .is_none());
+}
 
-            assert!(res
-                .headers()
-                .get_all(header::SET_COOKIE)
-                .iter()
-                .next()
-                .is_none());
-        }
+#[tokio::test]
+async fn bogus_session_cookie() {
+    let session_cookie = Cookie::new("id", "00000000-0000-0000-0000-000000000000");
+    let req = Request::builder()
+        .uri("/insert")
+        .header(header::COOKIE, session_cookie.encoded().to_string())
+        .body(Body::empty())
+        .unwrap();
+    let res = app()
+        .await
+        .oneshot(req)
+        .await
+        .unwrap();
+    let session_cookie = get_session_cookie(res.headers()).unwrap();
 
-        #[tokio::test]
-        async fn bogus_session_cookie() {
-            let session_cookie = Cookie::new("id", "00000000-0000-0000-0000-000000000000");
-            let req = Request::builder()
-                .uri("/insert")
-                .header(header::COOKIE, session_cookie.encoded().to_string())
-                .body(Body::empty())
-                .unwrap();
-            let res = $create_app(Some(Duration::hours(1)))
-                .await
-                .oneshot(req)
-                .await
-                .unwrap();
-            let session_cookie = get_session_cookie(res.headers()).unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_ne!(
+        session_cookie.value(),
+        "00000000-0000-0000-0000-000000000000"
+    );
+}
 
-            assert_eq!(res.status(), StatusCode::OK);
-            assert_ne!(
-                session_cookie.value(),
-                "00000000-0000-0000-0000-000000000000"
-            );
-        }
+#[tokio::test]
+async fn malformed_session_cookie() {
+    let session_cookie = Cookie::new("id", "malformed");
+    let req = Request::builder()
+        .uri("/")
+        .header(header::COOKIE, session_cookie.encoded().to_string())
+        .body(Body::empty())
+        .unwrap();
+    let res = app()
+        .await
+        .oneshot(req)
+        .await
+        .unwrap();
 
-        #[tokio::test]
-        async fn malformed_session_cookie() {
-            let session_cookie = Cookie::new("id", "malformed");
-            let req = Request::builder()
-                .uri("/")
-                .header(header::COOKIE, session_cookie.encoded().to_string())
-                .body(Body::empty())
-                .unwrap();
-            let res = $create_app(Some(Duration::hours(1)))
-                .await
-                .oneshot(req)
-                .await
-                .unwrap();
+    let session_cookie = get_session_cookie(res.headers()).unwrap();
+    assert_ne!(session_cookie.value(), "malformed");
+    assert_eq!(res.status(), StatusCode::OK);
+}
 
-            let session_cookie = get_session_cookie(res.headers()).unwrap();
-            assert_ne!(session_cookie.value(), "malformed");
-            assert_eq!(res.status(), StatusCode::OK);
-        }
+#[tokio::test]
+async fn set_session() {
+    let req = Request::builder()
+        .uri("/set")
+        .body(Body::empty())
+        .unwrap();
+    let res = app()
+        .await
+        .oneshot(req)
+        .await
+        .unwrap();
+    let session_cookie = get_session_cookie(res.headers()).unwrap();
 
-        #[tokio::test]
-        async fn insert_session() {
-            let req = Request::builder()
-                .uri("/insert")
-                .body(Body::empty())
-                .unwrap();
-            let res = $create_app(Some(Duration::hours(1)))
-                .await
-                .oneshot(req)
-                .await
-                .unwrap();
-            let session_cookie = get_session_cookie(res.headers()).unwrap();
+    assert_eq!(session_cookie.name(), "test_sess");
+    assert_eq!(session_cookie.http_only(), Some(true));
+    assert_eq!(session_cookie.same_site(), Some(SameSite::Lax));
+    assert!(session_cookie
+        .max_age()
+        .is_some_and(|dt| dt <= Duration::minutes(1)));
+    assert_eq!(session_cookie.secure(), Some(true));
+    assert_eq!(session_cookie.path(), Some("/"));
+}
 
-            assert_eq!(session_cookie.name(), "id");
-            assert_eq!(session_cookie.http_only(), Some(true));
-            assert_eq!(session_cookie.same_site(), Some(SameSite::Strict));
-            assert!(session_cookie
-                .max_age()
-                .is_some_and(|dt| dt <= Duration::hours(1)));
-            assert_eq!(session_cookie.secure(), Some(true));
-            assert_eq!(session_cookie.path(), Some("/"));
-        }
+#[tokio::test]
+async fn session_max_age() {
+    let req = Request::builder()
+        .uri("/set")
+        .body(Body::empty())
+        .unwrap();
+    let res = app().await.oneshot(req).await.unwrap();
+    let session_cookie = get_session_cookie(res.headers()).unwrap();
 
-        #[tokio::test]
-        async fn session_max_age() {
-            let req = Request::builder()
-                .uri("/insert")
-                .body(Body::empty())
-                .unwrap();
-            let res = $create_app(None).await.oneshot(req).await.unwrap();
-            let session_cookie = get_session_cookie(res.headers()).unwrap();
+    assert_eq!(session_cookie.name(), "test_sess");
+    assert_eq!(session_cookie.http_only(), Some(true));
+    assert_eq!(session_cookie.same_site(), Some(SameSite::Strict));
+    assert!(session_cookie
+        .max_age()
+        .is_some_and(|d| d <= Duration::weeks(2)));
+    assert_eq!(session_cookie.secure(), Some(true));
+    assert_eq!(session_cookie.path(), Some("/"));
+}
 
-            assert_eq!(session_cookie.name(), "id");
-            assert_eq!(session_cookie.http_only(), Some(true));
-            assert_eq!(session_cookie.same_site(), Some(SameSite::Strict));
-            assert!(session_cookie
-                .max_age()
-                .is_some_and(|d| d <= Duration::weeks(2)));
-            assert_eq!(session_cookie.secure(), Some(true));
-            assert_eq!(session_cookie.path(), Some("/"));
-        }
+#[tokio::test]
+async fn get_session() {
+    let app = app().await;
 
-        #[tokio::test]
-        async fn get_session() {
-            let app = $create_app(Some(Duration::hours(1))).await;
+    let req = Request::builder()
+        .uri("/set")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let session_cookie = get_session_cookie(res.headers()).unwrap();
 
-            let req = Request::builder()
-                .uri("/insert")
-                .body(Body::empty())
-                .unwrap();
-            let res = app.clone().oneshot(req).await.unwrap();
-            let session_cookie = get_session_cookie(res.headers()).unwrap();
+    let req = Request::builder()
+        .uri("/get")
+        .header(header::COOKIE, session_cookie.encoded().to_string())
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
 
-            let req = Request::builder()
-                .uri("/get")
-                .header(header::COOKIE, session_cookie.encoded().to_string())
-                .body(Body::empty())
-                .unwrap();
-            let res = app.oneshot(req).await.unwrap();
-            assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(body_string(res.into_body()).await, "42");
+}
 
-            assert_eq!(body_string(res.into_body()).await, "42");
-        }
+#[tokio::test]
+async fn get_no_value() {
+    let app = app().await;
 
-        #[tokio::test]
-        async fn get_no_value() {
-            let app = $create_app(Some(Duration::hours(1))).await;
+    let req = Request::builder()
+        .uri("/get")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
 
-            let req = Request::builder()
-                .uri("/get_value")
-                .body(Body::empty())
-                .unwrap();
-            let res = app.oneshot(req).await.unwrap();
+    assert_eq!(body_string(res.into_body()).await, "None");
+}
 
-            assert_eq!(body_string(res.into_body()).await, "None");
-        }
+#[tokio::test]
+async fn remove_field() {
+    let app = app().await;
 
-        #[tokio::test]
-        async fn remove_last_value() {
-            let app = $create_app(Some(Duration::hours(1))).await;
+    let req = Request::builder()
+        .uri("/insert")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let session_cookie = get_session_cookie(res.headers()).unwrap();
 
-            let req = Request::builder()
-                .uri("/insert")
-                .body(Body::empty())
-                .unwrap();
-            let res = app.clone().oneshot(req).await.unwrap();
-            let session_cookie = get_session_cookie(res.headers()).unwrap();
+    let req = Request::builder()
+        .uri("/remove_value")
+        .header(header::COOKIE, session_cookie.encoded().to_string())
+        .body(Body::empty())
+        .unwrap();
+    app.clone().oneshot(req).await.unwrap();
 
-            let req = Request::builder()
-                .uri("/remove_value")
-                .header(header::COOKIE, session_cookie.encoded().to_string())
-                .body(Body::empty())
-                .unwrap();
-            app.clone().oneshot(req).await.unwrap();
+    let req = Request::builder()
+        .uri("/get_value")
+        .header(header::COOKIE, session_cookie.encoded().to_string())
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
 
-            let req = Request::builder()
-                .uri("/get_value")
-                .header(header::COOKIE, session_cookie.encoded().to_string())
-                .body(Body::empty())
-                .unwrap();
-            let res = app.oneshot(req).await.unwrap();
+    assert_eq!(body_string(res.into_body()).await, "None");
+}
 
-            assert_eq!(body_string(res.into_body()).await, "None");
-        }
+#[tokio::test]
+async fn cycle_session_id() {
+    let app = app().await;
 
-        #[tokio::test]
-        async fn cycle_session_id() {
-            let app = $create_app(Some(Duration::hours(1))).await;
+    let req = Request::builder()
+        .uri("/insert")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let first_session_cookie = get_session_cookie(res.headers()).unwrap();
 
-            let req = Request::builder()
-                .uri("/insert")
-                .body(Body::empty())
-                .unwrap();
-            let res = app.clone().oneshot(req).await.unwrap();
-            let first_session_cookie = get_session_cookie(res.headers()).unwrap();
+    let req = Request::builder()
+        .uri("/cycle_id")
+        .header(header::COOKIE, first_session_cookie.encoded().to_string())
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let second_session_cookie = get_session_cookie(res.headers()).unwrap();
 
-            let req = Request::builder()
-                .uri("/cycle_id")
-                .header(header::COOKIE, first_session_cookie.encoded().to_string())
-                .body(Body::empty())
-                .unwrap();
-            let res = app.clone().oneshot(req).await.unwrap();
-            let second_session_cookie = get_session_cookie(res.headers()).unwrap();
+    let req = Request::builder()
+        .uri("/get")
+        .header(header::COOKIE, second_session_cookie.encoded().to_string())
+        .body(Body::empty())
+        .unwrap();
+    dbg!("foo");
+    let res = dbg!(app.oneshot(req).await).unwrap();
 
-            let req = Request::builder()
-                .uri("/get")
-                .header(header::COOKIE, second_session_cookie.encoded().to_string())
-                .body(Body::empty())
-                .unwrap();
-            dbg!("foo");
-            let res = dbg!(app.oneshot(req).await).unwrap();
+    assert_ne!(first_session_cookie.value(), second_session_cookie.value());
+    assert_eq!(body_string(res.into_body()).await, "42");
+}
 
-            assert_ne!(first_session_cookie.value(), second_session_cookie.value());
-            assert_eq!(body_string(res.into_body()).await, "42");
-        }
+#[tokio::test]
+async fn flush_session() {
+    let app = app().await;
 
-        #[tokio::test]
-        async fn flush_session() {
-            let app = $create_app(Some(Duration::hours(1))).await;
+    let req = Request::builder()
+        .uri("/insert")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let session_cookie = get_session_cookie(res.headers()).unwrap();
 
-            let req = Request::builder()
-                .uri("/insert")
-                .body(Body::empty())
-                .unwrap();
-            let res = app.clone().oneshot(req).await.unwrap();
-            let session_cookie = get_session_cookie(res.headers()).unwrap();
+    let req = Request::builder()
+        .uri("/flush")
+        .header(header::COOKIE, session_cookie.encoded().to_string())
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
 
-            let req = Request::builder()
-                .uri("/flush")
-                .header(header::COOKIE, session_cookie.encoded().to_string())
-                .body(Body::empty())
-                .unwrap();
-            let res = app.oneshot(req).await.unwrap();
+    let session_cookie = get_session_cookie(res.headers()).unwrap();
 
-            let session_cookie = get_session_cookie(res.headers()).unwrap();
-
-            assert_eq!(session_cookie.value(), "");
-            assert_eq!(session_cookie.max_age(), Some(Duration::ZERO));
-        }
-    };
+    assert_eq!(session_cookie.value(), "");
+    assert_eq!(session_cookie.max_age(), Some(Duration::ZERO));
 }

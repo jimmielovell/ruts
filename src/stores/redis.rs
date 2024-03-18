@@ -38,8 +38,8 @@ impl RedisStore {
     ///
     /// - This method can fail if the store is unable to get the value.
     pub async fn get<T>(&self, session_id: Id, field: &str) -> Result<Option<T>, RedisStoreError>
-    where
-        T: Clone + Send + Sync + DeserializeOwned,
+        where
+            T: Clone + Send + Sync + DeserializeOwned,
     {
         let data = self
             .client
@@ -60,8 +60,8 @@ impl RedisStore {
     ///
     /// - This method can fail if the store is unable to get the values.
     pub async fn get_all<T>(&self, session_id: Id) -> Result<Option<T>, RedisStoreError>
-    where
-        T: Clone + Send + Sync + DeserializeOwned,
+        where
+            T: Clone + Send + Sync + DeserializeOwned,
     {
         let data = self
             .client
@@ -86,8 +86,8 @@ impl RedisStore {
         value: &T,
         expire: i64,
     ) -> Result<bool, RedisStoreError>
-    where
-        T: Send + Sync + Serialize,
+        where
+            T: Send + Sync + Serialize,
     {
         let key = session_id.inner_to_string();
 
@@ -117,8 +117,8 @@ impl RedisStore {
         field: &str,
         value: &T,
     ) -> Result<bool, RedisStoreError>
-    where
-        T: Send + Sync + Serialize,
+        where
+            T: Send + Sync + Serialize,
     {
         let key = session_id.inner_to_string();
         let mut map = RedisMap::new();

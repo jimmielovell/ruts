@@ -6,13 +6,14 @@ use cookie::Cookie;
 use http::{request::Parts, StatusCode};
 use tower_cookies::Cookies;
 
-use crate::{Id, Inner, Session};
+use crate::{Id,  Session};
+use crate::session::Inner;
 
 /// Axum Extractor for [`Session`].
 #[async_trait]
 impl<S> FromRequestParts<S> for Session
-where
-    S: Sync + Send,
+    where
+        S: Sync + Send,
 {
     type Rejection = (StatusCode, &'static str);
 

@@ -9,7 +9,10 @@ use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
 use tower_cookies::Cookies;
 
-use crate::{Id, RedisStore, RedisStoreError};
+mod id;
+pub use id::Id;
+
+use crate::redis::{RedisStore, RedisStoreError};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -33,8 +36,8 @@ impl Session {
     }
 
     pub async fn insert<T>(&self, field: &str, value: T) -> Result<bool>
-    where
-        T: Send + Sync + Serialize,
+        where
+            T: Send + Sync + Serialize,
     {
         let id = self.id_or_gen();
         let cookie_options = self.inner.cookie_options.unwrap();
@@ -53,8 +56,8 @@ impl Session {
     }
 
     pub async fn get<T>(&self, field: &str) -> Result<Option<T>>
-    where
-        T: Clone + Send + Sync + DeserializeOwned,
+        where
+            T: Clone + Send + Sync + DeserializeOwned,
     {
         let id = self.id();
         if id.is_none() {
@@ -75,8 +78,8 @@ impl Session {
     }
 
     pub async fn update<T>(&self, field: &str, value: T) -> Result<bool>
-    where
-        T: Send + Sync + Serialize,
+        where
+            T: Send + Sync + Serialize,
     {
         let id = self.id();
         if id.is_none() {
