@@ -10,22 +10,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
+use crate::{session::Inner, CookieOptions, Id};
 use pin_project_lite::pin_project;
-use crate::{CookieOptions, Id, redis::RedisStore, session::Inner};
+use crate::store::SessionStore;
 
 /// Middleware to use [`Session`].
 #[derive(Clone, Debug)]
-pub struct SessionService<S> {
+pub struct SessionService<S, T: SessionStore> {
     inner: S,
     /// Session name in cookie. Defaults to `id`.
     cookie_options: Option<CookieOptions>,
     /// Session store.
-    store: Arc<RedisStore>,
+    store: Arc<T>,
 }
 
-impl<S> SessionService<S> {
+impl<S, T> SessionService<S, T>
+where
+    T: SessionStore,
+{
     /// Create a new session manager.
-    pub fn new(inner: S, store: Arc<RedisStore>) -> Self {
+    pub fn new(inner: S, store: Arc<T>) -> Self {
         Self {
             inner,
             cookie_options: None,
@@ -40,13 +44,14 @@ impl<S> SessionService<S> {
     }
 }
 
-impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for SessionService<S>
-    where
-        S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+impl<ReqBody, ResBody, S, T> Service<Request<ReqBody>> for SessionService<S, T>
+where
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    T: SessionStore,
 {
     type Response = S::Response;
     type Error = S::Error;
-    type Future = ResponseFuture<S::Future>;
+    type Future = ResponseFuture<S::Future, T>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
@@ -58,8 +63,8 @@ impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for SessionService<S>
             cookies: Arc::new(Mutex::new(None)),
             cookie_options: Arc::new(self.cookie_options),
             store: Arc::clone(&self.store),
-            changed: Arc::new(AtomicBool::new(false)),
-            deleted: Arc::new(AtomicBool::new(false)),
+            changed: AtomicBool::new(false),
+            deleted: AtomicBool::new(false),
         };
         let inner_session = Arc::new(inner_session);
         req.extensions_mut().insert(inner_session.clone());
@@ -73,14 +78,17 @@ impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for SessionService<S>
 
 /// Layer to apply [`SessionService`] middleware.
 #[derive(Clone, Debug)]
-pub struct SessionLayer {
+pub struct SessionLayer<T: SessionStore> {
     cookie_options: Option<CookieOptions>,
-    store: Arc<RedisStore>,
+    store: Arc<T>,
 }
 
-impl SessionLayer {
+impl<T> SessionLayer<T>
+where
+    T: SessionStore,
+{
     /// Create a new session manager layer.
-    pub fn new(store: Arc<RedisStore>) -> Self {
+    pub fn new(store: Arc<T>) -> Self {
         Self {
             cookie_options: None,
             store,
@@ -93,8 +101,11 @@ impl SessionLayer {
     }
 }
 
-impl<S> Layer<S> for SessionLayer {
-    type Service = SessionService<S>;
+impl<S, T> Layer<S> for SessionLayer<T>
+where
+    T: SessionStore,
+{
+    type Service = SessionService<S, T>;
 
     fn layer(&self, inner: S) -> Self::Service {
         let service = SessionService::new(inner, self.store.clone());
@@ -110,16 +121,17 @@ impl<S> Layer<S> for SessionLayer {
 pin_project! {
   /// Response future for SessionManager
   #[derive(Debug)]
-  pub struct ResponseFuture<F> {
+  pub struct ResponseFuture<F, T: SessionStore> {
     #[pin]
     future: F,
-    inner_session: Arc<Inner>,
+    inner_session: Arc<Inner<T>>,
   }
 }
 
-impl<F, Body, E> Future for ResponseFuture<F>
-    where
-        F: Future<Output = Result<Response<Body>, E>>,
+impl<F, Body, E, T> Future for ResponseFuture<F, T>
+where
+    F: Future<Output = Result<Response<Body>, E>>,
+    T: SessionStore,
 {
     type Output = F::Output;
 

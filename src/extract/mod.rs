@@ -6,22 +6,28 @@ use cookie::Cookie;
 use http::{request::Parts, StatusCode};
 use tower_cookies::Cookies;
 
-use crate::{Id,  Session};
 use crate::session::Inner;
+use crate::{Id, Session};
+use crate::store::SessionStore;
 
 /// Axum Extractor for [`Session`].
 #[async_trait]
-impl<S> FromRequestParts<S> for Session
-    where
-        S: Sync + Send,
+impl<S, T> FromRequestParts<S> for Session<T>
+where
+    S: Sync + Send,
+    T: SessionStore
 {
     type Rejection = (StatusCode, &'static str);
 
     #[tracing::instrument(name = "session", skip(parts, _state))]
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let inner = parts.extensions.get::<Arc<Inner<T>>>().cloned();
+        if inner.is_none() {
+            println!("inner is blank");
+        }
         let inner_session = parts
             .extensions
-            .get_mut::<Arc<Inner>>()
+            .get::<Arc<Inner<T>>>()
             .cloned()
             .ok_or_else(|| {
                 tracing::error!("session layer not found in the request extensions");

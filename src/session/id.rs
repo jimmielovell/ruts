@@ -11,12 +11,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, Hash, PartialEq)]
 pub struct Id(i128);
 
-impl Id {
-    pub fn inner_to_string(&self) -> String {
-        self.0.to_string()
-    }
-}
-
 impl Default for Id {
     fn default() -> Self {
         Self(random())

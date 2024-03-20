@@ -3,6 +3,7 @@ use std::{result, sync::Arc};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use cookie::SameSite;
+use fred::clients::RedisPool;
 use parking_lot::Mutex;
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -11,13 +12,15 @@ use tower_cookies::Cookies;
 
 mod id;
 pub use id::Id;
+use crate::store;
+use crate::store::redis::RedisStore;
+use crate::store::SessionStore;
 
-use crate::redis::{RedisStore, RedisStoreError};
 
 #[derive(Error, Debug)]
 pub enum Error {
     #[error(transparent)]
-    Store(#[from] RedisStoreError),
+    Store(#[from] store::Error),
     #[error("Session not initialized")]
     UnInitialized,
 }
@@ -26,18 +29,19 @@ type Result<T> = result::Result<T, Error>;
 
 /// A parsed on-demand session store.
 #[derive(Debug)]
-pub struct Session {
-    inner: Arc<Inner>,
+pub struct Session<S: SessionStore> {
+    inner: Arc<Inner<S>>,
 }
 
-impl Session {
-    pub fn new(inner: Arc<Inner>) -> Self {
+impl<S> Session<S> where S: SessionStore
+{
+    pub fn new(inner: Arc<Inner<S>>) -> Self {
         Self { inner }
     }
 
     pub async fn insert<T>(&self, field: &str, value: T) -> Result<bool>
-        where
-            T: Send + Sync + Serialize,
+    where
+        T: Send + Sync + Serialize,
     {
         let id = self.id_or_gen();
         let cookie_options = self.inner.cookie_options.unwrap();
@@ -56,8 +60,8 @@ impl Session {
     }
 
     pub async fn get<T>(&self, field: &str) -> Result<Option<T>>
-        where
-            T: Clone + Send + Sync + DeserializeOwned,
+    where
+        T: Clone + Send + Sync + DeserializeOwned,
     {
         let id = self.id();
         if id.is_none() {
@@ -78,8 +82,8 @@ impl Session {
     }
 
     pub async fn update<T>(&self, field: &str, value: T) -> Result<bool>
-        where
-            T: Send + Sync + Serialize,
+    where
+        T: Send + Sync + Serialize,
     {
         let id = self.id();
         if id.is_none() {
@@ -266,14 +270,14 @@ impl CookieOptions {
 }
 
 #[derive(Debug)]
-pub struct Inner {
+pub struct Inner<T: SessionStore> {
     pub id: Arc<Mutex<Option<Id>>>,
     // data: Arc<DashMap<String, serde_json::Value>>,
     // set when a new value is inserted or removed
-    pub changed: Arc<AtomicBool>,
+    pub changed: AtomicBool,
     // set when the session is deleted
-    pub deleted: Arc<AtomicBool>,
+    pub deleted: AtomicBool,
     pub cookie_options: Arc<Option<CookieOptions>>,
     pub cookies: Arc<Mutex<Option<Cookies>>>,
-    pub store: Arc<RedisStore>,
+    pub store: Arc<T>,
 }
