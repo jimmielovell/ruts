@@ -3,7 +3,6 @@ use std::{result, sync::Arc};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use cookie::SameSite;
-use fred::clients::RedisPool;
 use parking_lot::Mutex;
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -13,7 +12,6 @@ use tower_cookies::Cookies;
 mod id;
 pub use id::Id;
 use crate::store;
-use crate::store::redis::RedisStore;
 use crate::store::SessionStore;
 
 
@@ -39,89 +37,11 @@ impl<S> Session<S> where S: SessionStore
         Self { inner }
     }
 
-    pub async fn insert<T>(&self, field: &str, value: T) -> Result<bool>
-    where
-        T: Send + Sync + Serialize,
-    {
-        let id = self.id_or_gen();
-        let cookie_options = self.inner.cookie_options.unwrap();
-        let inserted = self
-            .inner
-            .store
-            .insert(id.unwrap(), field, &value, cookie_options.max_age)
-            .await
-            .map_err(|err| {
-                tracing::error!(err = %err, "failed to save session to store");
-                err
-            })?;
-        self.changed();
-
-        Ok(inserted)
+    pub fn cookie_options(&self) -> Option<CookieOptions> {
+        *self.inner.cookie_options.clone()
     }
 
-    pub async fn get<T>(&self, field: &str) -> Result<Option<T>>
-    where
-        T: Clone + Send + Sync + DeserializeOwned,
-    {
-        let id = self.id();
-        if id.is_none() {
-            return Err(Error::UnInitialized);
-        }
-
-        let value = self
-            .inner
-            .store
-            .get(id.unwrap(), field)
-            .await
-            .map_err(|err| {
-                tracing::error!(err = %err, "failed to load session from store");
-                err
-            })?;
-
-        Ok(value)
-    }
-
-    pub async fn update<T>(&self, field: &str, value: T) -> Result<bool>
-    where
-        T: Send + Sync + Serialize,
-    {
-        let id = self.id();
-        if id.is_none() {
-            return Err(Error::UnInitialized);
-        }
-
-        let updated = self
-            .inner
-            .store
-            .update(id.unwrap(), field, &value)
-            .await
-            .map_err(|err| {
-                tracing::error!(err = %err, "failed to update session to store");
-                err
-            })?;
-
-        Ok(updated)
-    }
-
-    pub async fn remove(&self, field: &str) -> Result<bool> {
-        let id = self.id();
-        if id.is_none() {
-            return Err(Error::UnInitialized);
-        }
-
-        let removed = self
-            .inner
-            .store
-            .remove(id.unwrap(), field)
-            .await
-            .map_err(|err| {
-                tracing::error!(err = %err, "failed to remove session from store");
-                err
-            })?;
-
-        Ok(removed)
-    }
-
+    #[tracing::instrument(name = "deleting session from store", skip(self))]
     pub async fn delete(&self) -> Result<bool> {
         let id = self.id();
         if id.is_none() {
@@ -137,6 +57,7 @@ impl<S> Session<S> where S: SessionStore
         Ok(deleted)
     }
 
+    #[tracing::instrument(name = "updating session expiry", skip(self, seconds))]
     pub async fn expire(&self, seconds: i64) -> Result<bool> {
         if seconds == -1 || seconds == 0 {
             return self.delete().await;
@@ -165,6 +86,55 @@ impl<S> Session<S> where S: SessionStore
         Ok(true)
     }
 
+    #[tracing::instrument(name = "getting session from store", skip(self, field))]
+    pub async fn get<T>(&self, field: &str) -> Result<Option<T>>
+        where
+            T: Clone + Send + Sync + DeserializeOwned,
+    {
+        let id = self.id();
+        if id.is_none() {
+            return Err(Error::UnInitialized);
+        }
+
+        let value = self
+            .inner
+            .store
+            .get(id.unwrap(), field)
+            .await
+            .map_err(|err| {
+                tracing::error!(err = %err, "failed to get session from store");
+                err
+            })?;
+
+        Ok(value)
+    }
+
+    pub fn id(&self) -> Option<Id> {
+        self.inner.id.lock().clone()
+    }
+
+    #[tracing::instrument(name = "inserting session to store", skip(self, field, value))]
+    pub async fn insert<T>(&self, field: &str, value: T) -> Result<bool>
+    where
+        T: Send + Sync + Serialize,
+    {
+        let id = self.id_or_gen();
+        let cookie_options = self.inner.cookie_options.unwrap();
+        let inserted = self
+            .inner
+            .store
+            .insert(id.unwrap(), field, &value, cookie_options.max_age)
+            .await
+            .map_err(|err| {
+                tracing::error!(err = %err, "failed to save session to store");
+                err
+            })?;
+        self.changed();
+
+        Ok(inserted)
+    }
+
+    #[tracing::instrument(name = "regenerating session-id", skip(self))]
     pub async fn regenerate(&self) -> Result<Option<Id>> {
         let mut id = self.inner.id.lock();
 
@@ -181,17 +151,47 @@ impl<S> Session<S> where S: SessionStore
         Ok(None)
     }
 
-    pub fn id(&self) -> Option<Id> {
-        self.inner.id.lock().clone()
-    }
-
-    pub fn id_or_gen(&self) -> Option<Id> {
-        let mut id = self.inner.id.lock();
+    #[tracing::instrument(name = "removing session-field from store", skip(self, field))]
+    pub async fn remove(&self, field: &str) -> Result<bool> {
+        let id = self.id();
         if id.is_none() {
-            *id = Some(Id::default());
+            return Err(Error::UnInitialized);
         }
 
-        id.clone()
+        let removed = self
+            .inner
+            .store
+            .remove(id.unwrap(), field)
+            .await
+            .map_err(|err| {
+                tracing::error!(err = %err, "failed to remove session-field from store");
+                err
+            })?;
+
+        Ok(removed)
+    }
+
+    #[tracing::instrument(name = "updating session in store", skip(self, field, value))]
+    pub async fn update<T>(&self, field: &str, value: T) -> Result<bool>
+        where
+            T: Send + Sync + Serialize,
+    {
+        let id = self.id();
+        if id.is_none() {
+            return Err(Error::UnInitialized);
+        }
+
+        let updated = self
+            .inner
+            .store
+            .update(id.unwrap(), field, &value)
+            .await
+            .map_err(|err| {
+                tracing::error!(err = %err, "failed to update session to store");
+                err
+            })?;
+
+        Ok(updated)
     }
 
     fn changed(&self) {
@@ -200,6 +200,15 @@ impl<S> Session<S> where S: SessionStore
 
     fn deleted(&self) {
         self.inner.deleted.store(true, Ordering::Relaxed);
+    }
+
+    fn id_or_gen(&self) -> Option<Id> {
+        let mut id = self.inner.id.lock();
+        if id.is_none() {
+            *id = Some(Id::default());
+        }
+
+        id.clone()
     }
 }
 

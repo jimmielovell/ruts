@@ -1,7 +1,7 @@
 [package]
 name = "ruse"
 description = "Sessions middleware as a tower middleware"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Jimmie Lovell <jimmieomlovell@gmail.com>"]
 license = "MIT"
