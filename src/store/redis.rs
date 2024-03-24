@@ -187,7 +187,7 @@ where
         Ok(val)
     }
 
-    async fn update<T>(&self, session_id: Id, field: &str, value: &T) -> Result<bool, store::Error>
+    async fn update<T>(&self, session_id: Id, field: &str, value: &T, expire: i64) -> Result<bool, store::Error>
     where
         T: Send + Sync + Serialize,
     {
@@ -205,6 +205,11 @@ where
             .hset(session_id, &map)
             .await
             .map_err(RedisStoreError::Redis)?;
+
+        if updated {
+            // Set expiry on the root hash key
+            self.expire(session_id, expire).await?;
+        }
 
         Ok(updated)
     }

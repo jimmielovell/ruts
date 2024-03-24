@@ -61,7 +61,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
 
     /// Update a value in the store for a session field.
     /// Inserts the value if the session field does not exist.
-    async fn update<T>(&self, session_id: Id, field: &str, value: &T) -> Result<bool, Error>
+    async fn update<T>(&self, session_id: Id, field: &str, value: &T, expire: i64) -> Result<bool, Error>
     where
         T: Send + Sync + Serialize;
 

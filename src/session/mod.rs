@@ -224,11 +224,11 @@ where
         T: Send + Sync + Serialize,
     {
         let id = self.id_or_gen();
-
+        let cookie_options = self.inner.cookie_options.unwrap();
         let updated = self
             .inner
             .store
-            .update(id.unwrap(), field, &value)
+            .update(id.unwrap(), field, &value, cookie_options.max_age)
             .await
             .map_err(|err| {
                 tracing::error!(err = %err, "failed to update session to store");
