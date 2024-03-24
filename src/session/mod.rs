@@ -10,10 +10,9 @@ use thiserror::Error;
 use tower_cookies::Cookies;
 
 mod id;
-pub use id::Id;
 use crate::store;
 use crate::store::SessionStore;
-
+pub use id::Id;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -31,7 +30,9 @@ pub struct Session<S: SessionStore> {
     inner: Arc<Inner<S>>,
 }
 
-impl<S> Session<S> where S: SessionStore
+impl<S> Session<S>
+where
+    S: SessionStore,
 {
     pub fn new(inner: Arc<Inner<S>>) -> Self {
         Self { inner }
@@ -41,10 +42,12 @@ impl<S> Session<S> where S: SessionStore
         *self.inner.cookie_options.clone()
     }
 
+    /// Delete the entire session from the store.
     #[tracing::instrument(name = "deleting session from store", skip(self))]
     pub async fn delete(&self) -> Result<bool> {
         let id = self.id();
         if id.is_none() {
+            tracing::error!("the session has not been initialized");
             return Err(Error::UnInitialized);
         }
 
@@ -52,11 +55,16 @@ impl<S> Session<S> where S: SessionStore
             tracing::error!(err = %err, "failed to delete session from store");
             err
         })?;
-        self.deleted();
+
+        if deleted {
+            self.deleted();
+        }
 
         Ok(deleted)
     }
 
+    /// Update the session expiry.
+    /// A value of -1 or 0 immediately expires the session and is deleted.
     #[tracing::instrument(name = "updating session expiry", skip(self, seconds))]
     pub async fn expire(&self, seconds: i64) -> Result<bool> {
         if seconds == -1 || seconds == 0 {
@@ -65,10 +73,11 @@ impl<S> Session<S> where S: SessionStore
 
         let id = self.id();
         if id.is_none() {
+            tracing::error!("the session has not been initialized");
             return Err(Error::UnInitialized);
         }
 
-        let mut expired = self
+        let expired = self
             .inner
             .store
             .expire(id.unwrap(), seconds)
@@ -86,17 +95,19 @@ impl<S> Session<S> where S: SessionStore
         Ok(true)
     }
 
-    #[tracing::instrument(name = "getting session from store", skip(self, field))]
+    /// Get a value from the store for a session.
+    #[tracing::instrument(name = "getting value for session-field from store", skip(self, field))]
     pub async fn get<T>(&self, field: &str) -> Result<Option<T>>
-        where
-            T: Clone + Send + Sync + DeserializeOwned,
+    where
+        T: Clone + Send + Sync + DeserializeOwned,
     {
         let id = self.id();
         if id.is_none() {
+            tracing::error!("the session has not been initialized");
             return Err(Error::UnInitialized);
         }
 
-        let value = self
+        Ok(self
             .inner
             .store
             .get(id.unwrap(), field)
@@ -104,15 +115,34 @@ impl<S> Session<S> where S: SessionStore
             .map_err(|err| {
                 tracing::error!(err = %err, "failed to get session from store");
                 err
-            })?;
-
-        Ok(value)
+            })?)
     }
 
+    /// Get all values from the session store.
+    #[tracing::instrument(name = "getting session from store", skip(self))]
+    pub async fn get_all<T>(&self) -> Result<Option<T>>
+    where
+        T: Clone + Send + Sync + DeserializeOwned,
+    {
+        let id = self.id();
+        if id.is_none() {
+            tracing::error!("the session has not been initialized");
+            return Err(Error::UnInitialized);
+        }
+
+        Ok(self.inner.store.get_all(id.unwrap()).await.map_err(|err| {
+            tracing::error!(err = %err, "failed to get session from store");
+            err
+        })?)
+    }
+
+    /// Get the session id.
+    /// The returned value will be `None` if there has not been any data insertion in this request cycle or any previous ones.
     pub fn id(&self) -> Option<Id> {
         self.inner.id.lock().clone()
     }
 
+    /// Set a value in the store for a session field.
     #[tracing::instrument(name = "inserting session to store", skip(self, field, value))]
     pub async fn insert<T>(&self, field: &str, value: T) -> Result<bool>
     where
@@ -129,11 +159,15 @@ impl<S> Session<S> where S: SessionStore
                 tracing::error!(err = %err, "failed to save session to store");
                 err
             })?;
-        self.changed();
+
+        if inserted {
+            self.changed();
+        }
 
         Ok(inserted)
     }
 
+    /// Regenerate a new session id.
     #[tracing::instrument(name = "regenerating session-id", skip(self))]
     pub async fn regenerate(&self) -> Result<Option<Id>> {
         let mut id = self.inner.id.lock();
@@ -151,35 +185,45 @@ impl<S> Session<S> where S: SessionStore
         Ok(None)
     }
 
+    /// Remove the session field along with its value from the session.
+    /// If there is not any other field remaining in the session, it is deleted.
     #[tracing::instrument(name = "removing session-field from store", skip(self, field))]
     pub async fn remove(&self, field: &str) -> Result<bool> {
         let id = self.id();
         if id.is_none() {
+            tracing::error!("the session has not been initialized");
             return Err(Error::UnInitialized);
         }
 
-        let removed = self
-            .inner
-            .store
-            .remove(id.unwrap(), field)
-            .await
-            .map_err(|err| {
-                tracing::error!(err = %err, "failed to remove session-field from store");
-                err
-            })?;
+        let no_of_remaining_keys =
+            self.inner
+                .store
+                .remove(id.unwrap(), field)
+                .await
+                .map_err(|err| {
+                    tracing::error!(err = %err, "failed to remove session-field from store");
+                    err
+                })?;
 
-        Ok(removed)
+        if no_of_remaining_keys == -1 {
+            tracing::error!("failed to remove session-field from store");
+            return Ok(false);
+        } else if no_of_remaining_keys == 0 {
+            // Mark the session cookie deletion
+            self.deleted();
+        }
+
+        Ok(true)
     }
 
+    /// Update the session field value with the new value.
+    /// This inserts the session field if it does not exist.
     #[tracing::instrument(name = "updating session in store", skip(self, field, value))]
     pub async fn update<T>(&self, field: &str, value: T) -> Result<bool>
-        where
-            T: Send + Sync + Serialize,
+    where
+        T: Send + Sync + Serialize,
     {
-        let id = self.id();
-        if id.is_none() {
-            return Err(Error::UnInitialized);
-        }
+        let id = self.id_or_gen();
 
         let updated = self
             .inner
@@ -190,6 +234,10 @@ impl<S> Session<S> where S: SessionStore
                 tracing::error!(err = %err, "failed to update session to store");
                 err
             })?;
+
+        if updated {
+            self.changed();
+        }
 
         Ok(updated)
     }

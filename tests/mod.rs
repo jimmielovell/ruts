@@ -1,15 +1,15 @@
 use axum::{routing::get, Json, Router};
 use axum_core::body::Body;
+use axum_core::response::Response;
 use cookie::time::Duration;
 use cookie::SameSite;
 use fred::{clients::RedisClient, interfaces::ClientLike};
 use http::{header, HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
-use ruse::{CookieOptions, Session, SessionLayer, store::redis::RedisStore};
+use ruse::{store::redis::RedisStore, CookieOptions, Session, SessionLayer};
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
-use axum_core::response::Response;
 use tower::ServiceExt;
 use tower_cookies::{cookie, Cookie, CookieManagerLayer};
 
@@ -132,10 +132,7 @@ pub async fn body_string(body: Body) -> String {
 }
 
 pub async fn set_session_req() -> Response {
-    let req = Request::builder()
-        .uri("/set")
-        .body(Body::empty())
-        .unwrap();
+    let req = Request::builder().uri("/set").body(Body::empty()).unwrap();
     app().await.oneshot(req).await.unwrap()
 }
 
@@ -267,10 +264,7 @@ async fn get_no_value() {
 async fn remove_field() {
     let app = app().await;
 
-    let req = Request::builder()
-        .uri("/set")
-        .body(Body::empty())
-        .unwrap();
+    let req = Request::builder().uri("/set").body(Body::empty()).unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     let session_cookie = get_session_cookie(res.headers()).unwrap();
 
@@ -295,10 +289,7 @@ async fn remove_field() {
 async fn cycle_session_id() {
     let app = app().await;
 
-    let req = Request::builder()
-        .uri("/set")
-        .body(Body::empty())
-        .unwrap();
+    let req = Request::builder().uri("/set").body(Body::empty()).unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     let first_session_cookie = get_session_cookie(res.headers()).unwrap();
 
@@ -326,10 +317,7 @@ async fn cycle_session_id() {
 async fn flush_session() {
     let app = app().await;
 
-    let req = Request::builder()
-        .uri("/set")
-        .body(Body::empty())
-        .unwrap();
+    let req = Request::builder().uri("/set").body(Body::empty()).unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
     let session_cookie = get_session_cookie(res.headers()).unwrap();
 

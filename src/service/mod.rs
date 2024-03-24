@@ -10,9 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
+use crate::store::SessionStore;
 use crate::{session::Inner, CookieOptions, Id};
 use pin_project_lite::pin_project;
-use crate::store::SessionStore;
 
 /// Middleware to use [`Session`].
 #[derive(Clone, Debug)]
@@ -141,16 +141,12 @@ where
         let inner_session = this.inner_session;
 
         if inner_session.deleted.load(Ordering::Relaxed) {
-            let cookie_options = inner_session.cookie_options.clone();
-            if let Some(cookie_options) = cookie_options.as_ref() {
-                unimplemented!()
-            }
+            let _cookie_options = inner_session.cookie_options.clone().unwrap();
+            unimplemented!()
         } else if inner_session.changed.load(Ordering::Relaxed) {
-            let cookie_options = inner_session.cookie_options.clone();
-            if let Some(cookie_options) = cookie_options.as_ref() {
-                let cookies = inner_session.cookies.lock().clone().unwrap();
-                build_cookie(inner_session.id.lock().unwrap(), cookie_options, cookies);
-            }
+            let cookie_options = inner_session.cookie_options.clone().unwrap();
+            let cookies = inner_session.cookies.lock().clone().unwrap();
+            build_cookie(inner_session.id.lock().unwrap(), &cookie_options, cookies);
         }
 
         Poll::Ready(Ok(res))

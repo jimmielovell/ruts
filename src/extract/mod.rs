@@ -7,19 +7,18 @@ use http::{request::Parts, StatusCode};
 use tower_cookies::Cookies;
 
 use crate::session::Inner;
-use crate::{Id, Session};
 use crate::store::SessionStore;
+use crate::{Id, Session};
 
 /// Axum Extractor for [`Session`].
 #[async_trait]
 impl<S, T> FromRequestParts<S> for Session<T>
 where
     S: Sync + Send,
-    T: SessionStore
+    T: SessionStore,
 {
     type Rejection = (StatusCode, &'static str);
 
-    #[tracing::instrument(name = "session", skip(parts, _state))]
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         let inner = parts.extensions.get::<Arc<Inner<T>>>().cloned();
         if inner.is_none() {

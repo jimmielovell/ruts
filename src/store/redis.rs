@@ -1,5 +1,5 @@
-use std::{fmt::Debug, sync::Arc};
 use async_trait::async_trait;
+use std::{fmt::Debug, sync::Arc};
 
 use fred::types::{RedisKey, RedisMap};
 use fred::{
@@ -8,8 +8,8 @@ use fred::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::{Id, store};
 use crate::store::SessionStore;
+use crate::{store, Id};
 
 #[derive(thiserror::Error, Debug)]
 pub enum RedisStoreError {
@@ -58,9 +58,6 @@ impl<C> SessionStore for RedisStore<C>
 where
     C: HashesInterface + KeysInterface + Clone + Send + Sync + 'static,
 {
-    /// Delete the entire session from the store.
-    ///
-    /// - This method can fail if the store is unable to delete the session.
     async fn delete(&self, session_id: Id) -> Result<bool, store::Error> {
         let keys = self
             .client
@@ -81,13 +78,9 @@ where
             .client
             .expire(session_id, expire)
             .await
-            .map_err(RedisStoreError::Redis)?
-        )
+            .map_err(RedisStoreError::Redis)?)
     }
 
-    /// Get a value from the store for a session.
-    ///
-    /// - This method can fail if the store is unable to get the value.
     async fn get<T>(&self, session_id: Id, field: &str) -> Result<Option<T>, store::Error>
     where
         T: Clone + Send + Sync + DeserializeOwned,
@@ -100,16 +93,13 @@ where
 
         if let Some(data) = data {
             Ok(Some(
-                rmp_serde::from_slice(&data).map_err(RedisStoreError::Decode)?
+                rmp_serde::from_slice(&data).map_err(RedisStoreError::Decode)?,
             ))
         } else {
             Ok(None)
         }
     }
 
-    /// Get all values from the store for a session.
-    ///
-    /// - This method can fail if the store is unable to get the values.
     async fn get_all<T>(&self, session_id: Id) -> Result<Option<T>, store::Error>
     where
         T: Clone + Send + Sync + DeserializeOwned,
@@ -122,14 +112,13 @@ where
 
         if let Some(data) = data {
             Ok(Some(
-                rmp_serde::from_slice(&data).map_err(RedisStoreError::Decode)?
+                rmp_serde::from_slice(&data).map_err(RedisStoreError::Decode)?,
             ))
         } else {
             Ok(None)
         }
     }
 
-    /// Set a value in the store for a session.
     async fn insert<T>(
         &self,
         session_id: Id,
@@ -140,7 +129,6 @@ where
     where
         T: Send + Sync + Serialize,
     {
-
         let inserted: bool = self
             .client
             .hsetnx(
@@ -161,37 +149,45 @@ where
         Ok(inserted)
     }
 
-    /// Insert multiple values in to the session store.
-    ///
-    /// This is useful for when you want to insert multiple values at once.
-    ///
-    /// - This method can fail if the store is unable to insert the values.
-    async fn insert_many<T>(&self, session_id: Id, pairs: &T, expire: i64) -> Result<(), store::Error>
-        where
-            T: Send + Sync + Serialize,
+    async fn insert_many<T>(
+        &self,
+        _session_id: Id,
+        _pairs: &T,
+        _expire: i64,
+    ) -> Result<(), store::Error>
+    where
+        T: Send + Sync + Serialize,
     {
         unimplemented!()
     }
 
-    /// Removes the specified field from the session stored at id.
-    ///
-    /// - This method can fail if the store is unable to remove the value.
-    async fn remove(&self, session_id: Id, field: &str) -> Result<bool, store::Error> {
+    async fn remove(&self, session_id: Id, field: &str) -> Result<i8, store::Error> {
         let removed: bool = self
             .client
             .hdel(session_id, field)
             .await
             .map_err(RedisStoreError::Redis)?;
 
-        Ok(removed)
+        let val = if removed {
+            let no_of_keys = self
+                .client
+                .hkeys::<Vec<String>, _>(session_id)
+                .await
+                .map_err(RedisStoreError::Redis)?
+                .len();
+            if no_of_keys > 0 {
+                1
+            } else {
+                0
+            }
+        } else {
+            -1
+        };
+
+        Ok(val)
     }
 
-    async fn update<T>(
-        &self,
-        session_id: Id,
-        field: &str,
-        value: &T,
-    ) -> Result<bool, store::Error>
+    async fn update<T>(&self, session_id: Id, field: &str, value: &T) -> Result<bool, store::Error>
     where
         T: Send + Sync + Serialize,
     {
@@ -220,12 +216,8 @@ where
     ) -> Result<bool, store::Error> {
         Ok(self
             .client
-            .renamenx(
-                old_session_id,
-                new_session_id,
-            )
+            .renamenx(old_session_id, new_session_id)
             .await
-            .map_err(RedisStoreError::Redis)?
-        )
+            .map_err(RedisStoreError::Redis)?)
     }
 }
