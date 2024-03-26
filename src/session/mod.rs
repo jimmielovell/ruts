@@ -13,20 +13,22 @@ mod id;
 use crate::store;
 use crate::store::SessionStore;
 pub use id::Id;
+use crate::store::redis::RedisStore;
 
 #[derive(Error, Debug)]
 pub enum Error {
     #[error(transparent)]
     Store(#[from] store::Error),
-    #[error("Session not initialized")]
+    #[error("session has not been initialized")]
     UnInitialized,
 }
 
 type Result<T> = result::Result<T, Error>;
 
 /// A parsed on-demand session store.
+/// The default store is the [RedisStore<RedisPool>]
 #[derive(Debug)]
-pub struct Session<S: SessionStore> {
+pub struct Session<S: SessionStore = RedisStore> {
     inner: Arc<Inner<S>>,
 }
 

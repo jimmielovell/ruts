@@ -13,10 +13,11 @@ use std::task::{ready, Context, Poll};
 use crate::store::SessionStore;
 use crate::{session::Inner, CookieOptions, Id};
 use pin_project_lite::pin_project;
+use crate::store::redis::RedisStore;
 
 /// Middleware to use [`Session`].
 #[derive(Clone, Debug)]
-pub struct SessionService<S, T: SessionStore> {
+pub struct SessionService<S, T: SessionStore = RedisStore> {
     inner: S,
     /// Session name in cookie. Defaults to `id`.
     cookie_options: Option<CookieOptions>,
@@ -53,6 +54,7 @@ where
     type Error = S::Error;
     type Future = ResponseFuture<S::Future, T>;
 
+    #[inline]
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
@@ -141,19 +143,26 @@ where
         let inner_session = this.inner_session;
 
         if inner_session.deleted.load(Ordering::Relaxed) {
-            let _cookie_options = inner_session.cookie_options.clone().unwrap();
-            unimplemented!()
-        } else if inner_session.changed.load(Ordering::Relaxed) {
-            let cookie_options = inner_session.cookie_options.clone().unwrap();
+            let cookie_options = inner_session.cookie_options.unwrap();
             let cookies = inner_session.cookies.lock().clone().unwrap();
-            build_cookie(inner_session.id.lock().unwrap(), &cookie_options, cookies);
+
+            // This is really terrible since the cookie with the empty value is still added to the SET-COOKIE header.
+            // Although the cookie expires immediately and is not sent along with any subsequent requests.
+            // The optimal solution would be to use [cookies.remove] to completely remove the cookie.
+            let mut cookie = Cookie::new(cookie_options.name, "");
+            cookie.set_max_age(Duration::seconds(0));
+            cookies.add(cookie);
+        } else if inner_session.changed.load(Ordering::Relaxed) {
+            let cookie_options = inner_session.cookie_options.unwrap();
+            let cookies = inner_session.cookies.lock().clone().unwrap();
+            build_cookie(inner_session.id.lock().unwrap(), &cookie_options, &cookies);
         }
 
         Poll::Ready(Ok(res))
     }
 }
 
-fn build_cookie(id: Id, cookie_options: &CookieOptions, cookies: Cookies) {
+fn build_cookie(id: Id, cookie_options: &CookieOptions, cookies: &Cookies) {
     let cookie_builder = Cookie::build((cookie_options.name, id.to_string()))
         .secure(cookie_options.secure)
         .http_only(cookie_options.http_only)

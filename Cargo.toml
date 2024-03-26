@@ -1,7 +1,7 @@
 [package]
 name = "ruse"
 description = "Sessions as a tower middleware"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 authors = ["Jimmie Lovell <jimmieomlovell@gmail.com>"]
 license = "MIT"
@@ -11,6 +11,7 @@ categories = ["asynchronous", "network-programming", "web-programming"]
 repository = "https://github.com/jimmielovell/ruse"
 
 [dependencies]
+axum = "0.7.4"
 async-trait = "0.1.78"
 axum-core = "0.4.3"
 base64 = "0.22.0"

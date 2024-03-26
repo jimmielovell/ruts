@@ -6,6 +6,7 @@ use fred::{
     error::RedisError,
     interfaces::{HashesInterface, KeysInterface},
 };
+use fred::clients::RedisPool;
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::store::SessionStore;
@@ -34,7 +35,7 @@ impl From<RedisStoreError> for store::Error {
 }
 
 #[derive(Clone, Debug)]
-pub struct RedisStore<C: HashesInterface + KeysInterface + Clone + Send + Sync> {
+pub struct RedisStore<C: HashesInterface + KeysInterface + Clone + Send + Sync = RedisPool> {
     client: Arc<C>,
 }
 
