@@ -20,10 +20,6 @@ where
     type Rejection = (StatusCode, &'static str);
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let inner = parts.extensions.get::<Arc<Inner<T>>>().cloned();
-        if inner.is_none() {
-            println!("inner is blank");
-        }
         let inner_session = parts
             .extensions
             .get::<Arc<Inner<T>>>()
@@ -32,7 +28,7 @@ where
                 tracing::error!("session layer not found in the request extensions");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "session layer not found in the request extensions",
+                    "session not found in the request",
                 )
             })?;
 
@@ -44,7 +40,7 @@ where
                 tracing::error!("cookies not found in the request extensions");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "Cookies not found in the request extensions",
+                    "cookies not found in the request",
                 )
             })?;
 
