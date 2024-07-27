@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use std::{fmt::Debug, sync::Arc};
 
-use fred::clients::RedisClient;
+use fred::clients::RedisPool;
 use fred::types::{RedisKey, RedisMap};
 use fred::{
     error::RedisError,
@@ -35,7 +35,7 @@ impl From<RedisStoreError> for Error {
 }
 
 #[derive(Clone, Debug)]
-pub struct RedisStore<C: HashesInterface + KeysInterface + Clone + Send + Sync = RedisClient> {
+pub struct RedisStore<C: HashesInterface + KeysInterface + Clone + Send + Sync = RedisPool> {
     client: Arc<C>,
 }
 
