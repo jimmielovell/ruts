@@ -3,17 +3,16 @@ use parking_lot::Mutex;
 use tower::{Layer, Service};
 use tower_cookies::{Cookie, Cookies};
 
+use crate::store::redis::RedisStore;
+use crate::store::SessionStore;
+use crate::{session::Inner, CookieOptions, Id};
 use cookie::time::Duration;
+use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
-
-use crate::store::SessionStore;
-use crate::{session::Inner, CookieOptions, Id};
-use pin_project_lite::pin_project;
-use crate::store::redis::RedisStore;
 
 /// Middleware to use [`Session`].
 #[derive(Clone, Debug)]
@@ -61,8 +60,8 @@ where
 
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
         let inner_session = Inner {
-            id: Arc::new(Mutex::new(None)),
-            cookies: Arc::new(Mutex::new(None)),
+            id: Mutex::new(None),
+            cookies: Mutex::new(None),
             cookie_options: Arc::new(self.cookie_options),
             store: Arc::clone(&self.store),
             changed: AtomicBool::new(false),
@@ -146,12 +145,25 @@ where
             let cookie_options = inner_session.cookie_options.unwrap();
             let cookies = inner_session.cookies.lock().clone().unwrap();
 
-            // This is really terrible since the cookie with the empty value is still added to the SET-COOKIE header.
-            // Although the cookie expires immediately and is not sent along with any subsequent requests.
-            // The optimal solution would be to use [cookies.remove] to completely remove the cookie.
-            let mut cookie = Cookie::new(cookie_options.name, "");
-            cookie.set_max_age(Duration::seconds(0));
-            cookies.add(cookie);
+            // Create a removal cookie
+            // A “removal” cookie is a cookie that has the same name as the original
+            // cookie but has an empty value, a max-age of 0, and an expiration date far in the past.
+            let cookie = Cookie::build((cookie_options.name)).max_age(Duration::ZERO);
+
+            // To properly generate the removal cookie, cookie must contain
+            // the same path and domain as the cookie that was initially set.
+            let cookie = if let Some(domain) = cookie_options.domain {
+                cookie.domain(domain)
+            } else {
+                cookie
+            };
+            let cookie = if let Some(path) = cookie_options.path {
+                cookie.path(path)
+            } else {
+                cookie
+            };
+
+            cookies.add(cookie.build());
         } else if inner_session.changed.load(Ordering::Relaxed) {
             let cookie_options = inner_session.cookie_options.unwrap();
             let cookies = inner_session.cookies.lock().clone().unwrap();

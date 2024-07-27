@@ -5,7 +5,8 @@ use std::fmt::Display;
 use std::str::FromStr;
 use std::{fmt, str};
 
-use rand::random;
+use rand::rngs::OsRng;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, Hash, PartialEq)]
@@ -13,7 +14,10 @@ pub struct Id(i128);
 
 impl Default for Id {
     fn default() -> Self {
-        Self(random())
+        let mut rng = OsRng;
+        let mut bytes = [0u8; 16];
+        rng.fill_bytes(&mut bytes);
+        Self(i128::from_le_bytes(bytes))
     }
 }
 

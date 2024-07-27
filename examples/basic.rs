@@ -1,13 +1,13 @@
+use axum::routing::get;
+use axum::{Json, Router};
+use fred::clients::RedisClient;
+use fred::interfaces::ClientLike;
+use ruse::store::redis::RedisStore;
+use ruse::{CookieOptions, Session, SessionLayer};
+use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
-use axum::{Json, Router};
-use axum::routing::get;
-use fred::clients::{RedisClient};
-use fred::interfaces::ClientLike;
-use serde::{Deserialize, Serialize};
 use tower_cookies::CookieManagerLayer;
-use ruse::{CookieOptions, Session, SessionLayer};
-use ruse::store::redis::RedisStore;
 
 type RedisSession = Session<RedisStore<RedisClient>>;
 
@@ -65,7 +65,7 @@ fn routes() -> Router {
                 };
 
                 session
-                    .insert("app-2", app)
+                    .update("app-2", app)
                     .await
                     .map_err(|e| e.to_string())
                     .unwrap();
@@ -89,7 +89,16 @@ fn routes() -> Router {
                     .unwrap();
             }),
         )
-        // .route("/regenerate", get(regenerate_session))
+        .route(
+            "/regenerate",
+            get(|session: RedisSession| async move {
+                session
+                    .regenerate()
+                    .await
+                    .map_err(|e| e.to_string())
+                    .unwrap();
+            }),
+        )
         .route(
             "/delete",
             get(|session: RedisSession| async move {

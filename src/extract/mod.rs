@@ -64,8 +64,7 @@ where
                         )
                     })
                     .ok();
-                let mut id = inner_session.id.lock();
-                *id = session_id;
+                *inner_session.id.lock() = session_id;
             }
         } else {
             tracing::error!("missing cookie options");
