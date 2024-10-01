@@ -195,7 +195,7 @@ where
         session_id: Id,
         key: &str,
         value: &T,
-        _expire: i64,
+        expire: i64,
     ) -> Result<bool, Error>
     where
         T: Send + Sync + Serialize,
@@ -214,6 +214,10 @@ where
             .hset(session_id, map)
             .await
             .map_err(RedisStoreError::Redis)?;
+
+        if updated {
+            self.expire(session_id, expire).await?;
+        }
 
         Ok(updated)
     }
