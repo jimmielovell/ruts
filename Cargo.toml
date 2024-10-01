@@ -11,26 +11,26 @@ categories = ["network-programming", "web-programming"]
 repository = "https://github.com/jimmielovell/ruse"
 
 [dependencies]
-axum = "0.7.5"
-async-trait = "0.1.81"
-axum-core = "0.4.3"
+axum = "0.7.7"
+async-trait = "0.1.82"
+axum-core = "0.4.4"
 base64 = "0.22.1"
 cookie = "0.18.1"
-fred = "9.0.3"
+fred = "9.2.1"
 http = "1.1.0"
 parking_lot = { version = "0.12.3", features = ["serde"] }
 pin-project-lite = "0.2.14"
 rand = "0.8.5"
 rmp-serde = "1.3.0"
-serde = { version = "1.0.204", features = ["derive"] }
-thiserror = "1.0.63"
-tokio = { version = "1.39.2", features = ["full"] }
-tower = "0.4.13"
+serde = { version = "1.0.210", features = ["derive"] }
+thiserror = "1.0.64"
+tokio = { version = "1.40.0", features = ["full"] }
+tower = "0.5.1"
 tower-cookies = "0.10.0"
 tracing = { version = "0.1.40", features = ["log"] }
 
 [dev-dependencies]
-axum = "0.7.5"
+axum = "0.7.7"
 http-body-util = "0.1.2"
 
 [[example]]

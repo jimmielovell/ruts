@@ -6,7 +6,7 @@ use tower_cookies::{Cookie, Cookies};
 use crate::store::redis::RedisStore;
 use crate::store::SessionStore;
 use crate::{session::Inner, CookieOptions, Id};
-use cookie::time::Duration;
+use cookie::time::{Duration};
 use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
@@ -144,26 +144,8 @@ where
         if inner_session.deleted.load(Ordering::Relaxed) {
             let cookie_options = inner_session.cookie_options.unwrap();
             let cookies = inner_session.cookies.lock().clone().unwrap();
-
-            // Create a removal cookie
-            // A “removal” cookie is a cookie that has the same name as the original
-            // cookie but has an empty value, a max-age of 0, and an expiration date far in the past.
-            let cookie = Cookie::build((cookie_options.name)).max_age(Duration::ZERO);
-
-            // To properly generate the removal cookie, cookie must contain
-            // the same path and domain as the cookie that was initially set.
-            let cookie = if let Some(domain) = cookie_options.domain {
-                cookie.domain(domain)
-            } else {
-                cookie
-            };
-            let cookie = if let Some(path) = cookie_options.path {
-                cookie.path(path)
-            } else {
-                cookie
-            };
-
-            cookies.add(cookie.build());
+            let cookie = Cookie::build(cookie_options.name);
+            cookies.remove(cookie.build());
         } else if inner_session.changed.load(Ordering::Relaxed) {
             let cookie_options = inner_session.cookie_options.unwrap();
             let cookies = inner_session.cookies.lock().clone().unwrap();
