@@ -1,15 +1,15 @@
 [package]
-name = "ruse"
+name = "ruts"
 description = "A middleware for tower sessions"
 version = "0.1.11"
 edition = "2021"
 authors = ["Jimmie Lovell <jimmieomlovell@gmail.com>"]
 license = "MIT"
-homepage = "https://github.com/jimmielovell/ruse"
-keywords = ["sessions", "cookie", "ruse", "watfoe"]
+homepage = "https://github.com/jimmielovell/ruts"
+keywords = ["sessions", "cookie", "ruts", "watfoe"]
 categories = ["network-programming", "web-programming"]
-repository = "https://github.com/jimmielovell/ruse"
-documentation = "https://docs.rs/ruse"
+repository = "https://github.com/jimmielovell/ruts"
+documentation = "https://docs.rs/ruts"
 readme = "README.md"
 
 [dependencies]

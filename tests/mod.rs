@@ -6,7 +6,7 @@ use cookie::SameSite;
 use fred::{clients::RedisClient, interfaces::ClientLike};
 use http::{header, HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
-use ruse::{store::redis::RedisStore, CookieOptions, Session, SessionLayer};
+use ruts::{store::redis::RedisStore, CookieOptions, Session, SessionLayer};
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;

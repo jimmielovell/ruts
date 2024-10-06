@@ -1,6 +1,6 @@
 use axum::{Router, routing::get};
-use ruse::{Session, SessionLayer, CookieOptions};
-use ruse::store::redis::RedisStore;
+use ruts::{Session, SessionLayer, CookieOptions};
+use ruts::store::redis::RedisStore;
 use fred::clients::RedisClient;
 use std::sync::Arc;
 use fred::interfaces::ClientLike;

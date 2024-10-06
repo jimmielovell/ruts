@@ -57,9 +57,9 @@ where
     ///
     /// ```rust
     /// use axum::{Router, routing::get};
-    /// use ruse::{Session};
+    /// use ruts::{Session};
     /// use fred::clients::RedisClient;
-    /// use ruse::store::redis::RedisStore;
+    /// use ruts::store::redis::RedisStore;
     ///
     ///
     /// let _: Router<()> = Router::new()
@@ -97,9 +97,9 @@ where
     ///
     /// ```rust
     /// use axum::{Router, routing::get};
-    /// use ruse::{Session};
+    /// use ruts::{Session};
     /// use fred::clients::RedisClient;
-    /// use ruse::store::redis::RedisStore;
+    /// use ruts::store::redis::RedisStore;
     ///
     /// let _: Router<()> = Router::new()
     ///     .route("/expire", get(|session: Session<RedisStore<RedisClient>>| async move {
@@ -142,10 +142,10 @@ where
     ///
     /// ```rust
     /// use axum::{Router, routing::get};
-    /// use ruse::{Session};
+    /// use ruts::{Session};
     /// use fred::clients::RedisClient;
     /// use serde::{Deserialize, Serialize};
-    /// use ruse::store::redis::RedisStore;
+    /// use ruts::store::redis::RedisStore;
     ///
     /// #[derive(Clone, Debug, Default, Serialize, Deserialize)]
     /// struct User {
@@ -229,10 +229,10 @@ where
     ///
     /// ```rust
     /// use axum::{Router, routing::get};
-    /// use ruse::{Session};
+    /// use ruts::{Session};
     /// use fred::clients::RedisClient;
     /// use serde::{Deserialize, Serialize};
-    /// use ruse::store::redis::RedisStore;
+    /// use ruts::store::redis::RedisStore;
     ///
     /// #[derive(Clone, Debug, Default, Serialize, Deserialize)]
     /// struct User {
@@ -297,9 +297,9 @@ where
     ///
     /// ```rust
     /// use axum::{Router, routing::get};
-    /// use ruse::{Session};
+    /// use ruts::{Session};
     /// use fred::clients::RedisClient;
-    /// use ruse::store::redis::RedisStore;
+    /// use ruts::store::redis::RedisStore;
     ///
     /// let _: Router<()> = Router::new()
     ///     .route("/regenerate", get(|session: Session<RedisStore<RedisClient>>| async move {
@@ -333,9 +333,9 @@ where
     ///
     /// ```rust
     /// use axum::{Router, routing::get};
-    /// use ruse::{Session};
+    /// use ruts::{Session};
     /// use fred::clients::RedisClient;
-    /// use ruse::store::redis::RedisStore;
+    /// use ruts::store::redis::RedisStore;
     ///
     /// let _: Router<()> = Router::new()
     ///     .route("/remove", get(|session: Session<RedisStore<RedisClient>>| async move {
@@ -373,10 +373,10 @@ where
     ///
     /// ```rust
     /// use axum::{Router, routing::get};
-    /// use ruse::{Session};
+    /// use ruts::{Session};
     /// use fred::clients::RedisClient;
     /// use serde::{Deserialize, Serialize};
-    /// use ruse::store::redis::RedisStore;
+    /// use ruts::store::redis::RedisStore;
     ///
     /// #[derive(Clone, Debug, Default, Serialize, Deserialize)]
     /// struct User {
@@ -462,7 +462,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// use ruse::CookieOptions;
+/// use ruts::CookieOptions;
 ///
 /// let cookie_options = CookieOptions::build()
 ///         .name("test_sess")

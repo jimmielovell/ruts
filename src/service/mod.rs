@@ -84,8 +84,8 @@ where
 ///
 /// ```rust
 /// use fred::clients::RedisClient;
-/// use ruse::{CookieOptions, Session, SessionLayer};
-/// use ruse::store::redis::RedisStore;
+/// use ruts::{CookieOptions, Session, SessionLayer};
+/// use ruts::store::redis::RedisStore;
 /// use std::sync::Arc;
 /// use tower_cookies::CookieManagerLayer;
 ///

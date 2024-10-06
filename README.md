@@ -1,6 +1,6 @@
-# Ruse: Rust Session Management for Web Applications
+# Ruts: Rust Tower Session for HTTP Applications
 
-Ruse is a robust, flexible session management library for Rust web applications. It provides a seamless way to handle user sessions in tower-based web frameworks, with a focus on security, performance, and ease of use.
+Ruts is a robust, flexible session management library for Rust web applications. It provides a seamless way to handle user sessions in tower-based web frameworks, with a focus on security, performance, and ease of use.
 
 ## Features
 
@@ -18,7 +18,7 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruse = "0.1.0"
+ruts = "0.1.11"
 ```
 
 ## Quick Start
@@ -27,8 +27,8 @@ Here's a basic example of how to use Ruse with axum:
 
 ```rust
 use axum::{Router, routing::get};
-use ruse::{Session, SessionLayer, CookieOptions};
-use ruse::store::redis::RedisStore;
+use ruts::{Session, SessionLayer, CookieOptions};
+use ruts::store::redis::RedisStore;
 use fred::clients::RedisClient;
 use std::sync::Arc;
 use fred::interfaces::ClientLike;
