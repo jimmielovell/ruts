@@ -9,6 +9,8 @@ homepage = "https://github.com/jimmielovell/ruse"
 keywords = ["sessions", "cookie", "ruse", "watfoe"]
 categories = ["network-programming", "web-programming"]
 repository = "https://github.com/jimmielovell/ruse"
+documentation = "https://docs.rs/ruse"
+readme = "README.md"
 
 [dependencies]
 axum = "0.7.7"
