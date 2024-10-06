@@ -1,12 +1,17 @@
+//! Session management middleware for tower applications.
+//!
+//! This module provides [`SessionLayer`] for integrating
+//! session management into tower applications.
+
 use http::{Request, Response};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use tower::{Layer, Service};
 use tower_cookies::{Cookie, Cookies};
 
 use crate::store::redis::RedisStore;
 use crate::store::SessionStore;
 use crate::{session::Inner, CookieOptions, Id};
-use cookie::time::{Duration};
+use cookie::time::Duration;
 use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
@@ -14,13 +19,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
-/// Middleware to use [`Session`].
+/// A Tower Middleware to use [`Session`].
 #[derive(Clone, Debug)]
 pub struct SessionService<S, T: SessionStore = RedisStore> {
     inner: S,
-    /// Session name in cookie. Defaults to `id`.
     cookie_options: Option<CookieOptions>,
-    /// Session store.
     store: Arc<T>,
 }
 
@@ -28,8 +31,7 @@ impl<S, T> SessionService<S, T>
 where
     T: SessionStore,
 {
-    /// Create a new session manager.
-    pub fn new(inner: S, store: Arc<T>) -> Self {
+    fn new(inner: S, store: Arc<T>) -> Self {
         Self {
             inner,
             cookie_options: None,
@@ -37,8 +39,7 @@ where
         }
     }
 
-    /// Set the cookie options for the session manager.
-    pub fn with_cookie_options(mut self, cookie_options: CookieOptions) -> Self {
+    fn with_cookie_options(mut self, cookie_options: CookieOptions) -> Self {
         self.cookie_options = Some(cookie_options);
         self
     }
@@ -60,7 +61,7 @@ where
 
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
         let inner_session = Inner {
-            id: Mutex::new(None),
+            id: RwLock::new(None),
             cookies: Mutex::new(None),
             cookie_options: Arc::new(self.cookie_options),
             store: Arc::clone(&self.store),
@@ -78,6 +79,32 @@ where
 }
 
 /// Layer to apply [`SessionService`] middleware.
+///
+/// # Example
+///
+/// ```rust
+/// use fred::clients::RedisClient;
+/// use ruse::{CookieOptions, Session, SessionLayer};
+/// use ruse::store::redis::RedisStore;
+/// use std::sync::Arc;
+/// use tower_cookies::CookieManagerLayer;
+///
+/// let cookie_options = CookieOptions::build()
+///         .name("test_sess")
+///         .http_only(true)
+///         .same_site(cookie::SameSite::Lax)
+///         .secure(true)
+///         .max_age(1 * 60)
+///         .path("/");
+///
+///     let client = RedisClient::default();
+///     // Initialize the client
+///
+///     let store = RedisStore::new(Arc::new(client));
+///     let session_layer = SessionLayer::new(Arc::new(store))
+///         .with_cookie_options(cookie_options);
+/// ```
+///
 #[derive(Clone, Debug)]
 pub struct SessionLayer<T: SessionStore> {
     cookie_options: Option<CookieOptions>,
@@ -96,6 +123,7 @@ where
         }
     }
 
+    /// Set the cookie options for the session manager.
     pub fn with_cookie_options(mut self, options: CookieOptions) -> Self {
         self.cookie_options = Some(options);
         self
@@ -142,21 +170,27 @@ where
         let inner_session = this.inner_session;
 
         if inner_session.deleted.load(Ordering::Relaxed) {
-            let cookie_options = inner_session.cookie_options.unwrap();
-            let cookies = inner_session.cookies.lock().clone().unwrap();
-            let cookie = Cookie::build(cookie_options.name);
-            cookies.remove(cookie.build());
+            if let Some(cookie_options) = &*inner_session.cookie_options {
+                if let Some(cookies) = inner_session.cookies.lock().as_ref() {
+                    let cookie = Cookie::build(cookie_options.name);
+                    cookies.remove(cookie.build());
+                }
+            }
         } else if inner_session.changed.load(Ordering::Relaxed) {
-            let cookie_options = inner_session.cookie_options.unwrap();
-            let cookies = inner_session.cookies.lock().clone().unwrap();
-            build_cookie(inner_session.id.lock().unwrap(), &cookie_options, &cookies);
+            if let Some(cookie_options) = &*inner_session.cookie_options {
+                if let Some(cookies) = inner_session.cookies.lock().as_ref() {
+                    if let Some(id) = inner_session.id.read().as_ref() {
+                        build_cookie(id, cookie_options, cookies);
+                    }
+                }
+            }
         }
 
         Poll::Ready(Ok(res))
     }
 }
 
-fn build_cookie(id: Id, cookie_options: &CookieOptions, cookies: &Cookies) {
+fn build_cookie(id: &Id, cookie_options: &CookieOptions, cookies: &Cookies) {
     let cookie_builder = Cookie::build((cookie_options.name, id.to_string()))
         .secure(cookie_options.secure)
         .http_only(cookie_options.http_only)

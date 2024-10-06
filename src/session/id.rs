@@ -10,20 +10,14 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, Hash, PartialEq)]
-pub struct Id(i128);
+pub struct Id([u8; 16]);
 
 impl Default for Id {
     fn default() -> Self {
         let mut rng = OsRng;
         let mut bytes = [0u8; 16];
         rng.fill_bytes(&mut bytes);
-        Self(i128::from_le_bytes(bytes))
-    }
-}
-
-impl AsRef<i128> for Id {
-    fn as_ref(&self) -> &i128 {
-        &self.0
+        Self(bytes)
     }
 }
 
@@ -31,7 +25,7 @@ impl Display for Id {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut encoded = [0; 22];
         BASE64_URL_SAFE_NO_PAD
-            .encode_slice(self.0.to_le_bytes(), &mut encoded)
+            .encode_slice(self.0, &mut encoded)
             .expect("Encoded ID must be exactly 22 bytes");
         let encoded = str::from_utf8(&encoded).expect("Encoded ID must be valid UTF-8");
 
@@ -50,6 +44,6 @@ impl FromStr for Id {
             return Err(base64::DecodeSliceError::DecodeError(err));
         }
 
-        Ok(Self(i128::from_le_bytes(decoded)))
+        Ok(Self(decoded))
     }
 }

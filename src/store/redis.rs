@@ -48,9 +48,9 @@ where
     }
 }
 
-impl From<Id> for RedisKey {
-    fn from(value: Id) -> Self {
-        value.as_ref().to_owned().into()
+impl From<&Id> for RedisKey {
+    fn from(value: &Id) -> Self {
+        value.to_string().into()
     }
 }
 
@@ -59,7 +59,7 @@ impl<C> SessionStore for RedisStore<C>
 where
     C: HashesInterface + KeysInterface + Clone + Send + Sync + 'static,
 {
-    async fn delete(&self, session_id: Id) -> Result<i32, Error> {
+    async fn delete(&self, session_id: &Id) -> Result<i32, Error> {
         let no_of_deleted_keys: i32 = self
             .client
             .del(session_id)
@@ -69,7 +69,7 @@ where
         Ok(no_of_deleted_keys)
     }
 
-    async fn expire(&self, session_id: Id, expire: i64) -> Result<bool, Error> {
+    async fn expire(&self, session_id: &Id, expire: i64) -> Result<bool, Error> {
         Ok(self
             .client
             .expire(session_id, expire)
@@ -77,7 +77,7 @@ where
             .map_err(RedisStoreError::Redis)?)
     }
 
-    async fn get<T>(&self, session_id: Id, key: &str) -> Result<Option<T>, Error>
+    async fn get<T>(&self, session_id: &Id, key: &str) -> Result<Option<T>, Error>
     where
         T: Clone + Send + Sync + DeserializeOwned,
     {
@@ -96,7 +96,7 @@ where
         }
     }
 
-    async fn get_all<T>(&self, session_id: Id) -> Result<Option<T>, Error>
+    async fn get_all<T>(&self, session_id: &Id) -> Result<Option<T>, Error>
     where
         T: Clone + Send + Sync + DeserializeOwned,
     {
@@ -117,7 +117,7 @@ where
 
     async fn insert<T>(
         &self,
-        session_id: Id,
+        session_id: &Id,
         key: &str,
         value: &T,
         expire: i64,
@@ -147,7 +147,7 @@ where
 
     async fn insert_many<T>(
         &self,
-        session_id: Id,
+        session_id: &Id,
         pairs: Vec<(&str, &T)>,
         expire: i64,
     ) -> Result<(), Error>
@@ -180,7 +180,7 @@ where
         Ok(())
     }
 
-    async fn remove(&self, session_id: Id, key: &str) -> Result<bool, Error> {
+    async fn remove(&self, session_id: &Id, key: &str) -> Result<bool, Error> {
         let removed: bool = self
             .client
             .hdel(session_id, key)
@@ -192,7 +192,7 @@ where
 
     async fn update<T>(
         &self,
-        session_id: Id,
+        session_id: &Id,
         key: &str,
         value: &T,
         expire: i64,
@@ -224,8 +224,8 @@ where
 
     async fn update_key(
         &self,
-        old_session_id: Id,
-        new_session_id: Id,
+        old_session_id: &Id,
+        new_session_id: &Id,
         expire: i64,
     ) -> Result<bool, Error> {
         let updated = self

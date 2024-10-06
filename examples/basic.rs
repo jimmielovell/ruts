@@ -109,27 +109,31 @@ fn routes() -> Router {
 
 #[tokio::main]
 async fn main() {
+    // Set up Redis client
+    let client = RedisClient::default();
+    client.init().await.unwrap();
+
+    // Create session store
+    let store = RedisStore::new(Arc::new(client));
+
+    // Configure session options
     let cookie_options = CookieOptions::build()
-        .name("test_sess")
+        .name("session")
         .http_only(true)
         .same_site(cookie::SameSite::Lax)
         .secure(true)
         .max_age(1 * 60)
         .path("/");
 
-    let client = RedisClient::default();
-    client.init().await.unwrap();
-
-    // let pool = Builder::default_centralized().build_pool(2).unwrap();
-    // pool.init().await.unwrap();
-
-    let store = RedisStore::new(Arc::new(client));
+    // Create session layer
     let session_layer = SessionLayer::new(Arc::new(store)).with_cookie_options(cookie_options);
 
+    // Set up router with session management
     let app = routes()
         .layer(session_layer)
         .layer(CookieManagerLayer::new());
 
+    // Run the server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
