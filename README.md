@@ -18,12 +18,12 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruts = "0.1.11"
+ruts = "0.1.12"
 ```
 
 ## Quick Start
 
-Here's a basic example of how to use Ruse with axum:
+Here's a basic example of how to use Ruts with axum:
 
 ```rust
 use axum::{Router, routing::get};
@@ -43,7 +43,7 @@ async fn main() {
     // Create session store
     let store = RedisStore::new(Arc::new(client));
 
-    // Configure session options
+    // Configure session-cookie options
     let cookie_options = CookieOptions::build()
         .name("session")
         .http_only(true)
@@ -81,7 +81,7 @@ async fn handler(session: Session<RedisStore<RedisClient>>) -> String {
 
 ### Setting Up the Session Layer
 
-To use Ruse in your application, you need to set up the `SessionLayer`:
+To use Ruts in your application, you need to set up the `SessionLayer`:
 
 ```rust
 let store = RedisStore::new(Arc::new(redis_client));
@@ -91,7 +91,7 @@ let session_layer = SessionLayer::new(Arc::new(store))
 
 ### Using Sessions in Request Handlers
 
-Ruse provides an extractor for axum that allows you to easily access the session in your request handlers:
+Ruts provides an extractor for axum that allows you to easily access the session in your request handlers:
 
 ```rust
 async fn handler(session: Session<RedisStore<RedisClient>>) -> impl IntoResponse {
@@ -101,13 +101,13 @@ async fn handler(session: Session<RedisStore<RedisClient>>) -> impl IntoResponse
 
 ### Session Methods
 
-Ruse provides several methods for working with session data:
+Ruts provides several methods for working with session data:
 
-- `insert`: Add a new key-value pair to the session
-- `get`: Retrieve a value from the session
-- `update`: Update an existing value in the session
-- `remove`: Remove a key-value pair from the session
-- `delete`: Delete the entire session
+- `insert`: Add a new key-value pair to the session store
+- `get`: Retrieve a value from the session store
+- `update`: Update an existing key-value pair in the session store. If the key does not exist, it will be created
+- `remove`: Remove a key-value pair from the session store
+- `delete`: Delete the entire session store
 - `regenerate`: Generate a new session ID
 - `expire`: Set or update the session expiration time
 
