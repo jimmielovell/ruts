@@ -2,28 +2,18 @@
 
 Ruts is a robust, flexible session management library for Rust web applications. It provides a seamless way to handle user sessions in tower-based web frameworks, with a focus on security, performance, and ease of use.
 
-## Features
-
-- Compatible with tower-based web frameworks (e.g., axum, warp)
-- Flexible session storage with built-in support for Redis
-- Customizable cookie options for session management
-- Support for both cookie-based and URL-based sessions
-- Asynchronous API for efficient session handling
-- Type-safe session data management
-- Automatic session expiration and regeneration
-
 ## Installation
 
 Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruts = "0.1.12"
+ruts = "0.2.0"
 ```
 
 ## Quick Start
 
-Here's a basic example of how to use Ruts with axum:
+Here's a basic example of how to use `ruts` with [axum](https://docs.rs/axum/latest/axum/):
 
 ```rust
 use axum::{Router, routing::get};
@@ -79,9 +69,7 @@ async fn handler(session: Session<RedisStore<RedisClient>>) -> String {
 
 ## Usage
 
-### Setting Up the Session Layer
-
-To use Ruts in your application, you need to set up the `SessionLayer`:
+### Setting Up the `SessionLayer` with `cookie` support
 
 ```rust
 let store = RedisStore::new(Arc::new(redis_client));
@@ -89,27 +77,22 @@ let session_layer = SessionLayer::new(Arc::new(store))
     .with_cookie_options(CookieOptions::build().name("session").max_age(3600));
 ```
 
-### Using Sessions in Request Handlers
+### Setting Up the `SessionLayer` without `cookie` support
 
-Ruts provides an extractor for axum that allows you to easily access the session in your request handlers:
+```rust
+let store = RedisStore::new(Arc::new(redis_client));
+let session_layer = SessionLayer::new(Arc::new(store));
+```
+
+### Using Sessions in `axum request handlers`
+
+`ruts` provides an `extractor` for [axum](https://docs.rs/axum/latest/axum/) that allows you to easily access the session in your request handlers:
 
 ```rust
 async fn handler(session: Session<RedisStore<RedisClient>>) -> impl IntoResponse {
     // Use session methods here
 }
 ```
-
-### Session Methods
-
-Ruts provides several methods for working with session data:
-
-- `insert`: Add a new key-value pair to the session store
-- `get`: Retrieve a value from the session store
-- `update`: Update an existing key-value pair in the session store. If the key does not exist, it will be created
-- `remove`: Remove a key-value pair from the session store
-- `delete`: Delete the entire session store
-- `regenerate`: Generate a new session ID
-- `expire`: Set or update the session expiration time
 
 ## Configuration
 
@@ -130,7 +113,6 @@ let cookie_options = CookieOptions::build()
 - Always use HTTPS in production to protect session cookies.
 - Set appropriate `SameSite` and `Secure` flags for cookies.
 - Regularly regenerate session IDs to prevent session fixation attacks.
-- Be cautious about what data you store in sessions and how long sessions last.
 
 ## Contributing
 

@@ -1,7 +1,7 @@
 [package]
 name = "ruts"
 description = "A middleware for tower sessions"
-version = "0.1.11"
+version = "0.2.0"
 edition = "2021"
 authors = ["Jimmie Lovell <jimmieomlovell@gmail.com>"]
 license = "MIT"
@@ -18,8 +18,8 @@ axum = ["dep:axum-core"]
 redis-store = ["dep:fred", "dep:rmp-serde"]
 
 [dependencies]
-async-trait = "0.1.82"
-axum-core = {  version = "0.4.4", optional = true }
+async-trait = "0.1.83"
+axum-core = {  version = "0.4.5", optional = true }
 base64 = "0.22.1"
 cookie = "0.18.1"
 fred = { version = "9.2.1", optional = true }
