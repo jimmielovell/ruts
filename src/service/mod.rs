@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
-/// A Tower Middleware to use [`Session`].
+/// A Tower Middleware to use `Session`.
 #[derive(Clone, Debug)]
 pub struct SessionService<S, T: SessionStore = RedisStore> {
     inner: S,

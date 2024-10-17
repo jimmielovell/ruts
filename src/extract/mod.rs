@@ -28,7 +28,6 @@ where
         })?;
 
         // Cookies are only used if the SessionLayer has a cookie_options set.
-        // Hence, there is no overhead incurred if the SessionLayer support other variants e.g. url sessions.
         let cookie_options = &inner_session.cookie_options.ok_or_else(|| {
             tracing::error!("missing cookie options");
             (StatusCode::INTERNAL_SERVER_ERROR, "missing cookie options")

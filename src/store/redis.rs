@@ -1,13 +1,13 @@
 use async_trait::async_trait;
-use std::{fmt::Debug, sync::Arc};
-
 use fred::clients::RedisPool;
-use fred::types::{RedisKey, RedisMap};
+use fred::types::{RedisKey, RedisValue};
 use fred::{
     error::RedisError,
     interfaces::{HashesInterface, KeysInterface},
 };
 use serde::{de::DeserializeOwned, Serialize};
+use std::collections::HashMap;
+use std::{fmt::Debug, sync::Arc};
 
 use crate::store::{Error, SessionStore};
 use crate::Id;
@@ -54,49 +54,52 @@ impl From<&Id> for RedisKey {
     }
 }
 
+impl<C> RedisStore<C>
+where
+    C: HashesInterface + KeysInterface + Clone + Send + Sync + 'static,
+{
+    fn serialize_value(&self, value: impl Serialize) -> Result<Vec<u8>, RedisStoreError> {
+        let mut msgpack_data = Vec::new();
+        let mut serializer = rmp_serde::Serializer::new(&mut msgpack_data)
+            .with_bytes(rmp_serde::config::BytesMode::ForceAll);
+        value
+            .serialize(&mut serializer)
+            .map_err(RedisStoreError::Encode)?;
+
+        Ok(msgpack_data)
+    }
+
+    fn deserialize_value<T>(&self, value: Option<Vec<u8>>) -> Result<Option<T>, RedisStoreError>
+    where
+        T: Clone + Send + Sync + DeserializeOwned,
+    {
+        Ok(if let Some(data) = value {
+            Some(rmp_serde::from_slice(&data).map_err(RedisStoreError::Decode)?)
+        } else {
+            None
+        })
+    }
+}
+
 #[async_trait]
 impl<C> SessionStore for RedisStore<C>
 where
     C: HashesInterface + KeysInterface + Clone + Send + Sync + 'static,
 {
-    async fn delete(&self, session_id: &Id) -> Result<i32, Error> {
-        let no_of_deleted_keys: i32 = self
-            .client
-            .del(session_id)
-            .await
-            .map_err(RedisStoreError::Redis)?;
-
-        Ok(no_of_deleted_keys)
-    }
-
-    async fn expire(&self, session_id: &Id, expire: i64) -> Result<bool, Error> {
-        Ok(self
-            .client
-            .expire(session_id, expire)
-            .await
-            .map_err(RedisStoreError::Redis)?)
-    }
-
-    async fn get<T>(&self, session_id: &Id, key: &str) -> Result<Option<T>, Error>
+    async fn get<T>(&self, session_id: &Id, field: &str) -> Result<Option<T>, Error>
     where
         T: Clone + Send + Sync + DeserializeOwned,
     {
         let data = self
             .client
-            .hget::<Option<Vec<u8>>, _, _>(session_id, key)
+            .hget::<Option<Vec<u8>>, _, _>(session_id, field)
             .await
             .map_err(RedisStoreError::Redis)?;
 
-        if let Some(data) = data {
-            Ok(Some(
-                rmp_serde::from_slice(&data).map_err(RedisStoreError::Decode)?,
-            ))
-        } else {
-            Ok(None)
-        }
+        Ok(self.deserialize_value::<T>(data)?)
     }
 
-    async fn get_all<T>(&self, session_id: &Id) -> Result<Option<T>, Error>
+    async fn get_all<T>(&self, session_id: &Id) -> Result<Option<HashMap<String, T>>, Error>
     where
         T: Clone + Send + Sync + DeserializeOwned,
     {
@@ -106,108 +109,44 @@ where
             .await
             .map_err(RedisStoreError::Redis)?;
 
-        if let Some(data) = data {
-            Ok(Some(
-                rmp_serde::from_slice(&data).map_err(RedisStoreError::Decode)?,
-            ))
-        } else {
-            Ok(None)
-        }
+        Ok(self.deserialize_value::<HashMap<String, T>>(data)?)
     }
 
     async fn insert<T>(
         &self,
         session_id: &Id,
-        key: &str,
+        field: &str,
         value: &T,
-        expire: i64,
+        seconds: i64,
     ) -> Result<bool, Error>
     where
         T: Send + Sync + Serialize,
     {
         let inserted: bool = self
             .client
-            .hsetnx(
-                session_id,
-                key,
-                rmp_serde::to_vec(value)
-                    .map_err(RedisStoreError::Encode)?
-                    .as_slice(),
-            )
+            .hsetnx(session_id, field, self.serialize_value(value)?.as_slice())
             .await
             .map_err(RedisStoreError::Redis)?;
 
         if inserted {
-            // Set expiry on the root hash key
-            self.expire(session_id, expire).await?;
+            self.expire(session_id, seconds).await?;
         }
 
         Ok(inserted)
     }
 
-    async fn insert_many<T>(
-        &self,
-        session_id: &Id,
-        pairs: Vec<(&str, &T)>,
-        expire: i64,
-    ) -> Result<(), Error>
-    where
-        T: Send + Sync + Serialize,
-    {
-        let mut map = RedisMap::new();
-
-        for (key, value) in pairs {
-            map.insert(
-                key.into(),
-                rmp_serde::to_vec(value)
-                    .map_err(RedisStoreError::Encode)?
-                    .as_slice()
-                    .into(),
-            );
-        }
-
-        let inserted: bool = self
-            .client
-            .hset(session_id, map)
-            .await
-            .map_err(RedisStoreError::Redis)?;
-
-        if inserted {
-            // Set expiry on the root hash key
-            self.expire(session_id, expire).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn remove(&self, session_id: &Id, key: &str) -> Result<bool, Error> {
-        let removed: bool = self
-            .client
-            .hdel(session_id, key)
-            .await
-            .map_err(RedisStoreError::Redis)?;
-
-        Ok(removed)
-    }
-
     async fn update<T>(
         &self,
         session_id: &Id,
-        key: &str,
+        field: &str,
         value: &T,
-        expire: i64,
+        seconds: i64,
     ) -> Result<bool, Error>
     where
         T: Send + Sync + Serialize,
     {
-        let mut map = RedisMap::new();
-        map.insert(
-            key.into(),
-            rmp_serde::to_vec(value)
-                .map_err(RedisStoreError::Encode)?
-                .as_slice()
-                .into(),
-        );
+        let map: HashMap<RedisKey, RedisValue> =
+            HashMap::from([(field.into(), self.serialize_value(value)?.as_slice().into())]);
 
         let updated: bool = self
             .client
@@ -216,29 +155,55 @@ where
             .map_err(RedisStoreError::Redis)?;
 
         if updated {
-            self.expire(session_id, expire).await?;
+            self.expire(session_id, seconds).await?;
         }
 
         Ok(updated)
     }
 
-    async fn update_key(
+    async fn rename_session_id(
         &self,
         old_session_id: &Id,
         new_session_id: &Id,
-        expire: i64,
+        seconds: i64,
     ) -> Result<bool, Error> {
-        let updated = self
-            .client
+        let renamed: bool = self.client
             .renamenx(old_session_id, new_session_id)
             .await
             .map_err(RedisStoreError::Redis)?;
 
-        if updated {
-            // Set expiry on the root hash key
-            self.expire(new_session_id, expire).await?;
-        };
+        if renamed {
+            self.expire(new_session_id, seconds).await?;
+        }
 
-        Ok(updated)
+        Ok(renamed)
+    }
+
+    async fn remove(&self, session_id: &Id, field: &str) -> Result<i8, Error> {
+        let removed: i8 = self
+            .client
+            .hdel(session_id, field)
+            .await
+            .map_err(RedisStoreError::Redis)?;
+
+        println!("Removed {removed} keys");
+
+        Ok(removed)
+    }
+
+    async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
+        Ok(self
+            .client
+            .del(session_id)
+            .await
+            .map_err(RedisStoreError::Redis)?)
+    }
+
+    async fn expire(&self, session_id: &Id, seconds: i64) -> Result<bool, Error> {
+        Ok(self
+            .client
+            .expire(session_id, seconds)
+            .await
+            .map_err(RedisStoreError::Redis)?)
     }
 }

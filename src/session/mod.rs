@@ -1,8 +1,8 @@
 //! Session management for web applications.
 
-use std::{result, sync::Arc};
-
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::{result, sync::Arc};
 
 use cookie::SameSite;
 use parking_lot::{Mutex, RwLock};
@@ -29,7 +29,7 @@ type Result<T> = result::Result<T, Error>;
 
 /// A parsed on-demand session store.
 ///
-/// The default store is the [`RedisStore`<RedisPool>]
+/// The default store is the `RedisStore`<RedisPool>
 #[derive(Debug)]
 pub struct Session<S: SessionStore = RedisStore> {
     inner: Arc<Inner<S>>,
@@ -47,93 +47,6 @@ where
     /// Returns the cookie options for this session.
     pub fn cookie_options(&self) -> Option<CookieOptions> {
         *self.inner.cookie_options.clone()
-    }
-
-    /// Deletes the entire session from the store.
-    ///
-    /// Returns `true` if the session was successfully deleted.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use axum::{Router, routing::get};
-    /// use ruts::{Session};
-    /// use fred::clients::RedisClient;
-    /// use ruts::store::redis::RedisStore;
-    ///
-    ///
-    /// let _: Router<()> = Router::new()
-    ///     .route("/delete", get(|session: Session<RedisStore<RedisClient>>| async move {
-    ///         session.delete().await.unwrap();
-    ///     }));
-    /// ```
-    #[tracing::instrument(name = "deleting session from store", skip(self))]
-    pub async fn delete(&self) -> Result<bool> {
-        let id = self.id();
-        if id.is_none() {
-            tracing::error!("the session has not been initialized");
-            return Err(Error::UnInitialized);
-        }
-
-        let no_of_deleted_keys = self.inner.store.delete(&id.unwrap()).await.map_err(|err| {
-            tracing::error!(err = %err, "failed to delete session from store");
-            err
-        })?;
-
-        if no_of_deleted_keys == 1 {
-            self.deleted();
-        }
-
-        Ok(true)
-    }
-
-    /// Updates the session expiry time.
-    ///
-    /// A value of -1 or 0 immediately expires the session and deletes it.
-    ///
-    /// Returns `true` if the expiry was successfully updated.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use axum::{Router, routing::get};
-    /// use ruts::{Session};
-    /// use fred::clients::RedisClient;
-    /// use ruts::store::redis::RedisStore;
-    ///
-    /// let _: Router<()> = Router::new()
-    ///     .route("/expire", get(|session: Session<RedisStore<RedisClient>>| async move {
-    ///         session.expire(30).await.unwrap();
-    ///     }));
-    /// ```
-    #[tracing::instrument(name = "updating session expiry", skip(self, seconds))]
-    pub async fn expire(&self, seconds: i64) -> Result<bool> {
-        if seconds == -1 || seconds == 0 {
-            return self.delete().await;
-        }
-
-        let id = self.id();
-        if id.is_none() {
-            tracing::error!("the session has not been initialized");
-            return Err(Error::UnInitialized);
-        }
-
-        let expired = self
-            .inner
-            .store
-            .expire(&id.unwrap(), seconds)
-            .await
-            .map_err(|err| {
-                tracing::error!(err = %err, "failed to expire session");
-                err
-            })?;
-
-        if expired {
-            // TODO: Update this instance cookieoptions
-            self.regenerate().await?;
-        }
-
-        Ok(true)
     }
 
     /// Retrieves a value from the session store.
@@ -171,21 +84,16 @@ where
     ///         session.get::<AppSession>("app").await.unwrap();
     ///     }));
     /// ```
-    #[tracing::instrument(name = "getting value for session-key from store", skip(self, key))]
-    pub async fn get<T>(&self, key: &str) -> Result<Option<T>>
+    #[tracing::instrument(name = "getting value for field from session store", skip(self, field))]
+    pub async fn get<T>(&self, field: &str) -> Result<Option<T>>
     where
         T: Clone + Send + Sync + DeserializeOwned,
     {
         match self.id() {
-            Some(id) => self
-                .inner
-                .store
-                .get(&id, key)
-                .await
-                .map_err(|err| {
-                    tracing::error!(err = %err, "failed to get session from store");
-                    err.into()
-                }),
+            Some(id) => self.inner.store.get(&id, field).await.map_err(|err| {
+                tracing::error!(err = %err, "failed to get value for field from session store");
+                err.into()
+            }),
             None => {
                 tracing::debug!("session not initialized");
                 Ok(None)
@@ -195,30 +103,20 @@ where
 
     /// Retrieves all values from the session store.
     #[tracing::instrument(name = "getting session from store", skip(self))]
-    pub async fn get_all<T>(&self) -> Result<Option<T>>
+    pub async fn get_all<T>(&self) -> Result<Option<HashMap<String, T>>>
     where
         T: Clone + Send + Sync + DeserializeOwned,
     {
         match self.id() {
-            Some(id) => self
-                .inner
-                .store
-                .get_all(&id)
-                .await
-                .map_err(|err| {
-                    tracing::error!(err = %err, "failed to get session from store");
-                    err.into()
-                }),
+            Some(id) => self.inner.store.get_all(&id).await.map_err(|err| {
+                tracing::error!(err = %err, "failed to get session from store");
+                err.into()
+            }),
             None => {
                 tracing::debug!("session not initialized");
                 Ok(None)
             }
         }
-    }
-
-    /// Returns the session ID, if it exists.
-    pub fn id(&self) -> Option<Id> {
-        *self.inner.id.read()
     }
 
     /// Inserts a value into the session store.
@@ -263,11 +161,14 @@ where
     ///             theme: Some(Theme::Dark),
     ///         };
     ///
-    ///         session.insert("app", app).await.unwrap();
+    ///         session.insert("app", &app).await.unwrap();
     ///     }));
     /// ```
-    #[tracing::instrument(name = "inserting session to store", skip(self, key, value))]
-    pub async fn insert<T>(&self, key: &str, value: T) -> Result<bool>
+    #[tracing::instrument(
+        name = "inserting field-value to session store",
+        skip(self, field, value)
+    )]
+    pub async fn insert<T>(&self, field: &str, value: &T) -> Result<bool>
     where
         T: Send + Sync + Serialize,
     {
@@ -275,10 +176,10 @@ where
         let inserted = self
             .inner
             .store
-            .insert(&id, key, &value, self.max_age())
+            .insert(&id, field, value, self.max_age())
             .await
             .map_err(|err| {
-                tracing::error!(err = %err, "failed to save session to store");
+                tracing::error!(err = %err, "failed to insert field-value to session store");
                 err
             })?;
 
@@ -287,80 +188,6 @@ where
         }
 
         Ok(inserted)
-    }
-
-    /// Regenerates the session with a new ID.
-    ///
-    /// Returns the new session ID if successful.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use axum::{Router, routing::get};
-    /// use ruts::{Session};
-    /// use fred::clients::RedisClient;
-    /// use ruts::store::redis::RedisStore;
-    ///
-    /// let _: Router<()> = Router::new()
-    ///     .route("/regenerate", get(|session: Session<RedisStore<RedisClient>>| async move {
-    ///         let id = session.regenerate().await.unwrap();
-    ///     }));
-    /// ```
-    #[tracing::instrument(name = "regenerating the session id", skip(self))]
-    pub async fn regenerate(&self) -> Result<Option<Id>> {
-        let old_id = self.id();
-        let new_id = Id::default();
-        let renamed = self
-            .inner
-            .store
-            .update_key(&old_id.unwrap(), &new_id, self.max_age())
-            .await?;
-
-        if renamed {
-            *self.inner.id.write() = Some(new_id);
-            self.changed();
-            return Ok(Some(new_id));
-        }
-
-        Ok(None)
-    }
-
-    /// Removes a key-value pair from the session store.
-    ///
-    /// Returns `true` if the pair was successfully removed.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use axum::{Router, routing::get};
-    /// use ruts::{Session};
-    /// use fred::clients::RedisClient;
-    /// use ruts::store::redis::RedisStore;
-    ///
-    /// let _: Router<()> = Router::new()
-    ///     .route("/remove", get(|session: Session<RedisStore<RedisClient>>| async move {
-    ///         session.remove("app").await.unwrap();
-    ///     }));
-    /// ```
-    #[tracing::instrument(name = "removing session-key from store", skip(self, key))]
-    pub async fn remove(&self, key: &str) -> Result<bool> {
-        let id = self.id();
-        if id.is_none() {
-            tracing::error!("the session has not been initialized");
-            return Err(Error::UnInitialized);
-        }
-
-        let removed = self
-            .inner
-            .store
-            .remove(&id.unwrap(), key)
-            .await
-            .map_err(|err| {
-                tracing::error!(err = %err, "failed to remove key from session store");
-                err
-            })?;
-
-        Ok(removed)
     }
 
     /// Updates a value in the session store.
@@ -407,11 +234,11 @@ where
     ///             theme: Some(Theme::Light),
     ///         };
     ///
-    ///         session.update("app-2", app).await.unwrap();
+    ///         session.update("app-2", &app).await.unwrap();
     ///     }));
     /// ```
-    #[tracing::instrument(name = "updating session in store", skip(self, key, value))]
-    pub async fn update<T>(&self, key: &str, value: T) -> Result<bool>
+    #[tracing::instrument(name = "updating field in session store", skip(self, field, value))]
+    pub async fn update<T>(&self, field: &str, value: &T) -> Result<bool>
     where
         T: Send + Sync + Serialize,
     {
@@ -419,10 +246,10 @@ where
         let updated = self
             .inner
             .store
-            .update(&id, key, &value, self.max_age())
+            .update(&id, field, value, self.max_age())
             .await
             .map_err(|err| {
-                tracing::error!(err = %err, "failed to update session to store");
+                tracing::error!(err = %err, "failed to update field in session store");
                 err
             })?;
 
@@ -433,12 +260,168 @@ where
         Ok(updated)
     }
 
-    fn changed(&self) {
-        self.inner.changed.store(true, Ordering::Relaxed);
+    /// Removes a key-value pair from the session store.
+    ///
+    /// Returns `true` if the pair was successfully removed.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use axum::{Router, routing::get};
+    /// use ruts::{Session};
+    /// use fred::clients::RedisClient;
+    /// use ruts::store::redis::RedisStore;
+    ///
+    /// let _: Router<()> = Router::new()
+    ///     .route("/remove", get(|session: Session<RedisStore<RedisClient>>| async move {
+    ///         session.remove("app").await.unwrap();
+    ///     }));
+    /// ```
+    #[tracing::instrument(name = "removing field from session store", skip(self, field))]
+    pub async fn remove(&self, field: &str) -> Result<i8> {
+        let id = self.id();
+        if id.is_none() {
+            tracing::error!("the session has not been initialized");
+            return Err(Error::UnInitialized);
+        }
+
+        let removed = self
+            .inner
+            .store
+            .remove(&id.unwrap(), field)
+            .await
+            .map_err(|err| {
+                tracing::error!(err = %err, "failed to remove field from session store");
+                err
+            })?;
+
+        Ok(removed)
     }
 
-    fn deleted(&self) {
-        self.inner.deleted.store(true, Ordering::Relaxed);
+    /// Deletes the entire session from the store.
+    ///
+    /// Returns `true` if the session was successfully deleted.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use axum::{Router, routing::get};
+    /// use ruts::{Session};
+    /// use fred::clients::RedisClient;
+    /// use ruts::store::redis::RedisStore;
+    ///
+    ///
+    /// let _: Router<()> = Router::new()
+    ///     .route("/delete", get(|session: Session<RedisStore<RedisClient>>| async move {
+    ///         session.delete().await.unwrap();
+    ///     }));
+    /// ```
+    #[tracing::instrument(name = "deleting session from store", skip(self))]
+    pub async fn delete(&self) -> Result<bool> {
+        let id = self.id();
+        if id.is_none() {
+            tracing::error!("the session has not been initialized");
+            return Err(Error::UnInitialized);
+        }
+
+        let deleted = self.inner.store.delete(&id.unwrap()).await.map_err(|err| {
+            tracing::error!(err = %err, "failed to delete session from store");
+            err
+        })?;
+
+        if deleted {
+            self.deleted();
+        }
+
+        Ok(deleted)
+    }
+
+    /// Updates the session expiry time.
+    ///
+    /// A value of -1 or 0 immediately expires the session and deletes it.
+    ///
+    /// Returns `true` if the expiry was successfully updated.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use axum::{Router, routing::get};
+    /// use ruts::{Session};
+    /// use fred::clients::RedisClient;
+    /// use ruts::store::redis::RedisStore;
+    ///
+    /// let _: Router<()> = Router::new()
+    ///     .route("/expire", get(|session: Session<RedisStore<RedisClient>>| async move {
+    ///         session.expire(30).await.unwrap();
+    ///     }));
+    /// ```
+    #[tracing::instrument(name = "updating session expiry", skip(self, seconds))]
+    pub async fn expire(&self, seconds: i64) -> Result<bool> {
+        if seconds == -1 || seconds == 0 {
+            return self.delete().await;
+        }
+
+        let id = self.id();
+        if id.is_none() {
+            tracing::error!("the session has not been initialized");
+            return Err(Error::UnInitialized);
+        }
+
+        let expired = self.inner
+            .store
+            .expire(&id.unwrap(), seconds)
+            .await
+            .map_err(|err| {
+                tracing::error!(err = %err, "failed to expire session");
+                err
+            })?;
+
+        if expired {
+            self.regenerate().await?;
+        }
+
+
+        Ok(expired)
+    }
+
+    /// Regenerates the session with a new ID.
+    ///
+    /// Returns the new session ID if successful.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use axum::{Router, routing::get};
+    /// use ruts::{Session};
+    /// use fred::clients::RedisClient;
+    /// use ruts::store::redis::RedisStore;
+    ///
+    /// let _: Router<()> = Router::new()
+    ///     .route("/regenerate", get(|session: Session<RedisStore<RedisClient>>| async move {
+    ///         let id = session.regenerate().await.unwrap();
+    ///     }));
+    /// ```
+    #[tracing::instrument(name = "regenerating session id", skip(self))]
+    pub async fn regenerate(&self) -> Result<Option<Id>> {
+        let old_id = self.id();
+        let new_id = Id::default();
+        let renamed = self.inner
+            .store
+            .rename_session_id(&old_id.unwrap(), &new_id, self.max_age())
+            .await?;
+
+        if renamed {
+            *self.inner.id.write() = Some(new_id);
+            self.changed();
+            return Ok(Some(new_id));
+        }
+
+        Ok(None)
+    }
+
+    /// Returns the session ID, if it exists.
+    pub fn id(&self) -> Option<Id> {
+        *self.inner.id.read()
     }
 
     fn id_or_gen(&self) -> Id {
@@ -454,6 +437,14 @@ where
             .as_ref()
             .map(|options| options.max_age)
             .unwrap_or(0)
+    }
+
+    fn changed(&self) {
+        self.inner.changed.store(true, Ordering::Relaxed);
+    }
+
+    fn deleted(&self) {
+        self.inner.deleted.store(true, Ordering::Relaxed);
     }
 }
 
