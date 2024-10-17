@@ -34,9 +34,9 @@ struct AppSession {
 fn routes() -> Router {
     Router::new()
         .route(
-            "/set",
+            "/insert",
             get(|session: RedisSession| async move {
-                let app = AppSession {
+                let app_session: AppSession = AppSession {
                     user: Some(User {
                         id: 34895634,
                         name: String::from("John Doe"),
@@ -46,26 +46,30 @@ fn routes() -> Router {
                 };
 
                 session
-                    .insert("app", app)
+                    .insert("app", &app_session)
                     .await
                     .map_err(|e| e.to_string())
                     .unwrap();
             }),
         )
+        // .route(
+        //     "/insert_multiple",
+        //     get(|session: RedisSession| async move {
+        //         session.insert_multiple(vec![
+        //             ("user", Box::new(User { id: 34895634, name: String::from("John Doe"),})),
+        //             ("theme", Box::new(Theme::Dark))
+        //         ])
+        //             .await
+        //             .map_err(|e| e.to_string())
+        //             .unwrap();
+        //
+        //     }),
+        // )
         .route(
-            "/add",
+            "/update",
             get(|session: RedisSession| async move {
-                let app = AppSession {
-                    user: Some(User {
-                        id: 12432312,
-                        name: String::from("Jane Doe"),
-                    }),
-                    ip: Some(IpAddr::from(Ipv4Addr::new(192, 168, 1, 1))),
-                    theme: Some(Theme::Light),
-                };
-
                 session
-                    .update("app-2", app)
+                    .update("theme", &Theme::Light)
                     .await
                     .map_err(|e| e.to_string())
                     .unwrap();
