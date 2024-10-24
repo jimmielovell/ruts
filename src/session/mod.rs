@@ -408,7 +408,11 @@ where
         let renamed = self.inner
             .store
             .rename_session_id(&old_id.unwrap(), &new_id, self.max_age())
-            .await?;
+            .await
+            .map_err(|err| {
+                tracing::error!(err = %err, "failed to regenerate session id");
+                err
+            })?;
 
         if renamed {
             *self.inner.id.write() = Some(new_id);
