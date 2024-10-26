@@ -15,7 +15,7 @@ use cookie::time::Duration;
 use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
@@ -23,7 +23,7 @@ use std::task::{ready, Context, Poll};
 #[derive(Clone, Debug)]
 pub struct SessionService<S, T: SessionStore = RedisStore> {
     inner: S,
-    cookie_options: Option<CookieOptions>,
+    cookie_options: Option<Arc<CookieOptions>>,
     store: Arc<T>,
 }
 
@@ -39,7 +39,7 @@ where
         }
     }
 
-    fn with_cookie_options(mut self, cookie_options: CookieOptions) -> Self {
+    fn with_cookie_options(mut self, cookie_options: Arc<CookieOptions>) -> Self {
         self.cookie_options = Some(cookie_options);
         self
     }
@@ -60,10 +60,17 @@ where
     }
 
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
+        let (cookie_name, cookie_max_age) = if let Some(cookie_options) = &self.cookie_options {
+            (Some(cookie_options.name), cookie_options.max_age)
+        } else {
+            (None, 0)
+        };
+
         let inner_session = Inner {
             id: RwLock::new(None),
             cookies: Mutex::new(None),
-            cookie_options: Arc::new(self.cookie_options),
+            cookie_max_age: AtomicI64::new(cookie_max_age),
+            cookie_name,
             store: Arc::clone(&self.store),
             changed: AtomicBool::new(false),
             deleted: AtomicBool::new(false),
@@ -74,6 +81,7 @@ where
         ResponseFuture {
             future: self.inner.call(req),
             inner_session,
+            cookie_options: self.cookie_options.clone(),
         }
     }
 }
@@ -95,14 +103,12 @@ where
 ///         .same_site(cookie::SameSite::Lax)
 ///         .secure(true)
 ///         .max_age(1 * 60)
-///         .path("/");
-///
-///     let client = RedisClient::default();
-///     // Initialize the client
-///
-///     let store = RedisStore::new(Arc::new(client));
-///     let session_layer = SessionLayer::new(Arc::new(store))
-///         .with_cookie_options(cookie_options);
+///         .path("/");///
+/// let client = RedisClient::default();
+/// // Initialize the client///
+/// let store = RedisStore::new(Arc::new(client));
+/// let session_layer = SessionLayer::new(Arc::new(store))
+///     .with_cookie_options(cookie_options);
 /// ```
 ///
 #[derive(Clone, Debug)]
@@ -140,7 +146,7 @@ where
         let service = SessionService::new(inner, self.store.clone());
 
         if let Some(cookie_options) = self.cookie_options {
-            service.with_cookie_options(cookie_options)
+            service.with_cookie_options(Arc::new(cookie_options))
         } else {
             service
         }
@@ -148,13 +154,14 @@ where
 }
 
 pin_project! {
-  /// Response future for SessionManager
-  #[derive(Debug)]
-  pub struct ResponseFuture<F, T: SessionStore> {
-    #[pin]
-    future: F,
-    inner_session: Arc<Inner<T>>,
-  }
+    /// Response future for SessionManager
+    #[derive(Debug)]
+    pub struct ResponseFuture<F, T: SessionStore> {
+        #[pin]
+        future: F,
+        inner_session: Arc<Inner<T>>,
+        cookie_options: Option<Arc<CookieOptions>>
+    }
 }
 
 impl<F, Body, E, T> Future for ResponseFuture<F, T>
@@ -167,17 +174,18 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         let res = ready!(this.future.poll(cx)?);
+
         let inner_session = this.inner_session;
 
         if inner_session.deleted.load(Ordering::Relaxed) {
-            if let Some(cookie_options) = &*inner_session.cookie_options {
+            if let Some(cookie_options) = this.cookie_options {
                 if let Some(cookies) = inner_session.cookies.lock().as_ref() {
                     let cookie = Cookie::build(cookie_options.name);
                     cookies.remove(cookie.build());
                 }
             }
         } else if inner_session.changed.load(Ordering::Relaxed) {
-            if let Some(cookie_options) = &*inner_session.cookie_options {
+            if let Some(cookie_options) = this.cookie_options {
                 if let Some(cookies) = inner_session.cookies.lock().as_ref() {
                     if let Some(id) = inner_session.id.read().as_ref() {
                         build_cookie(id, cookie_options, cookies);

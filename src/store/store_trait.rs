@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
-use std::collections::HashMap;
 use std::fmt::Debug;
 
 use crate::Id;
@@ -25,7 +24,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         T: Clone + Send + Sync + DeserializeOwned;
 
     /// Gets all the `field`-`value` pairs stored at `session_id`
-    async fn get_all<T>(&self, session_id: &Id) -> Result<Option<HashMap<String, T>>, Error>
+    async fn get_all<T>(&self, session_id: &Id) -> Result<Option<T>, Error>
     where
         T: Clone + Send + Sync + DeserializeOwned;
 
