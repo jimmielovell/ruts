@@ -99,7 +99,7 @@ where
         Ok(self.deserialize_value::<T>(data)?)
     }
 
-    async fn get_all<T>(&self, session_id: &Id) -> Result<Option<HashMap<String, T>>, Error>
+    async fn get_all<T>(&self, session_id: &Id) -> Result<Option<T>, Error>
     where
         T: Clone + Send + Sync + DeserializeOwned,
     {
@@ -109,7 +109,7 @@ where
             .await
             .map_err(RedisStoreError::Redis)?;
 
-        Ok(self.deserialize_value::<HashMap<String, T>>(data)?)
+        Ok(self.deserialize_value::<T>(data)?)
     }
 
     async fn insert<T>(
@@ -167,7 +167,8 @@ where
         new_session_id: &Id,
         seconds: i64,
     ) -> Result<bool, Error> {
-        let renamed: bool = self.client
+        let renamed: bool = self
+            .client
             .renamenx(old_session_id, new_session_id)
             .await
             .map_err(RedisStoreError::Redis)?;

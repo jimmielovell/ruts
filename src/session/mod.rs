@@ -1,7 +1,6 @@
 //! Session management for web applications.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::{result, sync::Arc};
 
 use cookie::SameSite;
@@ -44,47 +43,42 @@ where
         Self { inner }
     }
 
-    /// Returns the cookie options for this session.
-    pub fn cookie_options(&self) -> Option<CookieOptions> {
-        *self.inner.cookie_options.clone()
-    }
-
-    /// Retrieves a value from the session store.
+    /// Retrieves the value of a field from the session store.
     ///
     /// # Example
     ///
     /// ```rust
-    /// use axum::{Router, routing::get};
     /// use ruts::{Session};
     /// use fred::clients::RedisClient;
-    /// use serde::{Deserialize, Serialize};
+    /// use serde::Deserialize;
     /// use ruts::store::redis::RedisStore;
     ///
-    /// #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    /// #[derive(Clone, Deserialize)]
     /// struct User {
     ///     id: i64,
     ///     name: String,
     /// }
     ///
-    /// #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    /// #[derive(Clone, Deserialize)]
     /// enum Theme {
     ///     Light,
-    ///     #[default]
     ///     Dark,
     /// }
     ///
-    /// #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    /// #[derive(Clone, Deserialize)]
     /// struct AppSession {
-    ///     user: Option<User>,
+    ///     user: User,
     ///     theme: Option<Theme>,
     /// }
     ///
-    /// let _: Router<()> = Router::new()
-    ///     .route("/get", get(|session: Session<RedisStore<RedisClient>>| async move {
-    ///         session.get::<AppSession>("app").await.unwrap();
-    ///     }));
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<RedisClient>>) {
+    ///     session.get::<AppSession>("app").await.unwrap();
+    /// }
     /// ```
-    #[tracing::instrument(name = "getting value for field from session store", skip(self, field))]
+    #[tracing::instrument(
+        name = "getting value for field from the session store",
+        skip(self, field)
+    )]
     pub async fn get<T>(&self, field: &str) -> Result<Option<T>>
     where
         T: Clone + Send + Sync + DeserializeOwned,
@@ -101,15 +95,18 @@ where
         }
     }
 
-    /// Retrieves all values from the session store.
-    #[tracing::instrument(name = "getting session from store", skip(self))]
-    pub async fn get_all<T>(&self) -> Result<Option<HashMap<String, T>>>
+    /// Retrieves values for all fields from the session store.
+    #[tracing::instrument(
+        name = "getting values for all fields from the session store",
+        skip(self)
+    )]
+    pub async fn get_all<T>(&self) -> Result<Option<T>>
     where
         T: Clone + Send + Sync + DeserializeOwned,
     {
         match self.id() {
             Some(id) => self.inner.store.get_all(&id).await.map_err(|err| {
-                tracing::error!(err = %err, "failed to get session from store");
+                tracing::error!(err = %err, "failed to get values for all fields from the session store");
                 err.into()
             }),
             None => {
@@ -126,43 +123,40 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use axum::{Router, routing::get};
     /// use ruts::{Session};
     /// use fred::clients::RedisClient;
-    /// use serde::{Deserialize, Serialize};
+    /// use serde::Serialize;
     /// use ruts::store::redis::RedisStore;
     ///
-    /// #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    /// #[derive(Serialize)]
     /// struct User {
     ///     id: i64,
     ///     name: String,
     /// }
     ///
-    /// #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    /// #[derive(Serialize)]
     /// enum Theme {
     ///     Light,
-    ///     #[default]
     ///     Dark,
     /// }
     ///
-    /// #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    /// #[derive(Serialize)]
     /// struct AppSession {
-    ///     user: Option<User>,
+    ///     user: User,
     ///     theme: Option<Theme>,
     /// }
     ///
-    /// let _: Router<()> = Router::new()
-    ///     .route("/set", get(|session: Session<RedisStore<RedisClient>>| async move {
-    ///         let app = AppSession {
-    ///             user: Some(User {
-    ///                 id: 34895634,
-    ///                 name: String::from("John Doe"),
-    ///             }),
-    ///             theme: Some(Theme::Dark),
-    ///         };
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<RedisClient>>) {
+    ///     let app = AppSession {
+    ///             user: User {
+    ///             id: 34895634,
+    ///             name: String::from("John Doe"),
+    ///         },
+    ///         theme: Some(Theme::Dark),
+    ///     };
     ///
-    ///         session.insert("app", &app).await.unwrap();
-    ///     }));
+    ///     session.insert("app", &app).await.unwrap();
+    /// }
     /// ```
     #[tracing::instrument(
         name = "inserting field-value to session store",
@@ -199,43 +193,40 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use axum::{Router, routing::get};
     /// use ruts::{Session};
     /// use fred::clients::RedisClient;
-    /// use serde::{Deserialize, Serialize};
+    /// use serde::Serialize;
     /// use ruts::store::redis::RedisStore;
     ///
-    /// #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    /// #[derive(Serialize)]
     /// struct User {
     ///     id: i64,
     ///     name: String,
     /// }
     ///
-    /// #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    /// #[derive(Serialize)]
     /// enum Theme {
     ///     Light,
-    ///     #[default]
     ///     Dark,
     /// }
     ///
-    /// #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    /// #[derive(Serialize)]
     /// struct AppSession {
-    ///     user: Option<User>,
+    ///     user: User,
     ///     theme: Option<Theme>,
     /// }
     ///
-    /// let _: Router<()> = Router::new()
-    ///     .route("/update", get(|session: Session<RedisStore<RedisClient>>| async move {
-    ///         let app = AppSession {
-    ///             user: Some(User {
-    ///                 id: 21342365,
-    ///                 name: String::from("Jane Doe"),
-    ///             }),
-    ///             theme: Some(Theme::Light),
-    ///         };
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<RedisClient>>) {
+    ///     let app = AppSession {
+    ///         user: User {
+    ///             id: 21342365,
+    ///             name: String::from("Jane Doe"),
+    ///         },
+    ///         theme: Some(Theme::Light),
+    ///     };
     ///
-    ///         session.update("app-2", &app).await.unwrap();
-    ///     }));
+    ///     let updated = session.update("app", &app).await.unwrap();
+    /// }
     /// ```
     #[tracing::instrument(name = "updating field in session store", skip(self, field, value))]
     pub async fn update<T>(&self, field: &str, value: &T) -> Result<bool>
@@ -260,28 +251,26 @@ where
         Ok(updated)
     }
 
-    /// Removes a key-value pair from the session store.
+    /// Removes a field along with its value from the session store.
     ///
-    /// Returns `true` if the pair was successfully removed.
+    /// Returns `true` if the field was successfully removed.
     ///
     /// # Example
     ///
     /// ```rust
-    /// use axum::{Router, routing::get};
     /// use ruts::{Session};
     /// use fred::clients::RedisClient;
     /// use ruts::store::redis::RedisStore;
     ///
-    /// let _: Router<()> = Router::new()
-    ///     .route("/remove", get(|session: Session<RedisStore<RedisClient>>| async move {
-    ///         session.remove("app").await.unwrap();
-    ///     }));
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<RedisClient>>) {
+    ///     let removed = session.remove("app").await.unwrap();
+    /// }
     /// ```
     #[tracing::instrument(name = "removing field from session store", skip(self, field))]
     pub async fn remove(&self, field: &str) -> Result<i8> {
         let id = self.id();
         if id.is_none() {
-            tracing::error!("the session has not been initialized");
+            tracing::error!("session not initialized");
             return Err(Error::UnInitialized);
         }
 
@@ -305,22 +294,19 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use axum::{Router, routing::get};
     /// use ruts::{Session};
     /// use fred::clients::RedisClient;
     /// use ruts::store::redis::RedisStore;
     ///
-    ///
-    /// let _: Router<()> = Router::new()
-    ///     .route("/delete", get(|session: Session<RedisStore<RedisClient>>| async move {
-    ///         session.delete().await.unwrap();
-    ///     }));
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<RedisClient>>) {
+    ///     let deleted = session.delete().await.unwrap();
+    /// }
     /// ```
     #[tracing::instrument(name = "deleting session from store", skip(self))]
     pub async fn delete(&self) -> Result<bool> {
         let id = self.id();
         if id.is_none() {
-            tracing::error!("the session has not been initialized");
+            tracing::error!("session not initialized");
             return Err(Error::UnInitialized);
         }
 
@@ -336,7 +322,7 @@ where
         Ok(deleted)
     }
 
-    /// Updates the session expiry time.
+    /// Updates the cookie's max-age and session expiry time in the store.
     ///
     /// A value of -1 or 0 immediately expires the session and deletes it.
     ///
@@ -345,15 +331,13 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use axum::{Router, routing::get};
     /// use ruts::{Session};
     /// use fred::clients::RedisClient;
     /// use ruts::store::redis::RedisStore;
     ///
-    /// let _: Router<()> = Router::new()
-    ///     .route("/expire", get(|session: Session<RedisStore<RedisClient>>| async move {
-    ///         session.expire(30).await.unwrap();
-    ///     }));
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<RedisClient>>) {
+    ///     session.expire(30).await.unwrap();
+    /// }
     /// ```
     #[tracing::instrument(name = "updating session expiry", skip(self, seconds))]
     pub async fn expire(&self, seconds: i64) -> Result<bool> {
@@ -363,25 +347,31 @@ where
 
         let id = self.id();
         if id.is_none() {
-            tracing::error!("the session has not been initialized");
+            tracing::error!("session not initialized");
             return Err(Error::UnInitialized);
         }
 
-        let expired = self.inner
-            .store
-            .expire(&id.unwrap(), seconds)
+        self.set_expiration(seconds);
+        let expired = self
+            .regenerate()
             .await
             .map_err(|err| {
-                tracing::error!(err = %err, "failed to expire session");
+                tracing::error!(err = %err, "failed to update session expiry");
                 err
-            })?;
-
-        if expired {
-            self.regenerate().await?;
-        }
-
+            })?
+            .is_some();
 
         Ok(expired)
+    }
+
+    /// Updates the cookie max-age.
+    ///
+    /// Any subsequent call to `insert`, `update` or `regenerate` within this request cycle
+    /// will use this value.
+    ///
+    /// NOTE: This does not change the `max-age` value set in the `CookieOptions`.
+    pub fn set_expiration(&self, seconds: i64) {
+        self.inner.cookie_max_age.store(seconds, Ordering::Relaxed)
     }
 
     /// Regenerates the session with a new ID.
@@ -391,21 +381,20 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use axum::{Router, routing::get};
     /// use ruts::{Session};
     /// use fred::clients::RedisClient;
     /// use ruts::store::redis::RedisStore;
     ///
-    /// let _: Router<()> = Router::new()
-    ///     .route("/regenerate", get(|session: Session<RedisStore<RedisClient>>| async move {
-    ///         let id = session.regenerate().await.unwrap();
-    ///     }));
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<RedisClient>>) {
+    ///     let id = session.regenerate().await.unwrap();
+    /// }
     /// ```
     #[tracing::instrument(name = "regenerating session id", skip(self))]
     pub async fn regenerate(&self) -> Result<Option<Id>> {
         let old_id = self.id();
         let new_id = Id::default();
-        let renamed = self.inner
+        let renamed = self
+            .inner
             .store
             .rename_session_id(&old_id.unwrap(), &new_id, self.max_age())
             .await
@@ -435,12 +424,7 @@ where
     }
 
     fn max_age(&self) -> i64 {
-        self.inner
-            .cookie_options
-            .as_ref()
-            .as_ref()
-            .map(|options| options.max_age)
-            .unwrap_or(0)
+        self.inner.cookie_max_age.load(Ordering::Relaxed)
     }
 
     fn changed(&self) {
@@ -542,7 +526,8 @@ pub struct Inner<T: SessionStore> {
     pub changed: AtomicBool,
     // set when the session is deleted
     pub deleted: AtomicBool,
-    pub cookie_options: Arc<Option<CookieOptions>>,
+    pub cookie_max_age: AtomicI64,
+    pub cookie_name: Option<&'static str>,
     pub cookies: Mutex<Option<Cookies>>,
     pub store: Arc<T>,
 }

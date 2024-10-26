@@ -28,7 +28,7 @@ where
         })?;
 
         // Cookies are only used if the SessionLayer has a cookie_options set.
-        let cookie_options = &inner_session.cookie_options.ok_or_else(|| {
+        let cookie_name = inner_session.cookie_name.ok_or_else(|| {
             tracing::error!("missing cookie options");
             (StatusCode::INTERNAL_SERVER_ERROR, "missing cookie options")
         })?;
@@ -44,7 +44,7 @@ where
         let mut cookies = inner_session.cookies.lock();
         *cookies = Some(cookies_ext.to_owned());
 
-        if let Some(cookie) = cookies.as_ref().unwrap().get(cookie_options.name) {
+        if let Some(cookie) = cookies.as_ref().unwrap().get(cookie_name) {
             let session_id = cookie
                 .value()
                 .parse::<Id>()
