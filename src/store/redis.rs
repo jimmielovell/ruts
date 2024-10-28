@@ -187,8 +187,6 @@ where
             .await
             .map_err(RedisStoreError::Redis)?;
 
-        println!("Removed {removed} keys");
-
         Ok(removed)
     }
 
