@@ -1,11 +1,11 @@
 //! Session management for web applications.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::{result, sync::Arc};
-
 use cookie::SameSite;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use serde::{de::DeserializeOwned, Serialize};
+use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
+use std::sync::OnceLock;
+use std::{result, sync::Arc};
 
 use thiserror::Error;
 use tower_cookies::Cookies;
@@ -49,7 +49,7 @@ where
     ///
     /// ```rust
     /// use ruts::{Session};
-    /// use fred::clients::RedisClient;
+    /// use fred::clients::Client;
     /// use serde::Deserialize;
     /// use ruts::store::redis::RedisStore;
     ///
@@ -71,7 +71,7 @@ where
     ///     theme: Option<Theme>,
     /// }
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<RedisClient>>) {
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
     ///     session.get::<AppSession>("app").await.unwrap();
     /// }
     /// ```
@@ -124,7 +124,7 @@ where
     ///
     /// ```rust
     /// use ruts::{Session};
-    /// use fred::clients::RedisClient;
+    /// use fred::clients::Client;
     /// use serde::Serialize;
     /// use ruts::store::redis::RedisStore;
     ///
@@ -146,7 +146,7 @@ where
     ///     theme: Option<Theme>,
     /// }
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<RedisClient>>) {
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
     ///     let app = AppSession {
     ///             user: User {
     ///             id: 34895634,
@@ -166,7 +166,7 @@ where
     where
         T: Send + Sync + Serialize,
     {
-        let id = self.id_or_gen();
+        let id = self.inner.get_or_set_id();
         let inserted = self
             .inner
             .store
@@ -178,7 +178,7 @@ where
             })?;
 
         if inserted {
-            self.changed();
+            self.is_changed();
         }
 
         Ok(inserted)
@@ -194,7 +194,7 @@ where
     ///
     /// ```rust
     /// use ruts::{Session};
-    /// use fred::clients::RedisClient;
+    /// use fred::clients::Client;
     /// use serde::Serialize;
     /// use ruts::store::redis::RedisStore;
     ///
@@ -216,7 +216,7 @@ where
     ///     theme: Option<Theme>,
     /// }
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<RedisClient>>) {
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
     ///     let app = AppSession {
     ///         user: User {
     ///             id: 21342365,
@@ -233,7 +233,7 @@ where
     where
         T: Send + Sync + Serialize,
     {
-        let id = self.id_or_gen();
+        let id = self.inner.get_or_set_id();
         let updated = self
             .inner
             .store
@@ -245,7 +245,7 @@ where
             })?;
 
         if updated {
-            self.changed();
+            self.is_changed();
         }
 
         Ok(updated)
@@ -259,10 +259,10 @@ where
     ///
     /// ```rust
     /// use ruts::{Session};
-    /// use fred::clients::RedisClient;
+    /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<RedisClient>>) {
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
     ///     let removed = session.remove("app").await.unwrap();
     /// }
     /// ```
@@ -295,10 +295,10 @@ where
     ///
     /// ```rust
     /// use ruts::{Session};
-    /// use fred::clients::RedisClient;
+    /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<RedisClient>>) {
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
     ///     let deleted = session.delete().await.unwrap();
     /// }
     /// ```
@@ -316,7 +316,7 @@ where
         })?;
 
         if deleted {
-            self.deleted();
+            self.is_deleted();
         }
 
         Ok(deleted)
@@ -332,10 +332,10 @@ where
     ///
     /// ```rust
     /// use ruts::{Session};
-    /// use fred::clients::RedisClient;
+    /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<RedisClient>>) {
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
     ///     session.expire(30).await.unwrap();
     /// }
     /// ```
@@ -382,10 +382,10 @@ where
     ///
     /// ```rust
     /// use ruts::{Session};
-    /// use fred::clients::RedisClient;
+    /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<RedisClient>>) {
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
     ///     let id = session.regenerate().await.unwrap();
     /// }
     /// ```
@@ -405,7 +405,7 @@ where
 
         if renamed {
             *self.inner.id.write() = Some(new_id);
-            self.changed();
+            self.is_changed();
             return Ok(Some(new_id));
         }
 
@@ -414,25 +414,19 @@ where
 
     /// Returns the session ID, if it exists.
     pub fn id(&self) -> Option<Id> {
-        *self.inner.id.read()
-    }
-
-    fn id_or_gen(&self) -> Id {
-        let mut id_guard = self.inner.id.write();
-        let id = id_guard.get_or_insert(Id::default());
-        *id
+        self.inner.get_id()
     }
 
     fn max_age(&self) -> i64 {
         self.inner.cookie_max_age.load(Ordering::Relaxed)
     }
 
-    fn changed(&self) {
-        self.inner.changed.store(true, Ordering::Relaxed);
+    fn is_changed(&self) {
+        self.inner.is_changed();
     }
 
-    fn deleted(&self) {
-        self.inner.deleted.store(true, Ordering::Relaxed);
+    fn is_deleted(&self) {
+        self.inner.is_deleted();
     }
 }
 
@@ -519,15 +513,71 @@ impl CookieOptions {
     }
 }
 
+const SESSION_STATE_CHANGED: u8 = 0b01;
+const SESSION_STATE_DELETED: u8 = 0b10;
+const DEFAULT_COOKIE_MAX_AGE: i64 = 10 * 60;
+
 #[derive(Debug)]
 pub struct Inner<T: SessionStore> {
+    pub state: AtomicU8,
     pub id: RwLock<Option<Id>>,
-    // set when a new value is inserted or removed
-    pub changed: AtomicBool,
-    // set when the session is deleted
-    pub deleted: AtomicBool,
     pub cookie_max_age: AtomicI64,
     pub cookie_name: Option<&'static str>,
-    pub cookies: Mutex<Option<Cookies>>,
+    pub cookies: OnceLock<Cookies>,
     pub store: Arc<T>,
+}
+
+impl<T: SessionStore> Inner<T> {
+    pub fn new(
+        store: Arc<T>,
+        cookie_name: Option<&'static str>,
+        cookie_max_age: Option<i64>,
+    ) -> Self {
+        Self {
+            state: AtomicU8::new(0),
+            id: RwLock::new(None),
+            cookie_max_age: AtomicI64::new(cookie_max_age.unwrap_or(DEFAULT_COOKIE_MAX_AGE)),
+            cookie_name,
+            cookies: OnceLock::new(),
+            store,
+        }
+    }
+
+    pub fn is_changed(&self) -> bool {
+        self.state.load(Ordering::Relaxed) & SESSION_STATE_CHANGED != 0
+    }
+
+    pub fn is_deleted(&self) -> bool {
+        self.state.load(Ordering::Relaxed) & SESSION_STATE_DELETED != 0
+    }
+
+    pub fn get_id(&self) -> Option<Id> {
+        *self.id.read()
+    }
+
+    pub fn get_or_set_id(&self) -> Id {
+        *self.id.write().get_or_insert(Id::default())
+    }
+
+    pub fn set_id(&self, id: Option<Id>) {
+        *self.id.write() = id;
+    }
+
+    pub fn set_changed(&self) {
+        self.state
+            .fetch_or(SESSION_STATE_CHANGED, Ordering::Relaxed);
+    }
+
+    pub fn set_deleted(&self) {
+        self.state
+            .fetch_or(SESSION_STATE_DELETED, Ordering::Relaxed);
+    }
+
+    pub fn get_cookies(&self) -> Option<&Cookies> {
+        self.cookies.get()
+    }
+
+    pub fn set_cookies_if_empty(&self, cookies: Cookies) -> bool {
+        self.cookies.set(cookies).is_ok()
+    }
 }

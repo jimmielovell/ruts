@@ -1,5 +1,5 @@
 use axum::{routing::get, Router};
-use fred::clients::RedisClient;
+use fred::clients::Client;
 use fred::interfaces::ClientLike;
 use ruts::store::redis::RedisStore;
 use ruts::{CookieOptions, Session, SessionLayer};
@@ -9,7 +9,7 @@ use tower_cookies::CookieManagerLayer;
 #[tokio::main]
 async fn main() {
     // Set up Redis client
-    let client = RedisClient::default();
+    let client = Client::default();
     client.init().await.unwrap();
 
     // Create session store
@@ -38,7 +38,7 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn handler(session: Session<RedisStore<RedisClient>>) -> String {
+async fn handler(session: Session<RedisStore<Client>>) -> String {
     // Use the session in your handler
     let count: i32 = session
         .get("count")

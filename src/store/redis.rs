@@ -1,10 +1,7 @@
 use async_trait::async_trait;
-use fred::clients::RedisPool;
-use fred::types::{RedisKey, RedisValue};
-use fred::{
-    error::RedisError,
-    interfaces::{HashesInterface, KeysInterface},
-};
+use fred::clients::Pool;
+use fred::interfaces::{HashesInterface, KeysInterface};
+use fred::types::{Key, Value};
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::HashMap;
 use std::{fmt::Debug, sync::Arc};
@@ -15,7 +12,7 @@ use crate::Id;
 #[derive(thiserror::Error, Debug)]
 pub enum RedisStoreError {
     #[error(transparent)]
-    Redis(#[from] RedisError),
+    Redis(#[from] fred::error::Error),
 
     #[error(transparent)]
     Decode(#[from] rmp_serde::decode::Error),
@@ -35,7 +32,7 @@ impl From<RedisStoreError> for Error {
 }
 
 #[derive(Clone, Debug)]
-pub struct RedisStore<C: HashesInterface + KeysInterface + Clone + Send + Sync = RedisPool> {
+pub struct RedisStore<C: HashesInterface + KeysInterface + Clone + Send + Sync = Pool> {
     client: Arc<C>,
 }
 
@@ -48,7 +45,7 @@ where
     }
 }
 
-impl From<&Id> for RedisKey {
+impl From<&Id> for Key {
     fn from(value: &Id) -> Self {
         value.to_string().into()
     }
@@ -145,7 +142,7 @@ where
     where
         T: Send + Sync + Serialize,
     {
-        let map: HashMap<RedisKey, RedisValue> =
+        let map: HashMap<Key, Value> =
             HashMap::from([(field.into(), self.serialize_value(value)?.as_slice().into())]);
 
         let updated: bool = self
@@ -201,7 +198,7 @@ where
     async fn expire(&self, session_id: &Id, seconds: i64) -> Result<bool, Error> {
         Ok(self
             .client
-            .expire(session_id, seconds)
+            .expire(session_id, seconds, None)
             .await
             .map_err(RedisStoreError::Redis)?)
     }

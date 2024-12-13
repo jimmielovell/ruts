@@ -4,7 +4,6 @@
 //! session management into tower applications.
 
 use http::{Request, Response};
-use parking_lot::{Mutex, RwLock};
 use tower::{Layer, Service};
 use tower_cookies::{Cookie, Cookies};
 
@@ -15,7 +14,6 @@ use cookie::time::Duration;
 use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
@@ -61,20 +59,12 @@ where
 
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
         let (cookie_name, cookie_max_age) = if let Some(cookie_options) = &self.cookie_options {
-            (Some(cookie_options.name), cookie_options.max_age)
+            (Some(cookie_options.name), Some(cookie_options.max_age))
         } else {
-            (None, 0)
+            (None, None)
         };
 
-        let inner_session = Inner {
-            id: RwLock::new(None),
-            cookies: Mutex::new(None),
-            cookie_max_age: AtomicI64::new(cookie_max_age),
-            cookie_name,
-            store: Arc::clone(&self.store),
-            changed: AtomicBool::new(false),
-            deleted: AtomicBool::new(false),
-        };
+        let inner_session = Inner::new(Arc::clone(&self.store), cookie_name, cookie_max_age);
         let inner_session = Arc::new(inner_session);
         req.extensions_mut().insert(inner_session.clone());
 
@@ -91,7 +81,7 @@ where
 /// # Example
 ///
 /// ```rust
-/// use fred::clients::RedisClient;
+/// use fred::clients::Client;
 /// use ruts::{CookieOptions, Session, SessionLayer};
 /// use ruts::store::redis::RedisStore;
 /// use std::sync::Arc;
@@ -104,7 +94,7 @@ where
 ///         .secure(true)
 ///         .max_age(1 * 60)
 ///         .path("/");///
-/// let client = RedisClient::default();
+/// let client = Client::default();
 /// // Initialize the client///
 /// let store = RedisStore::new(Arc::new(client));
 /// let session_layer = SessionLayer::new(Arc::new(store))
@@ -175,21 +165,21 @@ where
         let this = self.project();
         let res = ready!(this.future.poll(cx)?);
 
-        let inner_session = this.inner_session;
-
-        if inner_session.deleted.load(Ordering::Relaxed) {
-            if let Some(cookie_options) = this.cookie_options {
-                if let Some(cookies) = inner_session.cookies.lock().as_ref() {
-                    let cookie = Cookie::build(cookie_options.name);
-                    cookies.remove(cookie.build());
-                }
+        if this.inner_session.is_deleted() {
+            if let (Some(cookie_options), Some(cookies)) = (
+                this.cookie_options.as_ref(),
+                this.inner_session.get_cookies(),
+            ) {
+                let cookie = Cookie::build(cookie_options.name);
+                cookies.remove(cookie.build());
             }
-        } else if inner_session.changed.load(Ordering::Relaxed) {
-            if let Some(cookie_options) = this.cookie_options {
-                if let Some(cookies) = inner_session.cookies.lock().as_ref() {
-                    if let Some(id) = inner_session.id.read().as_ref() {
-                        build_cookie(id, cookie_options, cookies);
-                    }
+        } else if this.inner_session.is_changed() {
+            if let (Some(cookie_options), Some(cookies)) = (
+                this.cookie_options.as_ref(),
+                this.inner_session.get_cookies(),
+            ) {
+                if let Some(id) = this.inner_session.id.read().as_ref() {
+                    build_cookie(id, cookie_options, cookies);
                 }
             }
         }

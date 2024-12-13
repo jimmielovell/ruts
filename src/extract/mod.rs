@@ -19,7 +19,7 @@ where
     type Rejection = (StatusCode, &'static str);
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let inner_session = parts.extensions.get::<Arc<Inner<T>>>().ok_or_else(|| {
+        let session_inner = parts.extensions.get::<Arc<Inner<T>>>().ok_or_else(|| {
             tracing::error!("session layer not found in the request extensions");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -28,7 +28,7 @@ where
         })?;
 
         // Cookies are only used if the SessionLayer has a cookie_options set.
-        let cookie_name = inner_session.cookie_name.ok_or_else(|| {
+        let cookie_name = session_inner.cookie_name.ok_or_else(|| {
             tracing::error!("missing cookie options");
             (StatusCode::INTERNAL_SERVER_ERROR, "missing cookie options")
         })?;
@@ -41,10 +41,9 @@ where
             )
         })?;
 
-        let mut cookies = inner_session.cookies.lock();
-        *cookies = Some(cookies_ext.to_owned());
+        session_inner.set_cookies_if_empty(cookies_ext.to_owned());
 
-        if let Some(cookie) = cookies.as_ref().unwrap().get(cookie_name) {
+        if let Some(cookie) = cookies_ext.get(cookie_name) {
             let session_id = cookie
                 .value()
                 .parse::<Id>()
@@ -55,9 +54,9 @@ where
                     )
                 })
                 .ok();
-            *inner_session.id.write() = session_id;
+            session_inner.set_id(session_id);
         }
 
-        Ok(Session::new(inner_session.clone()))
+        Ok(Session::new(session_inner.clone()))
     }
 }

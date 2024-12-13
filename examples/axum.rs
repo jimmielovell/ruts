@@ -1,6 +1,6 @@
 use axum::routing::get;
 use axum::{Json, Router};
-use fred::clients::RedisClient;
+use fred::clients::Client;
 use fred::interfaces::ClientLike;
 use ruts::store::redis::RedisStore;
 use ruts::{CookieOptions, Session, SessionLayer};
@@ -9,7 +9,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use tower_cookies::CookieManagerLayer;
 
-type RedisSession = Session<RedisStore<RedisClient>>;
+type RedisSession = Session<RedisStore<Client>>;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct User {
@@ -114,7 +114,7 @@ fn routes() -> Router {
 #[tokio::main]
 async fn main() {
     // Set up Redis client
-    let client = RedisClient::default();
+    let client = Client::default();
     client.init().await.unwrap();
 
     // Create session store
