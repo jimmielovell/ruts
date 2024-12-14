@@ -1,3 +1,14 @@
+# Changelog
+
+## [0.4.2] - 2024-12-14
+### Fixed
+- Match Cargo.toml version and install version in the README.md
+
+## [0.4.0] - 2024-12-14
+### Added
+- New `MemoryStore` implementation for development and testing environments
+- Comprehensive test suite for redis and axum session extraction
+
 ## [0.4.0] - 2024-12-14
 ### Added
 - New `MemoryStore` implementation for development and testing environments
