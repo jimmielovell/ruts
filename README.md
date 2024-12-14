@@ -1,6 +1,15 @@
 # Ruts: Rust Tower Session for HTTP Applications
 
-Ruts is a robust, flexible session management library for Rust web applications. It provides a seamless way to handle user sessions in tower-based web frameworks, with a focus on security, performance, and ease of use.
+Ruts is a robust, flexible session management library for Rust web applications. It provides a seamless way to handle cookie sessions in tower-based web frameworks, with a focus on security, performance, and ease of use.
+
+## Features
+
+- 🚀 High-performance session management
+- 🔒 Secure by default with configurable options
+- 🔄 Built-in Redis session store support
+- 🛠 Flexible API supporting custom session stores
+- ⚡ Optimized for tower-based frameworks like axum
+- 🍪 Comprehensive cookie management
 
 ## Installation
 
@@ -8,18 +17,18 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruts = "0.2.0"
+ruts = "0.3.0"
 ```
 
 ## Quick Start
 
-Here's a basic example of how to use `ruts` with [axum](https://docs.rs/axum/latest/axum/):
+Here's a basic example using `ruts` with [axum](https://docs.rs/axum/latest/axum/):
 
 ```rust
 use axum::{Router, routing::get};
 use ruts::{Session, SessionLayer, CookieOptions};
 use ruts::store::redis::RedisStore;
-use fred::clients::RedisClient;
+use fred::clients::Client;
 use std::sync::Arc;
 use fred::interfaces::ClientLike;
 use tower_cookies::CookieManagerLayer;
@@ -27,8 +36,9 @@ use tower_cookies::CookieManagerLayer;
 #[tokio::main]
 async fn main() {
     // Set up Redis client
-    let client = RedisClient::default();
-    client.init().await.unwrap();
+    let client = Client::default();
+    client.connect();
+    client.wait_for_connect().await.unwrap();
 
     // Create session store
     let store = RedisStore::new(Arc::new(client));
@@ -49,74 +59,107 @@ async fn main() {
     // Set up router with session management
     let app = Router::new()
         .route("/", get(handler))
-        .layer(session_layer)
-        .layer(CookieManagerLayer::new());
+        .layer(session_layer)             // SessionLayer must be below
+        .layer(CookieManagerLayer::new()); // CookieManagerLayer must be on top
 
     // Run the server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn handler(session: Session<RedisStore<RedisClient>>) -> String {
-    // Use the session in your handler
-    let count: i32 = session.get("count").await.map_err(|err| {
-        println!("{err:?}");
-    }).unwrap().unwrap_or(0);
-    session.update("count", count + 1).await.unwrap();
-    format!("You've visited this page {} times", count + 1)
+async fn handler(session: Session<RedisStore<Client>>) -> String {
+    let count: Option<i32> = session.get("count").await.unwrap();
+    let new_count = count.unwrap_or(0) + 1;
+    session.insert("count", &new_count).await.unwrap();
+    format!("You've visited this page {} times", new_count)
 }
 ```
 
-## Usage
+## Session Management
 
-### Setting Up the `SessionLayer` with `cookie` support
-
-```rust
-let store = RedisStore::new(Arc::new(redis_client));
-let session_layer = SessionLayer::new(Arc::new(store))
-    .with_cookie_options(CookieOptions::build().name("session").max_age(3600));
-```
-
-### Setting Up the `SessionLayer` without `cookie` support
+### Basic Operations
 
 ```rust
-let store = RedisStore::new(Arc::new(redis_client));
-let session_layer = SessionLayer::new(Arc::new(store));
+// Get session data
+let value = session.get::<ValueType>("key").await?;
+
+// Insert new data
+session.insert::<ValueType>("key", &value).await?;
+
+// Update existing data
+session.update::<ValueType>("key", &new_value).await?;
+
+// Remove data
+session.remove("key").await?;
+
+// Delete entire session
+session.delete().await?;
+
+// Regenerate session ID (for security)
+session.regenerate().await?;
+
+// Update session expiry
+session.expire(seconds)
+
+// Get session ID
+session.id()
 ```
 
-### Using Sessions in `axum request handlers`
+### Session Store Configuration
 
-`ruts` provides an `extractor` for [axum](https://docs.rs/axum/latest/axum/) that allows you to easily access the session in your request handlers:
-
+#### Redis Store (Default)
 ```rust
-async fn handler(session: Session<RedisStore<RedisClient>>) -> impl IntoResponse {
-    // Use session methods here
-}
+use ruts::store::redis::RedisStore;
+
+let store = RedisStore::new(Arc::new(fred_client_or_pool));
 ```
 
-## Configuration
-
-You can customize various aspects of session management using `CookieOptions`:
+### Cookie Configuration
 
 ```rust
 let cookie_options = CookieOptions::build()
-    .name("custom_session")
+    .name("cookie_name")
     .http_only(true)
     .same_site(cookie::SameSite::Strict)
     .secure(true)
     .max_age(7200) // 2 hours
-    .path("/app");
+    .path("/")
+    .domain("example.com");  // Optional
 ```
 
-## Security Considerations
+## Important Notes
 
-- Always use HTTPS in production to protect session cookies.
-- Set appropriate `SameSite` and `Secure` flags for cookies.
-- Regularly regenerate session IDs to prevent session fixation attacks.
+### Middleware Ordering
+When using cookie-based sessions, the SessionLayer must be applied **before** the CookieManagerLayer:
+
+```rust
+app.layer(session_layer)              // First: Session layer
+   .layer(CookieManagerLayer::new()); // Then: Cookie layer on top
+```
+
+### Security Best Practices
+
+- Enable HTTPS in production (set `secure: true` in cookie options)
+- Use appropriate `SameSite` cookie settings
+- Implement session expiration
+- Regularly regenerate session IDs
+- Set proper cookie attributes (`http_only: true`)
+
+## Error Handling
+
+The library provides a comprehensive error type for handling various session-related errors:
+
+```rust
+match session.get::<User>("user").await {
+    Ok(Some(user)) => { /* Handle user */ }
+    Ok(None) => { /* No user found */ }
+    Err(e) => { /* Handle error */ }
+}
+```
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please feel free to submit issues and pull requests.
 
 ## License
 
