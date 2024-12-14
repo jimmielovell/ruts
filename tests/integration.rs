@@ -75,8 +75,8 @@ mod tests {
             .route("/get", get(get_session_data))
             .route("/regenerate", get(regenerate_session))
             .route("/delete", get(delete_session))
-            .layer(CookieManagerLayer::new())
             .layer(session_layer)
+            .layer(CookieManagerLayer::new())
     }
 
     #[tokio::test]

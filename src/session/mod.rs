@@ -178,7 +178,7 @@ where
             })?;
 
         if inserted {
-            self.is_changed();
+            self.inner.set_changed();
         }
 
         Ok(inserted)
@@ -245,7 +245,7 @@ where
             })?;
 
         if updated {
-            self.is_changed();
+            self.inner.set_changed();
         }
 
         Ok(updated)
@@ -316,7 +316,7 @@ where
         })?;
 
         if deleted {
-            self.is_deleted();
+            self.inner.set_deleted();
         }
 
         Ok(deleted)
@@ -361,6 +361,10 @@ where
             })?
             .is_some();
 
+        if expired {
+            self.inner.set_changed();
+        }
+
         Ok(expired)
     }
 
@@ -371,7 +375,7 @@ where
     ///
     /// NOTE: This does not change the `max-age` value set in the `CookieOptions`.
     pub fn set_expiration(&self, seconds: i64) {
-        self.inner.cookie_max_age.store(seconds, Ordering::Relaxed)
+        self.inner.cookie_max_age.store(seconds, Ordering::Relaxed);
     }
 
     /// Regenerates the session with a new ID.
@@ -405,7 +409,7 @@ where
 
         if renamed {
             *self.inner.id.write() = Some(new_id);
-            self.is_changed();
+            self.inner.set_changed();
             return Ok(Some(new_id));
         }
 
