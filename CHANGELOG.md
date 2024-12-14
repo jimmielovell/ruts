@@ -1,13 +1,12 @@
 ## [Unreleased]
+### Added
+- New `MemoryStore` implementation for development and testing environments
+- Comprehensive test suite for redis and axum session extraction
+
 ### Changed
 - Improved session state management by combining state flags into a single `AtomicU8`
 - Replaced `Mutex<Option<Cookies>>` with `OnceLock<Cookies>` for better performance
 - Updated internal session management to use more efficient state handling
-
-### Added
-- Comprehensive test suite for axum session extraction
-- Integration tests for Redis session store
-- Tests for session lifecycle and state management
 
 # 0.3.0
 ### Added
