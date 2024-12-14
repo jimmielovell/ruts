@@ -49,9 +49,13 @@ name = "counter"
 path = "examples/counter.rs"
 
 [[test]]
-name = "integration"
-path = "tests/integration.rs"
+name = "core"
+path = "tests/core.rs"
 
 [[test]]
-name = "basic"
-path = "tests/basic.rs"
+name = "axum"
+path = "tests/axum.rs"
+
+[[test]]
+name = "redis"
+path = "tests/redis.rs"
