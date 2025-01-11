@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use parking_lot::RwLock;
-use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::store::{Error, SessionStore};
@@ -53,7 +52,6 @@ impl MemoryStore {
     }
 }
 
-#[async_trait]
 impl SessionStore for MemoryStore {
     async fn get<T>(&self, session_id: &Id, field: &str) -> Result<Option<T>, Error>
     where

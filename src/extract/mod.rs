@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use axum_core::extract::FromRequestParts;
 use http::{request::Parts, StatusCode};
 use tower_cookies::Cookies;
@@ -10,7 +9,6 @@ use crate::store::SessionStore;
 use crate::{Id, Session};
 
 /// axum extractor for [`Session`].
-#[async_trait]
 impl<S, T> FromRequestParts<S> for Session<T>
 where
     S: Sync + Send,

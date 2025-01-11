@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use fred::clients::Pool;
 use fred::interfaces::{HashesInterface, KeysInterface};
 use fred::types::{Key, Value};
@@ -78,7 +77,6 @@ where
     }
 }
 
-#[async_trait]
 impl<C> SessionStore for RedisStore<C>
 where
     C: HashesInterface + KeysInterface + Clone + Send + Sync + 'static,

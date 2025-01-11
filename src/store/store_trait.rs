@@ -1,4 +1,4 @@
-use async_trait::async_trait;
+use std::future::Future;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Debug;
 
@@ -16,15 +16,21 @@ pub enum Error {
     Backend(String),
 }
 
-#[async_trait]
 pub trait SessionStore: Clone + Send + Sync + 'static {
     /// Gets the `value` for a `field` stored at `session_id`
-    async fn get<T>(&self, session_id: &Id, field: &str) -> Result<Option<T>, Error>
+    fn get<T>(
+        &self,
+        session_id: &Id,
+        field: &str
+    ) -> impl Future<Output = Result<Option<T>, Error>> + Send
     where
         T: Clone + Send + Sync + DeserializeOwned;
 
     /// Gets all the `field`-`value` pairs stored at `session_id`
-    async fn get_all<T>(&self, session_id: &Id) -> Result<Option<T>, Error>
+    fn get_all<T>(
+        &self,
+        session_id: &Id
+    ) -> impl Future<Output = Result<Option<T>, Error>> + Send
     where
         T: Clone + Send + Sync + DeserializeOwned;
 
@@ -32,13 +38,13 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
     /// only if the `field` does not exist.
     ///
     /// Returns `true` if the `field` was inserted, otherwise, `false` if the `field` already exists.
-    async fn insert<T>(
+    fn insert<T>(
         &self,
         session_id: &Id,
         field: &str,
         value: &T,
         seconds: i64,
-    ) -> Result<bool, Error>
+    ) -> impl Future<Output = Result<bool, Error>> + Send
     where
         T: Send + Sync + Serialize;
 
@@ -47,37 +53,48 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
     /// If the `field` does not exist, it is set to the corresponding `value`.
     ///
     /// Returns `true` if the `field` was updated, `false` if the `value` has not changed.
-    async fn update<T>(
+    fn update<T>(
         &self,
         session_id: &Id,
         field: &str,
         value: &T,
         seconds: i64,
-    ) -> Result<bool, Error>
+    ) -> impl Future<Output = Result<bool, Error>> + Send
     where
         T: Send + Sync + Serialize;
 
     /// Renames the `old_session_id` to `new_session_id` if the `old_session_id` exists.
     ///
     /// Returns an error when `old_session_id` does not exist.
-    async fn rename_session_id(
+    fn rename_session_id(
         &self,
         old_session_id: &Id,
         new_session_id: &Id,
         seconds: i64,
-    ) -> Result<bool, Error>;
+    ) -> impl Future<Output = Result<bool, Error>> + Send;
 
     /// Remove the `field` along with its `value` stored at `session_id`.
     ///
     /// Returns `1` if there are remaining keys or `0` otherwise.
-    async fn remove(&self, session_id: &Id, field: &str) -> Result<i8, Error>;
+    fn remove(
+        &self,
+        session_id: &Id,
+        field: &str
+    ) -> impl Future<Output = Result<i8, Error>> + Send;
 
     /// Deletes all `field`s along with its `value`s stored in the `session_id`.
-    async fn delete(&self, session_id: &Id) -> Result<bool, Error>;
+    fn delete(
+        &self,
+        session_id: &Id
+    ) -> impl Future<Output = Result<bool, Error>> + Send;
 
     /// Set a timeout on the `session_id`. After the timeout has expired,
     /// the `session_id` will be automatically deleted.
     ///
     /// A value of `-1` or `0` immediately expires the `session_id`.
-    async fn expire(&self, session_id: &Id, seconds: i64) -> Result<bool, Error>;
+    fn expire(
+        &self,
+        session_id: &Id,
+        seconds: i64
+    ) -> impl Future<Output = Result<bool, Error>> + Send;
 }
