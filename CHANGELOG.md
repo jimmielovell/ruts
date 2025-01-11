@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.5.0] - 2024-01-11
+
+### Breaking Changes
+- Migrated to native async traits with the following changes:
+  - Removed `#[async_trait]` attribute from `FromRequestParts` implementation to support Axum 0.8+ compatibility
+  - Refactored `SessionStore` trait to use explicit `Future` returns instead of `async fn`
+  - If you're using Axum < 0.8, please continue using ruts version 0.4.3
+
+### Added
+- Support for Axum 0.8+
+
+### Dependencies
+- Updated minimum supported Axum version to 0.8.0
+
+### Migration Guide
+If you're upgrading to Axum 0.8+ and using ruts:
+1. Update your Axum dependency to 0.8.0 or higher
+2. Update ruts to the latest version
+3. No additional code changes are required for session handling
+
+The session middleware and extractors will continue to work as before:
+```rust
+// Your code will continue to work unchanged
+async fn handler(
+    session: Session<RedisStore<Pool>>,
+    // ... other parameters
+) -> Result<(), Error> {
+    // ... your code
+}
+```
+
 ## [0.4.2] - 2024-12-14
 ### Fixed
 - Match Cargo.toml version and install version in the README.md

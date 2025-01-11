@@ -1,5 +1,11 @@
 # Ruts: Rust Tower Session for HTTP Applications
 
+[![Documentation](https://docs.rs/ruts/badge.svg)](https://docs.rs/ruts)
+[![Crates.io](https://img.shields.io/crates/v/ruts.svg)](https://crates.io/crates/ruts)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Rust](https://img.shields.io/badge/rust-1.75.0%2B-blue.svg?maxAge=3600)](
+github.com/jimmielovell/ruts)
+
 Ruts is a robust, flexible session management library for Rust web applications. It provides a seamless way to handle cookie sessions in tower-based web frameworks, with a focus on security, performance, and ease of use.
 
 ## Features
