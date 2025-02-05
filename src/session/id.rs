@@ -4,9 +4,8 @@ use base64::{DecodeError, Engine};
 use std::fmt::Display;
 use std::str::FromStr;
 use std::{fmt, str};
-
+use rand::{TryRngCore};
 use rand::rngs::OsRng;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, Hash, PartialEq)]
@@ -14,9 +13,8 @@ pub struct Id([u8; 16]);
 
 impl Default for Id {
     fn default() -> Self {
-        let mut rng = OsRng;
         let mut bytes = [0u8; 16];
-        rng.fill_bytes(&mut bytes);
+        OsRng.try_fill_bytes(&mut bytes).unwrap();
         Self(bytes)
     }
 }
