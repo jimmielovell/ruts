@@ -155,14 +155,14 @@ where
     ///         theme: Some(Theme::Dark),
     ///     };
     ///
-    ///     session.insert("app", &app).await.unwrap();
+    ///     session.insert("app", &app, Some(5)).await.unwrap();
     /// }
     /// ```
     #[tracing::instrument(
         name = "inserting field-value to session store",
         skip(self, field, value)
     )]
-    pub async fn insert<T>(&self, field: &str, value: &T) -> Result<bool>
+    pub async fn insert<T>(&self, field: &str, value: &T, field_expire: Option<i64>) -> Result<bool>
     where
         T: Send + Sync + Serialize,
     {
@@ -170,7 +170,7 @@ where
         let inserted = self
             .inner
             .store
-            .insert(&id, field, value, self.max_age())
+            .insert(&id, field, value, self.max_age(), field_expire)
             .await
             .map_err(|err| {
                 tracing::error!(err = %err, "failed to insert field-value to session store");
@@ -225,11 +225,11 @@ where
     ///         theme: Some(Theme::Light),
     ///     };
     ///
-    ///     let updated = session.update("app", &app).await.unwrap();
+    ///     let updated = session.update("app", &app, Some(5)).await.unwrap();
     /// }
     /// ```
     #[tracing::instrument(name = "updating field in session store", skip(self, field, value))]
-    pub async fn update<T>(&self, field: &str, value: &T) -> Result<bool>
+    pub async fn update<T>(&self, field: &str, value: &T, field_expire: Option<i64>) -> Result<bool>
     where
         T: Send + Sync + Serialize,
     {
@@ -237,7 +237,7 @@ where
         let updated = self
             .inner
             .store
-            .update(&id, field, value, self.max_age())
+            .update(&id, field, value, self.max_age(), field_expire)
             .await
             .map_err(|err| {
                 tracing::error!(err = %err, "failed to update field in session store");

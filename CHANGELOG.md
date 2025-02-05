@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Field-level expiration support using Redis HEXPIRE command
+- Support for optional field expiration in hash entries
+
+### Changed
+- Minimum Redis version requirement is now 7.4 due to HEXPIRE command usage
+
+### Notes
+- Users with Redis versions < 7.4 will need to handle field expiration differently or upgrade their Redis instance
+
 ## [0.5.0] - 2024-01-11
 
 ### Breaking Changes

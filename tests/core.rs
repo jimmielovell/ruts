@@ -5,10 +5,10 @@ mod tests {
     use super::*;
 
     use common::*;
-    use ruts::{Session, Inner};
     use ruts::store::MemoryStore;
-    use std::sync::Arc;
     use ruts::store::SessionStore;
+    use ruts::{Inner, Session};
+    use std::sync::Arc;
 
     fn create_inner<S: SessionStore>(
         store: Arc<S>,
@@ -30,7 +30,7 @@ mod tests {
         assert!(initial_get.is_none());
 
         // Test insert
-        let inserted = session.insert("test", &test_data).await.unwrap();
+        let inserted = session.insert("test", &test_data, None).await.unwrap();
         assert!(inserted);
 
         // Test get after insert
@@ -40,7 +40,7 @@ mod tests {
         // Test update
         let mut updated_data = test_data.clone();
         updated_data.user.name = "Updated User".to_string();
-        let updated = session.update("test", &updated_data).await.unwrap();
+        let updated = session.update("test", &updated_data, None).await.unwrap();
         assert!(updated);
 
         // Verify update
@@ -64,7 +64,7 @@ mod tests {
         let test_data = create_test_session();
 
         // Insert initial data
-        session.insert("test", &test_data).await.unwrap();
+        session.insert("test", &test_data, None).await.unwrap();
         let original_id = session.id().unwrap();
 
         // Regenerate session

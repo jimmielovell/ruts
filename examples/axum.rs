@@ -46,25 +46,12 @@ fn routes() -> Router {
                 };
 
                 session
-                    .insert("app", &app_session)
+                    .insert("app", &app_session, None)
                     .await
                     .map_err(|e| e.to_string())
                     .unwrap();
             }),
         )
-        // .route(
-        //     "/insert_multiple",
-        //     get(|session: RedisSession| async move {
-        //         session.insert_multiple(vec![
-        //             ("user", Box::new(User { id: 34895634, name: String::from("John Doe"),})),
-        //             ("theme", Box::new(Theme::Dark))
-        //         ])
-        //             .await
-        //             .map_err(|e| e.to_string())
-        //             .unwrap();
-        //
-        //     }),
-        // )
         .route(
             "/update",
             get(|session: RedisSession| async move {

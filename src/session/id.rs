@@ -1,12 +1,12 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::{DecodeError, Engine};
+use rand::rngs::OsRng;
+use rand::TryRngCore;
+use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::str::FromStr;
 use std::{fmt, str};
-use rand::{TryRngCore};
-use rand::rngs::OsRng;
-use serde::{Deserialize, Serialize};
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, Hash, PartialEq)]
 pub struct Id([u8; 16]);
