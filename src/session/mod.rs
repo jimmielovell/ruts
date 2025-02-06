@@ -31,7 +31,7 @@ type Result<T> = result::Result<T, Error>;
 /// A parsed on-demand session store.
 ///
 /// The default store is the `RedisStore`<RedisPool>
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Session<S: SessionStore = RedisStore> {
     inner: Arc<Inner<S>>,
 }

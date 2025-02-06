@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.2] - 2024-02-07
+
+### Added
+- implement `Clone` for `Session`
+
 ## [0.5.1] - 2024-02-06
 
 ### Added
