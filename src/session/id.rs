@@ -1,22 +1,20 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::{DecodeError, Engine};
+use rand::rngs::OsRng;
+use rand::TryRngCore;
+use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::str::FromStr;
 use std::{fmt, str};
-
-use rand::rngs::OsRng;
-use rand::RngCore;
-use serde::{Deserialize, Serialize};
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, Hash, PartialEq)]
 pub struct Id([u8; 16]);
 
 impl Default for Id {
     fn default() -> Self {
-        let mut rng = OsRng;
         let mut bytes = [0u8; 16];
-        rng.fill_bytes(&mut bytes);
+        OsRng.try_fill_bytes(&mut bytes).unwrap();
         Self(bytes)
     }
 }
@@ -45,5 +43,12 @@ impl FromStr for Id {
         }
 
         Ok(Self(decoded))
+    }
+}
+
+#[cfg(feature = "redis-store")]
+impl From<&Id> for fred::types::Key {
+    fn from(value: &Id) -> Self {
+        value.to_string().into()
     }
 }

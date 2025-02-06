@@ -48,6 +48,6 @@ async fn handler(session: Session<RedisStore<Client>>) -> String {
         })
         .unwrap()
         .unwrap_or(0);
-    session.update("count", &(count + 1)).await.unwrap();
+    session.update("count", &(count + 1), None).await.unwrap();
     format!("You've visited this page {} times", count + 1)
 }

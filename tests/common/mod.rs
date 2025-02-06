@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use ruts::CookieOptions;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct TestUser {

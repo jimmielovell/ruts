@@ -12,13 +12,11 @@ mod tests {
     };
     use common::*;
     use http::header::{COOKIE, SET_COOKIE};
+    use ruts::store::MemoryStore;
+    use ruts::{CookieOptions, Session, SessionLayer};
     use std::sync::Arc;
-    use fred::clients::Client;
     use tower::ServiceExt;
     use tower_cookies::CookieManagerLayer;
-    use ruts::{CookieOptions, Session, SessionLayer};
-    use ruts::store::MemoryStore;
-    use ruts::store::redis::RedisStore;
 
     // Test handler that requires Session
     async fn insert_handler(session: Session<MemoryStore>) -> Result<String, StatusCode> {
@@ -26,19 +24,27 @@ mod tests {
             id: 1,
             name: "Test".to_string(),
         };
-        session.insert("user", &user).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        session
+            .insert("user", &user, Some(20))
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         Ok("Success".to_string())
     }
 
     async fn get_handler(session: Session<MemoryStore>) -> Result<String, StatusCode> {
-        let user: Option<TestUser> = session.get("user").await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        Ok(user.map(|u| u.name).unwrap_or_else(|| "Not found".to_string()))
+        let user: Option<TestUser> = session
+            .get("user")
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        Ok(user
+            .map(|u| u.name)
+            .unwrap_or_else(|| "Not found".to_string()))
     }
 
     fn create_test_app() -> Router {
         let cookie_options = build_cookie_options();
-        let session_layer = SessionLayer::new(Arc::new(MemoryStore::new()))
-            .with_cookie_options(cookie_options);
+        let session_layer =
+            SessionLayer::new(Arc::new(MemoryStore::new())).with_cookie_options(cookie_options);
 
         Router::new()
             .route("/set", get(insert_handler))
@@ -104,18 +110,19 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body_str = String::from_utf8(body.to_vec()).unwrap();
         assert_eq!(body_str, "Test");
     }
     #[tokio::test]
     async fn test_missing_cookie_middleware() {
         // Create app without CookieManagerLayer
-        let app = Router::new()
-            .route("/set", get(insert_handler))
-            .layer(SessionLayer::new(Arc::new(MemoryStore::new()))
-                .with_cookie_options(CookieOptions::build()
-                    .name("test_sess")));
+        let app = Router::new().route("/set", get(insert_handler)).layer(
+            SessionLayer::new(Arc::new(MemoryStore::new()))
+                .with_cookie_options(CookieOptions::build().name("test_sess")),
+        );
 
         let response = app
             .oneshot(Request::builder().uri("/set").body(Body::empty()).unwrap())
@@ -141,7 +148,9 @@ mod tests {
             .await
             .unwrap();
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body_str = String::from_utf8(body.to_vec()).unwrap();
         assert_eq!(body_str, "Not found");
     }

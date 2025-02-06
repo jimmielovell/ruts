@@ -1,11 +1,19 @@
+use parking_lot::RwLock;
+use serde::{de::DeserializeOwned, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use parking_lot::RwLock;
-use serde::{de::DeserializeOwned, Serialize};
 
 use crate::store::{Error, SessionStore};
 use crate::Id;
+
+pub(crate) fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
+    rmp_serde::to_vec(value).map_err(|e| Error::Encode(e.to_string()))
+}
+
+pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, Error> {
+    rmp_serde::from_slice(value).map_err(|e| Error::Decode(e.to_string()))
+}
 
 #[derive(Debug, Clone)]
 struct StoredValue {
@@ -13,6 +21,14 @@ struct StoredValue {
     expires_at: Option<Instant>,
 }
 
+/// An in-memory session store implementation.
+///
+/// It uses a HashMap to manage session data and supports
+/// serialization/deserialization using [MessagePack](https://crates.io/crates/rmp-serde).
+///
+/// ### Note
+///
+/// Do not use this in a production environment.
 #[derive(Debug, Clone)]
 pub struct MemoryStore {
     data: Arc<RwLock<HashMap<String, HashMap<String, StoredValue>>>>,
@@ -35,20 +51,13 @@ impl MemoryStore {
         let mut data = self.data.write();
         data.retain(|_, fields| {
             fields.retain(|_, value| {
-                value.expires_at
+                value
+                    .expires_at
                     .map(|expires| expires > Instant::now())
                     .unwrap_or(true)
             });
             !fields.is_empty()
         });
-    }
-
-    fn serialize_value<T: Serialize>(&self, value: &T) -> Result<Vec<u8>, Error> {
-        rmp_serde::to_vec(value).map_err(|e| Error::Encode(e.to_string()))
-    }
-
-    fn deserialize_value<T: DeserializeOwned>(&self, value: &[u8]) -> Result<T, Error> {
-        rmp_serde::from_slice(value).map_err(|e| Error::Decode(e.to_string()))
     }
 }
 
@@ -63,7 +72,7 @@ impl SessionStore for MemoryStore {
         if let Some(fields) = data.get(&session_id.to_string()) {
             if let Some(value) = fields.get(field) {
                 if value.expires_at.map(|e| e > Instant::now()).unwrap_or(true) {
-                    return Ok(Some(self.deserialize_value(&value.data)?));
+                    return Ok(Some(deserialize_value(&value.data)?));
                 }
             }
         }
@@ -80,7 +89,7 @@ impl SessionStore for MemoryStore {
         if let Some(fields) = data.get(&session_id.to_string()) {
             if let Some(value) = fields.get("__all") {
                 if value.expires_at.map(|e| e > Instant::now()).unwrap_or(true) {
-                    return Ok(Some(self.deserialize_value(&value.data)?));
+                    return Ok(Some(deserialize_value(&value.data)?));
                 }
             }
         }
@@ -92,7 +101,8 @@ impl SessionStore for MemoryStore {
         session_id: &Id,
         field: &str,
         value: &T,
-        seconds: i64,
+        key_seconds: i64,
+        _field_seconds: Option<i64>,
     ) -> Result<bool, Error>
     where
         T: Send + Sync + Serialize,
@@ -100,16 +110,14 @@ impl SessionStore for MemoryStore {
         self.cleanup_expired();
 
         let mut data = self.data.write();
-        let fields = data
-            .entry(session_id.to_string())
-            .or_insert_with(HashMap::new);
+        let fields = data.entry(session_id.to_string()).or_default();
 
         if fields.contains_key(field) {
             return Ok(false);
         }
 
-        let expires_at = if seconds > 0 {
-            Some(Instant::now() + Duration::from_secs(seconds as u64))
+        let expires_at = if key_seconds > 0 {
+            Some(Instant::now() + Duration::from_secs(key_seconds as u64))
         } else {
             None
         };
@@ -117,7 +125,7 @@ impl SessionStore for MemoryStore {
         fields.insert(
             field.to_string(),
             StoredValue {
-                data: self.serialize_value(value)?,
+                data: serialize_value(value)?,
                 expires_at,
             },
         );
@@ -130,7 +138,8 @@ impl SessionStore for MemoryStore {
         session_id: &Id,
         field: &str,
         value: &T,
-        seconds: i64,
+        key_seconds: i64,
+        _field_seconds: Option<i64>,
     ) -> Result<bool, Error>
     where
         T: Send + Sync + Serialize,
@@ -138,12 +147,10 @@ impl SessionStore for MemoryStore {
         self.cleanup_expired();
 
         let mut data = self.data.write();
-        let fields = data
-            .entry(session_id.to_string())
-            .or_insert_with(HashMap::new);
+        let fields = data.entry(session_id.to_string()).or_default();
 
-        let expires_at = if seconds > 0 {
-            Some(Instant::now() + Duration::from_secs(seconds as u64))
+        let expires_at = if key_seconds > 0 {
+            Some(Instant::now() + Duration::from_secs(key_seconds as u64))
         } else {
             None
         };
@@ -151,7 +158,7 @@ impl SessionStore for MemoryStore {
         fields.insert(
             field.to_string(),
             StoredValue {
-                data: self.serialize_value(value)?,
+                data: serialize_value(value)?,
                 expires_at,
             },
         );
@@ -248,7 +255,10 @@ mod tests {
         };
 
         // Test insert
-        assert!(store.insert(&session_id, "user", &user, 60).await.unwrap());
+        assert!(store
+            .insert(&session_id, "user", &user, 60, None)
+            .await
+            .unwrap());
 
         // Test get
         let retrieved: Option<TestUser> = store.get(&session_id, "user").await.unwrap();
@@ -259,7 +269,10 @@ mod tests {
             id: 1,
             name: "Updated User".to_string(),
         };
-        assert!(store.update(&session_id, "user", &updated_user, 60).await.unwrap());
+        assert!(store
+            .update(&session_id, "user", &updated_user, 60, None)
+            .await
+            .unwrap());
 
         // Test delete
         assert!(store.delete(&session_id).await.unwrap());
@@ -277,7 +290,10 @@ mod tests {
         };
 
         // Insert with 1 second expiration
-        assert!(store.insert(&session_id, "user", &user, 1).await.unwrap());
+        assert!(store
+            .insert(&session_id, "user", &user, 1, None)
+            .await
+            .unwrap());
 
         // Should exist immediately
         let retrieved: Option<TestUser> = store.get(&session_id, "user").await.unwrap();

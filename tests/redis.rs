@@ -13,8 +13,8 @@ mod tests {
     use common::*;
     use fred::{clients::Client, interfaces::ClientLike};
     use http::header::{COOKIE, SET_COOKIE};
-    use ruts::{Session, SessionLayer};
     use ruts::store::redis::RedisStore;
+    use ruts::{Session, SessionLayer};
     use std::sync::Arc;
     use tower::ServiceExt;
     use tower_cookies::CookieManagerLayer;
@@ -29,7 +29,7 @@ mod tests {
     async fn insert_handler(session: Session<RedisStore<Client>>) -> Result<String, StatusCode> {
         let test_data = create_test_session();
         session
-            .insert("user", &test_data)
+            .insert("user", &test_data, Some(30))
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         Ok("Success".to_string())
@@ -41,10 +41,14 @@ mod tests {
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        Ok(data.map(|d| d.user.name).unwrap_or_else(|| "Not found".to_string()))
+        Ok(data
+            .map(|d| d.user.name)
+            .unwrap_or_else(|| "Not found".to_string()))
     }
 
-    async fn regenerate_handler(session: Session<RedisStore<Client>>) -> Result<String, StatusCode> {
+    async fn regenerate_handler(
+        session: Session<RedisStore<Client>>,
+    ) -> Result<String, StatusCode> {
         session
             .regenerate()
             .await
@@ -61,8 +65,7 @@ mod tests {
     }
 
     fn create_test_app(store: Arc<RedisStore<Client>>) -> Router {
-        let session_layer = SessionLayer::new(store)
-            .with_cookie_options(build_cookie_options());
+        let session_layer = SessionLayer::new(store).with_cookie_options(build_cookie_options());
 
         Router::new()
             .route("/set", get(insert_handler))
@@ -108,7 +111,9 @@ mod tests {
             .await
             .unwrap();
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body_str = String::from_utf8(body.to_vec()).unwrap();
         assert_eq!(body_str, "Test User");
 
@@ -148,7 +153,9 @@ mod tests {
             .await
             .unwrap();
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body_str = String::from_utf8(body.to_vec()).unwrap();
         assert_eq!(body_str, "Test User");
 
@@ -179,7 +186,9 @@ mod tests {
             .await
             .unwrap();
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body_str = String::from_utf8(body.to_vec()).unwrap();
         assert_eq!(body_str, "Not found");
     }
@@ -218,15 +227,17 @@ mod tests {
                         .body(Body::empty())
                         .unwrap(),
                 )
-                    .await
-                    .unwrap()
+                .await
+                .unwrap()
             }));
         }
 
         // Wait for all requests to complete
         for handle in handles {
             let response = handle.await.unwrap();
-            let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
             let body_str = String::from_utf8(body.to_vec()).unwrap();
             assert_eq!(body_str, "Test User");
         }

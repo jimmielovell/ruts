@@ -1,6 +1,6 @@
-use std::future::Future;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Debug;
+use std::future::Future;
 
 use crate::Id;
 
@@ -16,21 +16,25 @@ pub enum Error {
     Backend(String),
 }
 
+#[cfg(feature = "redis-store")]
+impl From<fred::error::Error> for Error {
+    fn from(value: fred::error::Error) -> Self {
+        Error::Backend(value.to_string())
+    }
+}
+
 pub trait SessionStore: Clone + Send + Sync + 'static {
     /// Gets the `value` for a `field` stored at `session_id`
     fn get<T>(
         &self,
         session_id: &Id,
-        field: &str
+        field: &str,
     ) -> impl Future<Output = Result<Option<T>, Error>> + Send
     where
         T: Clone + Send + Sync + DeserializeOwned;
 
     /// Gets all the `field`-`value` pairs stored at `session_id`
-    fn get_all<T>(
-        &self,
-        session_id: &Id
-    ) -> impl Future<Output = Result<Option<T>, Error>> + Send
+    fn get_all<T>(&self, session_id: &Id) -> impl Future<Output = Result<Option<T>, Error>> + Send
     where
         T: Clone + Send + Sync + DeserializeOwned;
 
@@ -43,7 +47,8 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         session_id: &Id,
         field: &str,
         value: &T,
-        seconds: i64,
+        key_seconds: i64,
+        field_seconds: Option<i64>,
     ) -> impl Future<Output = Result<bool, Error>> + Send
     where
         T: Send + Sync + Serialize;
@@ -58,7 +63,8 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         session_id: &Id,
         field: &str,
         value: &T,
-        seconds: i64,
+        key_seconds: i64,
+        field_seconds: Option<i64>,
     ) -> impl Future<Output = Result<bool, Error>> + Send
     where
         T: Send + Sync + Serialize;
@@ -79,14 +85,11 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
     fn remove(
         &self,
         session_id: &Id,
-        field: &str
+        field: &str,
     ) -> impl Future<Output = Result<i8, Error>> + Send;
 
     /// Deletes all `field`s along with its `value`s stored in the `session_id`.
-    fn delete(
-        &self,
-        session_id: &Id
-    ) -> impl Future<Output = Result<bool, Error>> + Send;
+    fn delete(&self, session_id: &Id) -> impl Future<Output = Result<bool, Error>> + Send;
 
     /// Set a timeout on the `session_id`. After the timeout has expired,
     /// the `session_id` will be automatically deleted.
@@ -95,6 +98,6 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
     fn expire(
         &self,
         session_id: &Id,
-        seconds: i64
+        seconds: i64,
     ) -> impl Future<Output = Result<bool, Error>> + Send;
 }

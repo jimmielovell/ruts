@@ -111,9 +111,14 @@ session.expire(seconds)
 session.id()
 ```
 
-### Session Store Configuration
+### Redis Store (Default session store)
+A Redis-backed session store implementation.
 
-#### Redis Store (Default)
+#### Requirements
+
+- Redis 7.4 or later (required for field-level expiration using HEXPIRE)
+- For Redis < 7.4, field-level expiration will not be available
+
 ```rust
 use ruts::store::redis::RedisStore;
 
@@ -147,7 +152,7 @@ app.layer(session_layer)              // First: Session layer
 
 - Enable HTTPS in production (set `secure: true` in cookie options)
 - Use appropriate `SameSite` cookie settings
-- Implement session expiration
+- Add session expiration
 - Regularly regenerate session IDs
 - Set proper cookie attributes (`http_only: true`)
 
