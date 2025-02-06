@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.1] - 2024-02-06
 
 ### Added
 - Field-level expiration support using Redis HEXPIRE command
