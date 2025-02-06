@@ -56,7 +56,7 @@ fn routes() -> Router {
             "/update",
             get(|session: RedisSession| async move {
                 session
-                    .update("theme", &Theme::Light)
+                    .update("theme", &Theme::Light, None)
                     .await
                     .map_err(|e| e.to_string())
                     .unwrap();

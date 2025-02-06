@@ -424,14 +424,6 @@ where
     fn max_age(&self) -> i64 {
         self.inner.cookie_max_age.load(Ordering::Relaxed)
     }
-
-    fn is_changed(&self) {
-        self.inner.is_changed();
-    }
-
-    fn is_deleted(&self) {
-        self.inner.is_deleted();
-    }
 }
 
 /// Configuration options for session cookies.

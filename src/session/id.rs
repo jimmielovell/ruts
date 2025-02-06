@@ -45,3 +45,10 @@ impl FromStr for Id {
         Ok(Self(decoded))
     }
 }
+
+#[cfg(feature = "redis-store")]
+impl From<&Id> for fred::types::Key {
+    fn from(value: &Id) -> Self {
+        value.to_string().into()
+    }
+}

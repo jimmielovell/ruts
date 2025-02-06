@@ -7,12 +7,28 @@ use std::time::{Duration, Instant};
 use crate::store::{Error, SessionStore};
 use crate::Id;
 
+pub fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
+    rmp_serde::to_vec(value).map_err(|e| Error::Encode(e.to_string()))
+}
+
+pub fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, Error> {
+    rmp_serde::from_slice(value).map_err(|e| Error::Decode(e.to_string()))
+}
+
 #[derive(Debug, Clone)]
 struct StoredValue {
     data: Vec<u8>,
     expires_at: Option<Instant>,
 }
 
+/// In-memory session store implementation.
+///
+/// It uses a HashMap to manage session data and supports
+/// serialization/deserialization using [MessagePack](https://crates.io/crates/rmp-serde).
+///
+/// # Note
+///
+/// Do not use this in a production environment.
 #[derive(Debug, Clone)]
 pub struct MemoryStore {
     data: Arc<RwLock<HashMap<String, HashMap<String, StoredValue>>>>,
@@ -43,14 +59,6 @@ impl MemoryStore {
             !fields.is_empty()
         });
     }
-
-    fn serialize_value<T: Serialize>(&self, value: &T) -> Result<Vec<u8>, Error> {
-        rmp_serde::to_vec(value).map_err(|e| Error::Encode(e.to_string()))
-    }
-
-    fn deserialize_value<T: DeserializeOwned>(&self, value: &[u8]) -> Result<T, Error> {
-        rmp_serde::from_slice(value).map_err(|e| Error::Decode(e.to_string()))
-    }
 }
 
 impl SessionStore for MemoryStore {
@@ -64,7 +72,7 @@ impl SessionStore for MemoryStore {
         if let Some(fields) = data.get(&session_id.to_string()) {
             if let Some(value) = fields.get(field) {
                 if value.expires_at.map(|e| e > Instant::now()).unwrap_or(true) {
-                    return Ok(Some(self.deserialize_value(&value.data)?));
+                    return Ok(Some(deserialize_value(&value.data)?));
                 }
             }
         }
@@ -81,7 +89,7 @@ impl SessionStore for MemoryStore {
         if let Some(fields) = data.get(&session_id.to_string()) {
             if let Some(value) = fields.get("__all") {
                 if value.expires_at.map(|e| e > Instant::now()).unwrap_or(true) {
-                    return Ok(Some(self.deserialize_value(&value.data)?));
+                    return Ok(Some(deserialize_value(&value.data)?));
                 }
             }
         }
@@ -102,9 +110,7 @@ impl SessionStore for MemoryStore {
         self.cleanup_expired();
 
         let mut data = self.data.write();
-        let fields = data
-            .entry(session_id.to_string())
-            .or_insert_with(HashMap::new);
+        let fields = data.entry(session_id.to_string()).or_default();
 
         if fields.contains_key(field) {
             return Ok(false);
@@ -119,7 +125,7 @@ impl SessionStore for MemoryStore {
         fields.insert(
             field.to_string(),
             StoredValue {
-                data: self.serialize_value(value)?,
+                data: serialize_value(value)?,
                 expires_at,
             },
         );
@@ -133,7 +139,7 @@ impl SessionStore for MemoryStore {
         field: &str,
         value: &T,
         key_seconds: i64,
-        _field_seconds: Option<i64>
+        _field_seconds: Option<i64>,
     ) -> Result<bool, Error>
     where
         T: Send + Sync + Serialize,
@@ -141,9 +147,7 @@ impl SessionStore for MemoryStore {
         self.cleanup_expired();
 
         let mut data = self.data.write();
-        let fields = data
-            .entry(session_id.to_string())
-            .or_insert_with(HashMap::new);
+        let fields = data.entry(session_id.to_string()).or_default();
 
         let expires_at = if key_seconds > 0 {
             Some(Instant::now() + Duration::from_secs(key_seconds as u64))
@@ -154,7 +158,7 @@ impl SessionStore for MemoryStore {
         fields.insert(
             field.to_string(),
             StoredValue {
-                data: self.serialize_value(value)?,
+                data: serialize_value(value)?,
                 expires_at,
             },
         );

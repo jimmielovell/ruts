@@ -22,7 +22,7 @@ redis-store = ["dep:fred", "dep:rmp-serde"]
 axum-core = {  version = "0.5.0", optional = true }
 base64 = "0.22.1"
 cookie = "0.18.1"
-fred = { version = "10.0.4", optional = true, features = ["i-hashes", "i-hexpire", "i-scripts", "i-time-series", "i-client", "sha-1"] }
+fred = { version = "10.0.4", optional = true, features = ["i-hashes", "i-hexpire", "i-scripts", "sha-1"] }
 http = "1.2.0"
 parking_lot = { version = "0.12.3", features = ["serde"] }
 pin-project-lite = "0.2.14"

@@ -16,6 +16,13 @@ pub enum Error {
     Backend(String),
 }
 
+#[cfg(feature = "redis-store")]
+impl From<fred::error::Error> for Error {
+    fn from(value: fred::error::Error) -> Self {
+        Error::Backend(value.to_string())
+    }
+}
+
 pub trait SessionStore: Clone + Send + Sync + 'static {
     /// Gets the `value` for a `field` stored at `session_id`
     fn get<T>(
