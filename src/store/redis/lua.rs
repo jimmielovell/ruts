@@ -1,9 +1,10 @@
 use tokio::sync::OnceCell;
 
-pub static INSERT_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
-pub static UPDATE_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
+pub(crate) static INSERT_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
+pub(crate) static UPDATE_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
+pub(crate) static RENAME_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
 
-pub static INSERT_SCRIPT: &str = r#"
+pub(crate) static INSERT_SCRIPT: &str = r#"
     local key = KEYS[1]
     local field = ARGV[1]
     local value = ARGV[2]
@@ -20,7 +21,7 @@ pub static INSERT_SCRIPT: &str = r#"
     return inserted
 "#;
 
-pub static UPDATE_SCRIPT: &str = r#"
+pub(crate) static UPDATE_SCRIPT: &str = r#"
     local key = KEYS[1]
     local field = ARGV[1]
     local value = ARGV[2]
@@ -35,4 +36,16 @@ pub static UPDATE_SCRIPT: &str = r#"
         end
     end
     return updated
+"#;
+
+pub(crate) const RENAME_SCRIPT: &str = r#"
+    local old_key = KEYS[1]
+    local new_key = KEYS[2]
+    local seconds = tonumber(ARGV[1])
+
+    local renamed = redis.call('RENAMENX', old_key, new_key)
+    if renamed == 1 then
+        redis.call('EXPIRE', new_key, seconds)
+    end
+    return renamed
 "#;

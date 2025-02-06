@@ -1,7 +1,8 @@
 mod lua;
 
 use crate::store::redis::lua::{
-    INSERT_SCRIPT, INSERT_SCRIPT_HASH, UPDATE_SCRIPT, UPDATE_SCRIPT_HASH,
+    INSERT_SCRIPT, INSERT_SCRIPT_HASH, RENAME_SCRIPT, RENAME_SCRIPT_HASH, UPDATE_SCRIPT,
+    UPDATE_SCRIPT_HASH,
 };
 use crate::store::{deserialize_value, serialize_value, Error, SessionStore};
 use crate::Id;
@@ -99,7 +100,6 @@ where
             INSERT_SCRIPT,
         )
         .await
-        .map_err(|err| err.into())
     }
 
     async fn update<T>(
@@ -124,7 +124,6 @@ where
             UPDATE_SCRIPT,
         )
         .await
-        .map_err(|err| err.into())
     }
 
     async fn rename_session_id(
@@ -133,11 +132,24 @@ where
         new_session_id: &Id,
         seconds: i64,
     ) -> Result<bool, Error> {
-        let renamed: bool = self.client.renamenx(old_session_id, new_session_id).await?;
+        let hash = RENAME_SCRIPT_HASH
+            .get_or_try_init(|| async {
+                let hash = fred::util::sha1_hash(RENAME_SCRIPT);
+                if !self.client.script_exists::<bool, _>(&hash).await? {
+                    let _: () = self.client.script_load(RENAME_SCRIPT).await?;
+                }
+                Ok::<String, fred::error::Error>(hash)
+            })
+            .await?;
 
-        if renamed {
-            self.expire(new_session_id, seconds).await?;
-        }
+        let renamed: bool = self
+            .client
+            .evalsha(
+                hash,
+                vec![old_session_id, new_session_id],
+                vec![seconds.to_string().as_bytes()],
+            )
+            .await?;
 
         Ok(renamed)
     }

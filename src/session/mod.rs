@@ -1,6 +1,5 @@
 //! Session management for web applications.
 
-use cookie::SameSite;
 use parking_lot::RwLock;
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
@@ -10,17 +9,20 @@ use std::{result, sync::Arc};
 use thiserror::Error;
 use tower_cookies::Cookies;
 
+mod cookie_options;
 mod id;
+
 use crate::store;
 use crate::store::redis::RedisStore;
 use crate::store::SessionStore;
+pub use cookie_options::CookieOptions;
 pub use id::Id;
 
 #[derive(Error, Debug)]
 pub enum Error {
     #[error(transparent)]
     Store(#[from] store::Error),
-    #[error("session has not been initialized")]
+    #[error("Session has not been initialized")]
     UnInitialized,
 }
 
@@ -39,7 +41,7 @@ where
     S: SessionStore,
 {
     /// Creates a new `Session` instance.
-    pub fn new(inner: Arc<Inner<S>>) -> Self {
+    pub(crate) fn new(inner: Arc<Inner<S>>) -> Self {
         Self { inner }
     }
 
@@ -75,10 +77,7 @@ where
     ///     session.get::<AppSession>("app").await.unwrap();
     /// }
     /// ```
-    #[tracing::instrument(
-        name = "getting value for field from the session store",
-        skip(self, field)
-    )]
+    #[tracing::instrument(name = "session-store: getting value for field", skip(self, field))]
     pub async fn get<T>(&self, field: &str) -> Result<Option<T>>
     where
         T: Clone + Send + Sync + DeserializeOwned,
@@ -97,7 +96,7 @@ where
 
     /// Retrieves values for all fields from the session store.
     #[tracing::instrument(
-        name = "getting values for all fields from the session store",
+        name = "session-store: getting values for all fields for session id",
         skip(self)
     )]
     pub async fn get_all<T>(&self) -> Result<Option<T>>
@@ -110,7 +109,7 @@ where
                 err.into()
             }),
             None => {
-                tracing::debug!("session not initialized");
+                tracing::debug!("session has not been initialized");
                 Ok(None)
             }
         }
@@ -159,7 +158,7 @@ where
     /// }
     /// ```
     #[tracing::instrument(
-        name = "inserting field-value to session store",
+        name = "session-store: inserting field-value",
         skip(self, field, value)
     )]
     pub async fn insert<T>(&self, field: &str, value: &T, field_expire: Option<i64>) -> Result<bool>
@@ -228,7 +227,7 @@ where
     ///     let updated = session.update("app", &app, Some(5)).await.unwrap();
     /// }
     /// ```
-    #[tracing::instrument(name = "updating field in session store", skip(self, field, value))]
+    #[tracing::instrument(name = "session-store: updating field", skip(self, field, value))]
     pub async fn update<T>(&self, field: &str, value: &T, field_expire: Option<i64>) -> Result<bool>
     where
         T: Send + Sync + Serialize,
@@ -266,7 +265,7 @@ where
     ///     let removed = session.remove("app").await.unwrap();
     /// }
     /// ```
-    #[tracing::instrument(name = "removing field from session store", skip(self, field))]
+    #[tracing::instrument(name = "session-store: removing field", skip(self, field))]
     pub async fn remove(&self, field: &str) -> Result<i8> {
         let id = self.id();
         if id.is_none() {
@@ -302,7 +301,7 @@ where
     ///     let deleted = session.delete().await.unwrap();
     /// }
     /// ```
-    #[tracing::instrument(name = "deleting session from store", skip(self))]
+    #[tracing::instrument(name = "session-store: deleting session", skip(self))]
     pub async fn delete(&self) -> Result<bool> {
         let id = self.id();
         if id.is_none() {
@@ -426,95 +425,12 @@ where
     }
 }
 
-/// Configuration options for session cookies.
-///
-/// # Example
-///
-/// ```rust
-/// use ruts::CookieOptions;
-///
-/// let cookie_options = CookieOptions::build()
-///         .name("test_sess")
-///         .http_only(true)
-///         .same_site(cookie::SameSite::Lax)
-///         .secure(true)
-///         .max_age(1 * 60)
-///         .path("/");
-/// ```
-#[derive(Clone, Copy, Debug)]
-pub struct CookieOptions {
-    pub http_only: bool,
-    pub name: &'static str,
-    pub domain: Option<&'static str>,
-    pub path: Option<&'static str>,
-    pub same_site: SameSite,
-    pub secure: bool,
-    pub max_age: i64,
-}
-
-impl Default for CookieOptions {
-    fn default() -> Self {
-        Self {
-            http_only: true,
-            name: "id",
-            domain: None,
-            path: None,
-            same_site: SameSite::Lax,
-            secure: true,
-            max_age: 10 * 60,
-        }
-    }
-}
-
-impl CookieOptions {
-    /// Creates a new `CookieOptions` with default values.
-    pub fn build() -> Self {
-        Self::default()
-    }
-
-    /// Sets the name of the cookie.
-    pub fn name(mut self, name: &'static str) -> Self {
-        self.name = name;
-        self
-    }
-
-    pub fn http_only(mut self, http_only: bool) -> Self {
-        self.http_only = http_only;
-        self
-    }
-
-    pub fn same_site(mut self, same_site: SameSite) -> Self {
-        self.same_site = same_site;
-        self
-    }
-
-    pub fn secure(mut self, secure: bool) -> Self {
-        self.secure = secure;
-        self
-    }
-
-    pub fn domain(mut self, domain: &'static str) -> Self {
-        self.domain = Some(domain);
-        self
-    }
-
-    pub fn path(mut self, path: &'static str) -> Self {
-        self.path = Some(path);
-        self
-    }
-
-    pub fn max_age(mut self, seconds: i64) -> Self {
-        self.max_age = seconds;
-        self
-    }
-}
-
 const SESSION_STATE_CHANGED: u8 = 0b01;
 const SESSION_STATE_DELETED: u8 = 0b10;
 const DEFAULT_COOKIE_MAX_AGE: i64 = 10 * 60;
 
 #[derive(Debug)]
-pub struct Inner<T: SessionStore> {
+pub(crate) struct Inner<T: SessionStore> {
     pub state: AtomicU8,
     pub id: RwLock<Option<Id>>,
     pub cookie_max_age: AtomicI64,
