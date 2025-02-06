@@ -41,7 +41,7 @@ where
     S: SessionStore,
 {
     /// Creates a new `Session` instance.
-    pub(crate) fn new(inner: Arc<Inner<S>>) -> Self {
+    pub fn new(inner: Arc<Inner<S>>) -> Self {
         Self { inner }
     }
 
@@ -430,7 +430,7 @@ const SESSION_STATE_DELETED: u8 = 0b10;
 const DEFAULT_COOKIE_MAX_AGE: i64 = 10 * 60;
 
 #[derive(Debug)]
-pub(crate) struct Inner<T: SessionStore> {
+pub struct Inner<T: SessionStore> {
     pub state: AtomicU8,
     pub id: RwLock<Option<Id>>,
     pub cookie_max_age: AtomicI64,
