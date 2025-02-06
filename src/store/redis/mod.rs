@@ -13,7 +13,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::{fmt::Debug, sync::Arc};
 use tokio::sync::OnceCell;
 
-/// Redis session store implementation.
+/// A redis session store implementation.
 ///
 /// It uses a Redis Hash to manage session data and supports
 /// serialization/deserialization using [MessagePack](https://crates.io/crates/rmp-serde).

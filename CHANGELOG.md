@@ -5,6 +5,9 @@
 ### Added
 - Field-level expiration support using Redis HEXPIRE command
 - Support for optional field expiration in hash entries
+- Lua scripts for atomic operations to improve performance thereby reducing Redis network calls by 50% for these operations:
+  - Combined HSETNX/HSET with EXPIRE and HEXPIRE into a single round-trip
+  - Combined RENAMENX with EXPIRE into a single round-trip
 
 ### Changed
 - Minimum Redis version requirement is now 7.4 due to HEXPIRE command usage

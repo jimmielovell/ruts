@@ -7,11 +7,11 @@ use std::time::{Duration, Instant};
 use crate::store::{Error, SessionStore};
 use crate::Id;
 
-pub fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
+pub(crate) fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
     rmp_serde::to_vec(value).map_err(|e| Error::Encode(e.to_string()))
 }
 
-pub fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, Error> {
+pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, Error> {
     rmp_serde::from_slice(value).map_err(|e| Error::Decode(e.to_string()))
 }
 
@@ -21,12 +21,12 @@ struct StoredValue {
     expires_at: Option<Instant>,
 }
 
-/// In-memory session store implementation.
+/// An in-memory session store implementation.
 ///
 /// It uses a HashMap to manage session data and supports
 /// serialization/deserialization using [MessagePack](https://crates.io/crates/rmp-serde).
 ///
-/// # Note
+/// ### Note
 ///
 /// Do not use this in a production environment.
 #[derive(Debug, Clone)]
