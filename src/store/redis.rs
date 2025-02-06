@@ -33,7 +33,7 @@ impl From<RedisStoreError> for Error {
 static LAZY_INSERT_HASH: OnceLock<String> = OnceLock::new();
 static LAZY_UPDATE_HASH: OnceLock<String> = OnceLock::new();
 
-const HASH_INSERT_SCRIPT: &str = r#"
+const INSERT_SCRIPT: &str = r#"
 local key = KEYS[1]
 local field = ARGV[1]
 local value = ARGV[2]
@@ -162,9 +162,9 @@ where
         T: Send + Sync + Serialize,
     {
         if LAZY_INSERT_HASH.get().is_none() {
-            let hash = fred::util::sha1_hash(HASH_INSERT_SCRIPT);
+            let hash = fred::util::sha1_hash(INSERT_SCRIPT);
             if !self.client.script_exists::<bool, _>(&hash).await.map_err(RedisStoreError::Redis)? {
-                let _: () = self.client.script_load(HASH_INSERT_SCRIPT).await.map_err(RedisStoreError::Redis)?;
+                let _: () = self.client.script_load(INSERT_SCRIPT).await.map_err(RedisStoreError::Redis)?;
             }
 
             LAZY_INSERT_HASH.set(hash).unwrap();
@@ -197,9 +197,9 @@ where
         T: Send + Sync + Serialize,
     {
         if LAZY_UPDATE_HASH.get().is_none() {
-            let hash = fred::util::sha1_hash(HASH_INSERT_SCRIPT);
+            let hash = fred::util::sha1_hash(UPDATE_SCRIPT);
             if !self.client.script_exists::<bool, _>(&hash).await.map_err(RedisStoreError::Redis)? {
-                let _: () = self.client.script_load(HASH_INSERT_SCRIPT).await.map_err(RedisStoreError::Redis)?;
+                let _: () = self.client.script_load(UPDATE_SCRIPT).await.map_err(RedisStoreError::Redis)?;
             }
 
             LAZY_UPDATE_HASH.set(hash).unwrap();
