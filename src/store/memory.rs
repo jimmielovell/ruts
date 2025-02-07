@@ -166,6 +166,105 @@ impl SessionStore for MemoryStore {
         Ok(true)
     }
 
+    async fn insert_with_rename<T>(
+        &self,
+        old_session_id: &Id,
+        new_session_id: &Id,
+        field: &str,
+        value: &T,
+        key_seconds: i64,
+        _field_seconds: Option<i64>,
+    ) -> Result<bool, Error>
+    where
+        T: Send + Sync + Serialize,
+    {
+        self.cleanup_expired();
+
+        let mut data = self.data.write();
+
+        // Check if old session exists and new session doesn't
+        if !data.contains_key(&old_session_id.to_string())
+            || data.contains_key(&new_session_id.to_string())
+        {
+            return Ok(false);
+        }
+
+        // Get the fields map, return false if field exists
+        let fields = data.get_mut(&old_session_id.to_string()).unwrap();
+        if fields.contains_key(field) {
+            return Ok(false);
+        }
+
+        // Calculate expiration
+        let expires_at = if key_seconds > 0 {
+            Some(Instant::now() + Duration::from_secs(key_seconds as u64))
+        } else {
+            None
+        };
+
+        // Insert the new field
+        fields.insert(
+            field.to_string(),
+            StoredValue {
+                data: serialize_value(value)?,
+                expires_at,
+            },
+        );
+
+        // Move the map to the new session ID
+        let fields = data.remove(&old_session_id.to_string()).unwrap();
+        data.insert(new_session_id.to_string(), fields);
+
+        Ok(true)
+    }
+
+    async fn update_with_rename<T>(
+        &self,
+        old_session_id: &Id,
+        new_session_id: &Id,
+        field: &str,
+        value: &T,
+        key_seconds: i64,
+        _field_seconds: Option<i64>,
+    ) -> Result<bool, Error>
+    where
+        T: Send + Sync + Serialize,
+    {
+        self.cleanup_expired();
+
+        let mut data = self.data.write();
+
+        // Check if old session exists and new session doesn't
+        if !data.contains_key(&old_session_id.to_string())
+            || data.contains_key(&new_session_id.to_string())
+        {
+            return Ok(false);
+        }
+
+        // Calculate expiration
+        let expires_at = if key_seconds > 0 {
+            Some(Instant::now() + Duration::from_secs(key_seconds as u64))
+        } else {
+            None
+        };
+
+        // Update the field
+        let fields = data.get_mut(&old_session_id.to_string()).unwrap();
+        fields.insert(
+            field.to_string(),
+            StoredValue {
+                data: serialize_value(value)?,
+                expires_at,
+            },
+        );
+
+        // Move the map to the new session ID
+        let fields = data.remove(&old_session_id.to_string()).unwrap();
+        data.insert(new_session_id.to_string(), fields);
+
+        Ok(true)
+    }
+
     async fn rename_session_id(
         &self,
         old_session_id: &Id,

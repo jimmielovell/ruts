@@ -1,8 +1,9 @@
 mod lua;
 
 use crate::store::redis::lua::{
-    INSERT_SCRIPT, INSERT_SCRIPT_HASH, RENAME_SCRIPT, RENAME_SCRIPT_HASH, UPDATE_SCRIPT,
-    UPDATE_SCRIPT_HASH,
+    INSERT_SCRIPT, INSERT_SCRIPT_HASH, INSERT_WITH_RENAME_SCRIPT, INSERT_WITH_RENAME_SCRIPT_HASH,
+    RENAME_SCRIPT, RENAME_SCRIPT_HASH, UPDATE_SCRIPT, UPDATE_SCRIPT_HASH,
+    UPDATE_WITH_RENAME_SCRIPT, UPDATE_WITH_RENAME_SCRIPT_HASH,
 };
 use crate::store::{deserialize_value, serialize_value, Error, SessionStore};
 use crate::Id;
@@ -91,7 +92,7 @@ where
     {
         insert_update(
             Arc::clone(&self.client),
-            session_id,
+            vec![session_id],
             field,
             value,
             key_seconds,
@@ -115,13 +116,63 @@ where
     {
         insert_update(
             Arc::clone(&self.client),
-            session_id,
+            vec![session_id],
             field,
             value,
             key_seconds,
             field_seconds,
             &UPDATE_SCRIPT_HASH,
             UPDATE_SCRIPT,
+        )
+        .await
+    }
+
+    async fn insert_with_rename<T>(
+        &self,
+        old_session_id: &Id,
+        new_session_id: &Id,
+        field: &str,
+        value: &T,
+        key_seconds: i64,
+        field_seconds: Option<i64>,
+    ) -> Result<bool, Error>
+    where
+        T: Send + Sync + Serialize,
+    {
+        insert_update(
+            Arc::clone(&self.client),
+            vec![old_session_id, new_session_id],
+            field,
+            value,
+            key_seconds,
+            field_seconds,
+            &INSERT_WITH_RENAME_SCRIPT_HASH,
+            INSERT_WITH_RENAME_SCRIPT,
+        )
+        .await
+    }
+
+    async fn update_with_rename<T>(
+        &self,
+        old_session_id: &Id,
+        new_session_id: &Id,
+        field: &str,
+        value: &T,
+        key_seconds: i64,
+        field_seconds: Option<i64>,
+    ) -> Result<bool, Error>
+    where
+        T: Send + Sync + Serialize,
+    {
+        insert_update(
+            Arc::clone(&self.client),
+            vec![old_session_id, new_session_id],
+            field,
+            value,
+            key_seconds,
+            field_seconds,
+            &UPDATE_WITH_RENAME_SCRIPT_HASH,
+            UPDATE_WITH_RENAME_SCRIPT,
         )
         .await
     }
@@ -171,7 +222,7 @@ where
 
 async fn insert_update<C, T>(
     client: Arc<C>,
-    session_id: &Id,
+    session_ids: Vec<&Id>,
     field: &str,
     value: &T,
     key_seconds: i64,
@@ -202,7 +253,7 @@ where
     let done: bool = client
         .evalsha(
             hash,
-            vec![session_id],
+            session_ids,
             vec![
                 field.as_bytes(),
                 &serialized_value,

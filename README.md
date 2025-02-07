@@ -23,7 +23,7 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruts = "0.4.2"
+ruts = "0.5.3"
 ```
 
 ## Quick Start
@@ -87,13 +87,21 @@ async fn handler(session: Session<RedisStore<Client>>) -> String {
 
 ```rust
 // Get session data
-let value = session.get::<ValueType>("key").await?;
+let value: ValueType = session.get("key").await?;
 
 // Insert new data
-session.insert::<ValueType>("key", &value).await?;
+session.insert("key", &value, optional_field_expiration).await?;
+
+// Prepare a new session ID for the next insert
+let new_id = session.prepare_regenerate();
+session.insert("key", &value, optional_field_expiration).await?;
 
 // Update existing data
-session.update::<ValueType>("key", &new_value).await?;
+session.update("key", &new_value, optional_field_expiration).await?;
+
+// Prepare a new session ID for the next update
+let new_id = session.prepare_regenerate();
+session.update("key", &value, optional_field_expiration).await?;
 
 // Remove data
 session.remove("key").await?;

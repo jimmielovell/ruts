@@ -21,21 +21,21 @@ where
             tracing::error!("session layer not found in the request extensions");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "session not found in the request",
+                "Session not found in the request",
             )
         })?;
 
         // Cookies are only used if the SessionLayer has a cookie_options set.
         let cookie_name = session_inner.cookie_name.ok_or_else(|| {
             tracing::error!("missing cookie options");
-            (StatusCode::INTERNAL_SERVER_ERROR, "missing cookie options")
+            (StatusCode::INTERNAL_SERVER_ERROR, "Missing cookie options")
         })?;
 
         let cookies_ext = parts.extensions.get::<Cookies>().ok_or_else(|| {
             tracing::error!("cookies not found in the request extensions");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "cookies not found in the request",
+                "Cookies not found in the request",
             )
         })?;
 
