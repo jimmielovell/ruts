@@ -3,7 +3,7 @@
 ## [0.5.3] - 2024-02-08
 
 ### Added
-- New `prepare_regenerate()` method for atomic session ID regeneration with updates
+- New `prepare_regenerate()` method for atomic session ID regeneration with update/insert
 - Support for atomic (insert/update with ID regeneration) operations in both Redis and Memory stores
 
 ## [0.5.2] - 2024-02-07
