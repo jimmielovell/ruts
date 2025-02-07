@@ -165,16 +165,35 @@ where
     where
         T: Send + Sync + Serialize,
     {
-        let id = self.inner.get_or_set_id();
-        let inserted = self
-            .inner
-            .store
-            .insert(&id, field, value, self.max_age(), field_expire)
-            .await
-            .map_err(|err| {
-                tracing::error!(err = %err, "failed to insert field-value to session store");
-                err
-            })?;
+        let current_id = self.inner.get_or_set_id();
+        let pending_id = self.inner.take_pending_id();
+
+        let inserted = match pending_id {
+            Some(new_id) => {
+                let inserted = self.inner
+                    .store
+                    .insert_with_rename(&current_id, &new_id, field, value, self.max_age(), field_expire)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!(err = %err, "failed to insert field-value with rename to session store");
+                        err
+                    })?;
+                if inserted {
+                    *self.inner.id.write() = Some(new_id);
+                }
+                inserted
+            }
+            None => {
+                self.inner
+                    .store
+                    .insert(&current_id, field, value, self.max_age(), field_expire)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!(err = %err, "failed to insert field-value to session store");
+                        err
+                    })?
+            }
+        };
 
         if inserted {
             self.inner.set_changed();
@@ -232,16 +251,37 @@ where
     where
         T: Send + Sync + Serialize,
     {
-        let id = self.inner.get_or_set_id();
-        let updated = self
-            .inner
-            .store
-            .update(&id, field, value, self.max_age(), field_expire)
-            .await
-            .map_err(|err| {
-                tracing::error!(err = %err, "failed to update field in session store");
-                err
-            })?;
+        let current_id = self.inner.get_or_set_id();
+        let pending_id = self.inner.take_pending_id();
+
+        let updated = match pending_id {
+            Some(new_id) => {
+                let updated = self.inner
+                    .store
+                    .update_with_rename(&current_id, &new_id, field, value, self.max_age(), field_expire)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!(err = %err, "failed to update field-value with rename in session store");
+                        err
+                    })?;
+
+                if updated {
+                    *self.inner.id.write() = Some(new_id);
+                }
+
+                updated
+            }
+            None => {
+                self.inner
+                    .store
+                    .update(&current_id, field, value, self.max_age(), field_expire)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!(err = %err, "failed to update field in session store");
+                        err
+                    })?
+            }
+        };
 
         if updated {
             self.inner.set_changed();
@@ -415,6 +455,29 @@ where
         Ok(None)
     }
 
+    /// Prepares a new session ID to be used in the next store operation.
+    /// The new ID will be used to rename the current session when the next
+    /// insert or update operation is performed.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ruts::Session;
+    /// use fred::clients::Client;
+    /// use ruts::store::redis::RedisStore;
+    ///
+    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
+    ///     let new_id = session.prepare_regenerate();
+    ///     // The next update/insert operation will use this new ID
+    ///     session.update("field", &"value", None).await.unwrap();
+    /// }
+    /// ```
+    pub fn prepare_regenerate(&self) -> Id {
+        let new_id = Id::default();
+        self.inner.set_pending_id(Some(new_id));
+        new_id
+    }
+
     /// Returns the session ID, if it exists.
     pub fn id(&self) -> Option<Id> {
         self.inner.get_id()
@@ -433,6 +496,7 @@ const DEFAULT_COOKIE_MAX_AGE: i64 = 10 * 60;
 pub struct Inner<T: SessionStore> {
     pub state: AtomicU8,
     pub id: RwLock<Option<Id>>,
+    pub pending_id: RwLock<Option<Id>>,
     pub cookie_max_age: AtomicI64,
     pub cookie_name: Option<&'static str>,
     pub cookies: OnceLock<Cookies>,
@@ -448,6 +512,7 @@ impl<T: SessionStore> Inner<T> {
         Self {
             state: AtomicU8::new(0),
             id: RwLock::new(None),
+            pending_id: RwLock::new(None),
             cookie_max_age: AtomicI64::new(cookie_max_age.unwrap_or(DEFAULT_COOKIE_MAX_AGE)),
             cookie_name,
             cookies: OnceLock::new(),
@@ -473,6 +538,14 @@ impl<T: SessionStore> Inner<T> {
 
     pub fn set_id(&self, id: Option<Id>) {
         *self.id.write() = id;
+    }
+
+    pub fn set_pending_id(&self, id: Option<Id>) {
+        *self.pending_id.write() = id;
+    }
+
+    pub fn take_pending_id(&self) -> Option<Id> {
+        self.pending_id.write().take()
     }
 
     pub fn set_changed(&self) {

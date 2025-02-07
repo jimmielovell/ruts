@@ -2,7 +2,7 @@ use ruts::CookieOptions;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-pub struct TestUser {
+pub(crate) struct TestUser {
     pub id: i64,
     pub name: String,
 }
@@ -14,7 +14,7 @@ pub struct TestSession {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-pub struct TestPreferences {
+pub(crate) struct TestPreferences {
     pub theme: String,
     pub language: String,
 }
@@ -38,6 +38,6 @@ pub fn build_cookie_options() -> CookieOptions {
         .http_only(true)
         .same_site(cookie::SameSite::Lax)
         .secure(true)
-        .max_age(3600)
+        .max_age(15)
         .path("/")
 }
