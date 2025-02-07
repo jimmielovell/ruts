@@ -183,16 +183,15 @@ where
                 }
                 inserted
             }
-            None => {
-                self.inner
-                    .store
-                    .insert(&current_id, field, value, self.max_age(), field_expire)
-                    .await
-                    .map_err(|err| {
-                        tracing::error!(err = %err, "failed to insert field-value to session store");
-                        err
-                    })?
-            }
+            None => self
+                .inner
+                .store
+                .insert(&current_id, field, value, self.max_age(), field_expire)
+                .await
+                .map_err(|err| {
+                    tracing::error!(err = %err, "failed to insert field-value to session store");
+                    err
+                })?,
         };
 
         if inserted {
@@ -271,16 +270,15 @@ where
 
                 updated
             }
-            None => {
-                self.inner
-                    .store
-                    .update(&current_id, field, value, self.max_age(), field_expire)
-                    .await
-                    .map_err(|err| {
-                        tracing::error!(err = %err, "failed to update field in session store");
-                        err
-                    })?
-            }
+            None => self
+                .inner
+                .store
+                .update(&current_id, field, value, self.max_age(), field_expire)
+                .await
+                .map_err(|err| {
+                    tracing::error!(err = %err, "failed to update field in session store");
+                    err
+                })?,
         };
 
         if updated {

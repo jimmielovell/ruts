@@ -1,6 +1,10 @@
 mod lua;
 
-use crate::store::redis::lua::{INSERT_SCRIPT, INSERT_SCRIPT_HASH, INSERT_WITH_RENAME_SCRIPT, INSERT_WITH_RENAME_SCRIPT_HASH, RENAME_SCRIPT, RENAME_SCRIPT_HASH, UPDATE_SCRIPT, UPDATE_SCRIPT_HASH, UPDATE_WITH_RENAME_SCRIPT, UPDATE_WITH_RENAME_SCRIPT_HASH};
+use crate::store::redis::lua::{
+    INSERT_SCRIPT, INSERT_SCRIPT_HASH, INSERT_WITH_RENAME_SCRIPT, INSERT_WITH_RENAME_SCRIPT_HASH,
+    RENAME_SCRIPT, RENAME_SCRIPT_HASH, UPDATE_SCRIPT, UPDATE_SCRIPT_HASH,
+    UPDATE_WITH_RENAME_SCRIPT, UPDATE_WITH_RENAME_SCRIPT_HASH,
+};
 use crate::store::{deserialize_value, serialize_value, Error, SessionStore};
 use crate::Id;
 use fred::clients::Pool;
@@ -145,7 +149,7 @@ where
             &INSERT_WITH_RENAME_SCRIPT_HASH,
             INSERT_WITH_RENAME_SCRIPT,
         )
-            .await
+        .await
     }
 
     async fn update_with_rename<T>(
@@ -170,7 +174,7 @@ where
             &UPDATE_WITH_RENAME_SCRIPT_HASH,
             UPDATE_WITH_RENAME_SCRIPT,
         )
-            .await
+        .await
     }
 
     async fn rename_session_id(

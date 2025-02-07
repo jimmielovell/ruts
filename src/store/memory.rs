@@ -183,7 +183,9 @@ impl SessionStore for MemoryStore {
         let mut data = self.data.write();
 
         // Check if old session exists and new session doesn't
-        if !data.contains_key(&old_session_id.to_string()) || data.contains_key(&new_session_id.to_string()) {
+        if !data.contains_key(&old_session_id.to_string())
+            || data.contains_key(&new_session_id.to_string())
+        {
             return Ok(false);
         }
 
@@ -233,7 +235,9 @@ impl SessionStore for MemoryStore {
         let mut data = self.data.write();
 
         // Check if old session exists and new session doesn't
-        if !data.contains_key(&old_session_id.to_string()) || data.contains_key(&new_session_id.to_string()) {
+        if !data.contains_key(&old_session_id.to_string())
+            || data.contains_key(&new_session_id.to_string())
+        {
             return Ok(false);
         }
 
