@@ -1,10 +1,5 @@
 # Changelog
 
-## [0.5.4] - 2024-02-16
-
-### Changed
-- `prepare_regenerate()` will rename a session id if it exists, if not, a new session id is set instead.
-
 ## [0.5.5] - 2024-02-16
 
 ### Fixed
