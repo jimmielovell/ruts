@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.5] - 2024-02-16
+
+### Fixed
+
+- Inconsistent session expiration behavior in Redis UPDATE script
+- Race conditions and atomicity issues in Redis UPDATE_WITH_RENAME script
+
 ## [0.5.4] - 2024-02-16
 
 ### Changed

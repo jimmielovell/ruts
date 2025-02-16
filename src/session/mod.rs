@@ -159,7 +159,7 @@ where
     /// ```
     #[tracing::instrument(
         name = "session-store: inserting field-value",
-        skip(self, field, value)
+        skip(self, field, value, field_expire)
     )]
     pub async fn insert<T>(&self, field: &str, value: &T, field_expire: Option<i64>) -> Result<bool>
     where
@@ -245,7 +245,7 @@ where
     ///     let updated = session.update("app", &app, Some(5)).await.unwrap();
     /// }
     /// ```
-    #[tracing::instrument(name = "session-store: updating field", skip(self, field, value))]
+    #[tracing::instrument(name = "session-store: updating field", skip(self, field, value, field_expire))]
     pub async fn update<T>(&self, field: &str, value: &T, field_expire: Option<i64>) -> Result<bool>
     where
         T: Send + Sync + Serialize,

@@ -34,6 +34,26 @@ struct AppSession {
 fn routes() -> Router {
     Router::new()
         .route(
+            "/prepare_and_update",
+            get(|session: RedisSession| async move {
+                let app_session: AppSession = AppSession {
+                    user: Some(User {
+                        id: 34895634,
+                        name: String::from("John Doe"),
+                    }),
+                    ip: Some(IpAddr::from(Ipv4Addr::new(192, 168, 0, 1))),
+                    theme: Some(Theme::Dark),
+                };
+
+                session.prepare_regenerate();
+                session
+                    .update("app", &app_session, None)
+                    .await
+                    .map_err(|e| e.to_string())
+                    .unwrap();
+            }),
+        )
+        .route(
             "/insert",
             get(|session: RedisSession| async move {
                 let app_session: AppSession = AppSession {
@@ -125,6 +145,6 @@ async fn main() {
         .layer(CookieManagerLayer::new());
 
     // Run the server
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:9000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
