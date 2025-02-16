@@ -52,12 +52,14 @@ pub(crate) static INSERT_WITH_RENAME_SCRIPT: &str = r#"
     local key_seconds = tonumber(ARGV[3])
     local field_seconds = ARGV[4]
 
-    local renamed = redis.call('RENAMENX', old_key, new_key)
-    if renamed == 0 then
-        return 0  -- Either old_key doesn't exist or new_key already exists
+    local old_exists = redis.call('EXISTS', old_key)
+    if old_exists == 1 then
+        local renamed = redis.call('RENAMENX', old_key, new_key)
+        if renamed == 0 then
+            return 0
+        end
     end
 
-    -- Now we own new_key exclusively
     local inserted = redis.call('HSETNX', new_key, field, value)
 
     redis.call('EXPIRE', new_key, key_seconds)
@@ -76,12 +78,14 @@ pub(crate) static UPDATE_WITH_RENAME_SCRIPT: &str = r#"
     local key_seconds = tonumber(ARGV[3])
     local field_seconds = ARGV[4]
 
-    local renamed = redis.call('RENAMENX', old_key, new_key)
-    if renamed == 0 then
-        return 0  -- Either old_key doesn't exist or new_key already exists
+    local old_exists = redis.call('EXISTS', old_key)
+    if old_exists == 1 then
+        local renamed = redis.call('RENAMENX', old_key, new_key)
+        if renamed == 0 then
+            return 0
+        end
     end
 
-    -- Now we own new_key exclusively
     local updated = redis.call('HSET', new_key, field, value)
 
     redis.call('EXPIRE', new_key, key_seconds)
