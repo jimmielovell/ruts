@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.5] - 2024-02-16
+
+### Fixed
+
+- Inconsistent session expiration behavior in Redis UPDATE script
+- Race conditions and atomicity issues in Redis UPDATE_WITH_RENAME script
+
+## [0.5.4] - 2024-02-16
+
+### Changed
+- `prepare_regenerate()` will rename a session id if it exists, if not, a new session id is set instead.
+
 ## [0.5.3] - 2024-02-08
 
 ### Added

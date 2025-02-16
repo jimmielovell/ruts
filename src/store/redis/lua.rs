@@ -21,6 +21,7 @@ pub(crate) static INSERT_SCRIPT: &str = r#"
             redis.call('HEXPIRE', key, tonumber(field_seconds), 'FIELDS', 1, field)
         end
     end
+
     return inserted
 "#;
 
@@ -31,14 +32,16 @@ pub(crate) static UPDATE_SCRIPT: &str = r#"
     local key_seconds = tonumber(ARGV[3])
     local field_seconds = ARGV[4]
 
+    local exists = redis.call('EXISTS', key)
     local updated = redis.call('HSET', key, field, value)
-    if updated == 1 then
-        redis.call('EXPIRE', key, key_seconds)
-        if field_seconds ~= '' then
-            redis.call('HEXPIRE', key, tonumber(field_seconds), 'FIELDS', 1, field)
-        end
+
+    redis.call('EXPIRE', key, key_seconds)
+
+    if field_seconds ~= '' then
+        redis.call('HEXPIRE', key, tonumber(field_seconds), 'FIELDS', 1, field)
     end
-    return updated
+
+    return updated > 0 or exists == 1
 "#;
 
 pub(crate) static INSERT_WITH_RENAME_SCRIPT: &str = r#"
@@ -49,24 +52,19 @@ pub(crate) static INSERT_WITH_RENAME_SCRIPT: &str = r#"
     local key_seconds = tonumber(ARGV[3])
     local field_seconds = ARGV[4]
 
-    local exists = redis.call('EXISTS', old_key)
-    if exists == 0 then
-        return 0
+    local renamed = redis.call('RENAMENX', old_key, new_key)
+    if renamed == 0 then
+        return 0  -- Either old_key doesn't exist or new_key already exists
     end
 
-    local new_exists = redis.call('EXISTS', new_key)
-    if new_exists == 1 then
-        return 0
+    -- Now we own new_key exclusively
+    local inserted = redis.call('HSETNX', new_key, field, value)
+
+    redis.call('EXPIRE', new_key, key_seconds)
+    if field_seconds ~= '' then
+        redis.call('HEXPIRE', new_key, tonumber(field_seconds), 'FIELDS', 1, field)
     end
 
-    local inserted = redis.call('HSETNX', old_key, field, value)
-    if inserted == 1 then
-        redis.call('RENAMENX', old_key, new_key)
-        redis.call('EXPIRE', new_key, key_seconds)
-        if field_seconds ~= '' then
-            redis.call('HEXPIRE', new_key, tonumber(field_seconds), 'FIELDS', 1, field)
-        end
-    end
     return inserted
 "#;
 
@@ -78,26 +76,20 @@ pub(crate) static UPDATE_WITH_RENAME_SCRIPT: &str = r#"
     local key_seconds = tonumber(ARGV[3])
     local field_seconds = ARGV[4]
 
-    local exists = redis.call('EXISTS', old_key)
-    if exists == 0 then
-        return 0
+    local renamed = redis.call('RENAMENX', old_key, new_key)
+    if renamed == 0 then
+        return 0  -- Either old_key doesn't exist or new_key already exists
     end
 
-    local new_exists = redis.call('EXISTS', new_key)
-    if new_exists == 1 then
-        return 0
+    -- Now we own new_key exclusively
+    local updated = redis.call('HSET', new_key, field, value)
+
+    redis.call('EXPIRE', new_key, key_seconds)
+    if field_seconds ~= '' then
+        redis.call('HEXPIRE', new_key, tonumber(field_seconds), 'FIELDS', 1, field)
     end
 
-    -- Update the field
-    local updated = redis.call('HSET', old_key, field, value)
-    if updated == 1 then
-        redis.call('RENAMENX', old_key, new_key)
-        redis.call('EXPIRE', new_key, key_seconds)
-        if field_seconds ~= '' then
-            redis.call('HEXPIRE', new_key, tonumber(field_seconds), 'FIELDS', 1, field)
-        end
-    end
-    return updated
+    return 1
 "#;
 
 pub(crate) const RENAME_SCRIPT: &str = r#"
@@ -109,5 +101,6 @@ pub(crate) const RENAME_SCRIPT: &str = r#"
     if renamed == 1 then
         redis.call('EXPIRE', new_key, seconds)
     end
+
     return renamed
 "#;
