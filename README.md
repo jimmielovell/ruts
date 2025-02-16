@@ -23,7 +23,7 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruts = "0.5.3"
+ruts = "0.5.4"
 ```
 
 ## Quick Start

@@ -454,7 +454,7 @@ where
     }
 
     /// Prepares a new session ID to be used in the next store operation.
-    /// The new ID will be used to rename the current session when the next
+    /// The new ID will be used to rename the current session (if it exists) when the next
     /// insert or update operation is performed.
     ///
     /// # Example
@@ -471,9 +471,13 @@ where
     /// }
     /// ```
     pub fn prepare_regenerate(&self) -> Id {
-        let new_id = Id::default();
-        self.inner.set_pending_id(Some(new_id));
-        new_id
+        if self.id().is_none() {
+            self.inner.get_or_set_id()
+        } else {
+            let new_id = Id::default();
+            self.inner.set_pending_id(Some(new_id));
+            new_id
+        }
     }
 
     /// Returns the session ID, if it exists.
