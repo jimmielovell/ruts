@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Update/insert redis session with rename even if old_key is not found in store'
+- Update/insert redis session with rename even if old_key is not found in store
 
 ## [0.5.5] - 2024-02-16
 

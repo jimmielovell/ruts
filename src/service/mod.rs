@@ -15,6 +15,7 @@ use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::task::{ready, Context, Poll};
 
 /// A Tower Middleware to use `Session`.
@@ -179,7 +180,7 @@ where
                 this.inner_session.get_cookies(),
             ) {
                 if let Some(id) = this.inner_session.id.read().as_ref() {
-                    build_cookie(id, cookie_options, cookies);
+                    build_cookie(id, cookie_options, this.inner_session.cookie_max_age.load(Ordering::Relaxed), cookies);
                 }
             }
         }
@@ -188,12 +189,12 @@ where
     }
 }
 
-fn build_cookie(id: &Id, cookie_options: &CookieOptions, cookies: &Cookies) {
+fn build_cookie(id: &Id, cookie_options: &CookieOptions, cookie_max_age: i64, cookies: &Cookies) {
     let cookie_builder = Cookie::build((cookie_options.name, id.to_string()))
         .secure(cookie_options.secure)
         .http_only(cookie_options.http_only)
         .same_site(cookie_options.same_site)
-        .max_age(Duration::seconds(cookie_options.max_age));
+        .max_age(Duration::seconds(cookie_max_age));
 
     let cookie_builder = if let Some(domain) = cookie_options.domain {
         cookie_builder.domain(domain)
