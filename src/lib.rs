@@ -12,3 +12,6 @@ pub use service::*;
 // Reexport external crates
 pub use cookie;
 pub use tower_cookies;
+
+#[cfg(feature = "redis-store")]
+pub use fred;
