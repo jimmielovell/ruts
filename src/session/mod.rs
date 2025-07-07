@@ -409,10 +409,8 @@ where
     ///
     /// Any subsequent call to `insert`, `update` or `regenerate` within this request cycle
     /// will use this value.
-    ///
-    /// NOTE: This does not change the `max-age` value set in the `CookieOptions`.
     pub fn set_expiration(&self, seconds: i64) {
-        self.inner.cookie_max_age.store(seconds, Ordering::Relaxed);
+        self.inner.cookie_max_age.store(seconds, Ordering::SeqCst);
     }
 
     /// Regenerates the session with a new ID.
@@ -440,7 +438,7 @@ where
             .rename_session_id(&old_id.unwrap(), &new_id, self.max_age())
             .await
             .map_err(|err| {
-                tracing::error!(err = %err, "failed to regenerate session id");
+                tracing::error!(err = %err, "failed to regenerate session id: {err:?}");
                 err
             })?;
 
@@ -486,7 +484,7 @@ where
     }
 
     fn max_age(&self) -> i64 {
-        self.inner.cookie_max_age.load(Ordering::Relaxed)
+        self.inner.cookie_max_age.load(Ordering::SeqCst)
     }
 }
 
@@ -523,11 +521,11 @@ impl<T: SessionStore> Inner<T> {
     }
 
     pub fn is_changed(&self) -> bool {
-        self.state.load(Ordering::Relaxed) & SESSION_STATE_CHANGED != 0
+        self.state.load(Ordering::SeqCst) & SESSION_STATE_CHANGED != 0
     }
 
     pub fn is_deleted(&self) -> bool {
-        self.state.load(Ordering::Relaxed) & SESSION_STATE_DELETED != 0
+        self.state.load(Ordering::SeqCst) & SESSION_STATE_DELETED != 0
     }
 
     pub fn get_id(&self) -> Option<Id> {
@@ -552,12 +550,12 @@ impl<T: SessionStore> Inner<T> {
 
     pub fn set_changed(&self) {
         self.state
-            .fetch_or(SESSION_STATE_CHANGED, Ordering::Relaxed);
+            .fetch_or(SESSION_STATE_CHANGED, Ordering::SeqCst);
     }
 
     pub fn set_deleted(&self) {
         self.state
-            .fetch_or(SESSION_STATE_DELETED, Ordering::Relaxed);
+            .fetch_or(SESSION_STATE_DELETED, Ordering::SeqCst);
     }
 
     pub fn get_cookies(&self) -> Option<&Cookies> {

@@ -27,7 +27,6 @@ where
 
         // Cookies are only used if the SessionLayer has a cookie_options set.
         let cookie_name = session_inner.cookie_name.ok_or_else(|| {
-            tracing::error!("missing cookie options");
             (StatusCode::INTERNAL_SERVER_ERROR, "Missing cookie options")
         })?;
 

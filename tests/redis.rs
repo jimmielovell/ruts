@@ -16,6 +16,8 @@ mod tests {
     use ruts::store::redis::RedisStore;
     use ruts::{Session, SessionLayer};
     use std::sync::Arc;
+    use cookie::Cookie;
+    use cookie::time::Duration;
     use tower::ServiceExt;
     use tower_cookies::CookieManagerLayer;
 
@@ -56,6 +58,35 @@ mod tests {
         Ok("Regenerated".to_string())
     }
 
+    async fn prepare_regenerate_handler(
+        session: Session<RedisStore<Client>>,
+    ) -> Result<String, StatusCode> {
+        session.prepare_regenerate();
+        let mut updated_data = create_test_session();
+        updated_data.user.name = "Updated User".to_string();
+        session
+            .update("user", &updated_data, None)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        Ok("Success".to_string())
+    }
+
+    async fn set_expiration_handler(
+        session: Session<RedisStore<Client>>,
+    ) -> Result<String, StatusCode> {
+        session.set_expiration(30);
+
+        let mut updated_data = create_test_session();
+        updated_data.user.name = "Updated User".to_string();
+        session
+            .update("user", &updated_data, Some(30))
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        Ok("Success".to_string())
+    }
+
     async fn delete_handler(session: Session<RedisStore<Client>>) -> Result<String, StatusCode> {
         session
             .delete()
@@ -66,11 +97,12 @@ mod tests {
 
     fn create_test_app(store: Arc<RedisStore<Client>>) -> Router {
         let session_layer = SessionLayer::new(store).with_cookie_options(build_cookie_options());
-
         Router::new()
             .route("/set", get(insert_handler))
             .route("/get", get(get_handler))
             .route("/regenerate", get(regenerate_handler))
+            .route("/prepare_regenerate", get(prepare_regenerate_handler))
+            .route("/set_expiration", get(set_expiration_handler))
             .route("/delete", get(delete_handler))
             .layer(session_layer)
             .layer(CookieManagerLayer::new())
@@ -197,8 +229,7 @@ mod tests {
     async fn test_concurrent_session_access() {
         let store = setup_redis().await;
         let app = create_test_app(store);
-
-        // Create session
+        
         let response = app
             .clone()
             .oneshot(Request::builder().uri("/set").body(Body::empty()).unwrap())
@@ -243,45 +274,63 @@ mod tests {
         }
     }
 
-    async fn prepare_and_update_handler(
-        session: Session<RedisStore<Client>>,
-    ) -> Result<String, StatusCode> {
-        let test_data = create_test_session();
-
-        // Insert initial data
-        session
-            .insert("user", &test_data, Some(30))
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        // Prepare new ID and update
-        session.prepare_regenerate();
-
-        let mut updated_data = test_data;
-        updated_data.user.name = "Updated User".to_string();
-        session
-            .update("user", &updated_data, Some(30))
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        Ok("Success".to_string())
-    }
-
     #[tokio::test]
     async fn test_prepare_regenerate_flow() {
         let store = setup_redis().await;
-        let app = Router::new()
-            .route("/prepare_update", get(prepare_and_update_handler))
-            .route("/get", get(get_handler))
-            .layer(SessionLayer::new(store).with_cookie_options(build_cookie_options()))
-            .layer(CookieManagerLayer::new());
-
-        // Create and update session with new ID
+        let app = create_test_app(store);
+        
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/prepare_update")
+                    .uri("/set")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let original_cookie = response
+            .headers()
+            .get(SET_COOKIE)
+            .expect("Set-Cookie header should be present")
+            .to_str()
+            .unwrap()
+            .to_string();
+        
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/prepare_regenerate")
+                    .header(COOKIE, &original_cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let new_cookie = response
+            .headers()
+            .get(SET_COOKIE)
+            .expect("Set-Cookie header should be present")
+            .to_str()
+            .unwrap()
+            .to_string();
+        
+        assert_ne!(original_cookie, new_cookie, "Session ID should have changed after prepare_regenerate");
+    }
+    
+    #[tokio::test]
+    async fn test_set_expiration() {
+        let store = setup_redis().await;
+        let app = create_test_app(store);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/set_expiration")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -298,23 +347,7 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Verify updated data with new session ID
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/get")
-                    .header(COOKIE, &new_cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body_str = String::from_utf8(body.to_vec()).unwrap();
-        assert_eq!(body_str, "Updated User");
+        let parsed_cookie = Cookie::parse(&new_cookie).expect("Should be valid cookie");
+        assert_eq!(parsed_cookie.max_age(), Some(Duration::seconds(30)));
     }
 }

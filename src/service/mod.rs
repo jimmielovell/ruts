@@ -180,7 +180,7 @@ where
                 this.inner_session.get_cookies(),
             ) {
                 if let Some(id) = this.inner_session.id.read().as_ref() {
-                    build_cookie(id, cookie_options, this.inner_session.cookie_max_age.load(Ordering::Relaxed), cookies);
+                    build_cookie(id, cookie_options, this.inner_session.cookie_max_age.load(Ordering::SeqCst), cookies);
                 }
             }
         }

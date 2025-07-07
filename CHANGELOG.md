@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.8] - 2025-07-07
+
+- Optimized update/insert redis lua scripts
+- Use Ordering::SeqCst for all cookie max_age operations
+
 ## [0.5.6] - 2024-02-16
 
 ### Fixed

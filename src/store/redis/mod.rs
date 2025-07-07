@@ -246,9 +246,7 @@ where
         .await?;
 
     let serialized_value = serialize_value(value)?;
-    let field_seconds_bytes = field_seconds
-        .map(|s| s.to_string().as_bytes().to_vec())
-        .unwrap_or_else(|| b"".to_vec());
+    let field_seconds = field_seconds.unwrap_or(key_seconds);
 
     let done: bool = client
         .evalsha(
@@ -258,7 +256,7 @@ where
                 field.as_bytes(),
                 &serialized_value,
                 key_seconds.to_string().as_bytes(),
-                &field_seconds_bytes,
+                field_seconds.to_string().as_bytes(),
             ],
         )
         .await?;
