@@ -7,12 +7,26 @@ use std::time::{Duration, Instant};
 use crate::store::{Error, SessionStore};
 use crate::Id;
 
+#[cfg(feature = "messagepack")]
 pub(crate) fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
     rmp_serde::to_vec(value).map_err(|e| Error::Encode(e.to_string()))
 }
 
+#[cfg(feature = "messagepack")]
 pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, Error> {
     rmp_serde::from_slice(value).map_err(|e| Error::Decode(e.to_string()))
+}
+
+#[cfg(feature = "bincode")]
+pub(crate) fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
+    let e = bincode::serde::encode_to_vec(value, bincode::config::standard())?;
+    Ok(e)
+}
+
+#[cfg(feature = "bincode")]
+pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, Error> {
+    let (d, _) = bincode::serde::decode_from_slice(value, bincode::config::standard())?;
+    Ok(d)
 }
 
 #[derive(Debug, Clone)]

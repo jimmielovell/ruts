@@ -1,4 +1,4 @@
-//! Session management middleware for tower applications.
+//! Session management middleware for tower applications
 //!
 //! This module provides [`SessionLayer`] for integrating
 //! session management into tower applications.
@@ -14,8 +14,8 @@ use cookie::time::Duration;
 use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::task::{ready, Context, Poll};
 
 /// A Tower Middleware to use `Session`.
@@ -107,7 +107,6 @@ pub struct SessionLayer<T: SessionStore> {
     cookie_options: Option<CookieOptions>,
     store: Arc<T>,
 }
-
 impl<T> SessionLayer<T>
 where
     T: SessionStore,
@@ -180,7 +179,12 @@ where
                 this.inner_session.get_cookies(),
             ) {
                 if let Some(id) = this.inner_session.id.read().as_ref() {
-                    build_cookie(id, cookie_options, this.inner_session.cookie_max_age.load(Ordering::SeqCst), cookies);
+                    build_cookie(
+                        id,
+                        cookie_options,
+                        this.inner_session.cookie_max_age.load(Ordering::SeqCst),
+                        cookies,
+                    );
                 }
             }
         }

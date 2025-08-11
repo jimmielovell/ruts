@@ -4,18 +4,7 @@
 [![Crates.io](https://img.shields.io/crates/v/ruts.svg)](https://crates.io/crates/ruts)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.75.0%2B-blue.svg?maxAge=3600)](
-github.com/jimmielovell/ruts)
-
-Ruts is a robust, flexible session management library for Rust web applications. It provides a seamless way to handle cookie sessions in tower-based web frameworks, with a focus on security, performance, and ease of use.
-
-## Features
-
-- 🚀 High-performance session management
-- 🔒 Secure by default with configurable options
-- 🔄 Built-in Redis session store support
-- 🛠 Flexible API supporting custom session stores
-- ⚡ Optimized for tower-based frameworks like axum
-- 🍪 Comprehensive cookie management
+https://github.com/jimmielovell/ruts)
 
 ## Installation
 
@@ -23,12 +12,12 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruts = "0.5.8"
+ruts = "0.5.9"
 ```
 
 ## Quick Start
 
-Here's a basic example using `ruts` with [axum](https://docs.rs/axum/latest/axum/):
+Here's a basic example with [Axum](https://docs.rs/axum/latest/axum/):
 
 ```rust
 use axum::{Router, routing::get};
@@ -65,8 +54,8 @@ async fn main() {
     // Set up router with session management
     let app = Router::new()
         .route("/", get(handler))
-        .layer(session_layer)             // SessionLayer must be below
-        .layer(CookieManagerLayer::new()); // CookieManagerLayer must be on top
+        .layer(session_layer)
+        .layer(CookieManagerLayer::new()); // CookieManagerLayer must be after
 
     // Run the server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
@@ -124,7 +113,7 @@ A Redis-backed session store implementation.
 
 #### Requirements
 
-- Redis 7.4 or later (required for field-level expiration using HEXPIRE)
+- Redis 7.4 or later (required for field-level expiration using [HEXPIRE](https://redis.io/docs/latest/commands/hexpire/))
 - For Redis < 7.4, field-level expiration will not be available
 
 ```rust
@@ -132,6 +121,20 @@ use ruts::store::redis::RedisStore;
 
 let store = RedisStore::new(Arc::new(fred_client_or_pool));
 ```
+
+### Serialization
+Ruts supports two serialization backends for session data storage:
+
+`bincode` (default) - Fast binary serialization
+`messagepack` - Cross-language compatible serialization
+
+To use `MessagePack` instead of the default `bincode`, add this to your `Cargo.toml`:
+
+```toml
+[dependencies]
+ruts = { version = "0.5.9", default-features = false, features = ["axum", "redis-store", "messagepack"] }
+```
+
 
 ### Cookie Configuration
 
@@ -143,17 +146,17 @@ let cookie_options = CookieOptions::build()
     .secure(true)
     .max_age(7200) // 2 hours
     .path("/")
-    .domain("example.com");  // Optional
+    .domain("example.com");
 ```
 
 ## Important Notes
 
 ### Middleware Ordering
-When using cookie-based sessions, the SessionLayer must be applied **before** the CookieManagerLayer:
+The `SessionLayer` must be applied **before** the `CookieManagerLayer`:
 
 ```rust
-app.layer(session_layer)              // First: Session layer
-   .layer(CookieManagerLayer::new()); // Then: Cookie layer on top
+app.layer(session_layer)              // First: SessionLayer
+   .layer(CookieManagerLayer::new()); // Then CookieManagerLayer
 ```
 
 ### Security Best Practices
@@ -162,19 +165,7 @@ app.layer(session_layer)              // First: Session layer
 - Use appropriate `SameSite` cookie settings
 - Add session expiration
 - Regularly regenerate session IDs
-- Set proper cookie attributes (`http_only: true`)
-
-## Error Handling
-
-The library provides a comprehensive error type for handling various session-related errors:
-
-```rust
-match session.get::<User>("user").await {
-    Ok(Some(user)) => { /* Handle user */ }
-    Ok(None) => { /* No user found */ }
-    Err(e) => { /* Handle error */ }
-}
-```
+- Enable HTTP Only mode in production (set `http_only: true`)
 
 ## Contributing
 
