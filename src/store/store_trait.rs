@@ -23,6 +23,20 @@ impl From<fred::error::Error> for Error {
     }
 }
 
+#[cfg(feature = "bincode")]
+impl From<bincode::error::EncodeError> for Error {
+    fn from(value: bincode::error::EncodeError) -> Self {
+        Error::Backend(value.to_string())
+    }
+}
+
+#[cfg(feature = "bincode")]
+impl From<bincode::error::DecodeError> for Error {
+    fn from(value: bincode::error::DecodeError) -> Self {
+        Error::Backend(value.to_string())
+    }
+}
+
 pub trait SessionStore: Clone + Send + Sync + 'static {
     /// Gets the `value` for a `field` stored at `session_id`
     fn get<T>(

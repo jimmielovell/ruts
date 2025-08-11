@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.9] - 2025-08-11
+
+### Added
+
+- Support for bincode serialization backend
+
+### Changed
+
+- BREAKING: Default serialization backend changed from messagepack to bincode
+- redis-store feature no longer automatically enables messagepack
+- Improved documentation with serialization feature examples
+
 ## [0.5.8] - 2025-07-07
 
 - Optimized update/insert redis lua scripts
