@@ -5,13 +5,15 @@ use crate::store::redis::lua::{
     RENAME_SCRIPT, RENAME_SCRIPT_HASH, UPDATE_SCRIPT, UPDATE_SCRIPT_HASH,
     UPDATE_WITH_RENAME_SCRIPT, UPDATE_WITH_RENAME_SCRIPT_HASH,
 };
-use crate::store::{deserialize_value, serialize_value, Error, SessionStore};
+use crate::store::{deserialize_value, serialize_value, Error, SessionMap, SessionStore};
 use crate::Id;
 use fred::clients::Pool;
 use fred::interfaces::{HashesInterface, KeysInterface};
 use fred::prelude::LuaInterface;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{fmt::Debug, sync::Arc};
+use std::collections::HashMap;
+use dashmap::DashMap;
 use tokio::sync::OnceCell;
 
 /// A redis session store implementation.
@@ -61,22 +63,22 @@ where
         Ok(deserialized)
     }
 
-    async fn get_all<T>(&self, session_id: &Id) -> Result<Option<T>, Error>
-    where
-        T: Clone + Send + Sync + DeserializeOwned,
+    async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error>
     {
-        let value = self
+        let result = self
             .client
-            .hgetall::<Option<Vec<u8>>, _>(session_id)
+            .hgetall::<Option<HashMap<String, Vec<u8>>>, _>(session_id)
             .await?;
-
-        let deserialized = if let Some(value) = value {
-            Some(deserialize_value::<T>(&value)?)
-        } else {
-            None
-        };
-
-        Ok(deserialized)
+        
+        if result.is_none() {
+            return Ok(None)
+        }
+        
+        let result = result.unwrap();
+        let map = DashMap::with_capacity(result.len());
+        result.into_iter().for_each(|(field, value)| { map.insert(field, value); });
+        
+        Ok(Some(SessionMap::new(map)))
     }
 
     async fn insert<T>(

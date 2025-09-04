@@ -5,10 +5,10 @@ mod tests {
     use super::*;
 
     use common::*;
-    use ruts::store::MemoryStore;
     use ruts::store::SessionStore;
     use ruts::{Inner, Session};
     use std::sync::Arc;
+    use ruts::store::memory::MemoryStore;
 
     fn create_inner<S: SessionStore>(
         store: Arc<S>,

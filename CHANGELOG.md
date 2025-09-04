@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.0] - 2025-09-05
+
+### Added
+
+- A new session store backend for PostgreSQL, available under the postgres-store feature flag.
+
+### Changed
+
+- The `get_all` method now returns an `Option<SessionMap>`, a wrapper around a `DashMap<String, Vec<u8>>`. This allows for efficient bulk fetching of all session data with lazy, on-demand deserialization of individual fields, avoiding issues with non-self-describing serialization formats.
+- The internal implementation of `MemoryStore` now uses `dashmap::DashMap`.
+
+### Breaking Changes
+
+- `Session` and `SessionService` no longer default to using `RedisStore`. Users must now explicitly specify the store type they are using (e.g., `Session<RedisStore>`, `SessionLayer::new<PostgresStore>(...))`.
+
 ## [0.5.9] - 2025-08-11
 
 ### Added

@@ -1,7 +1,7 @@
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Debug;
 use std::future::Future;
-
+use dashmap::DashMap;
 use crate::Id;
 
 #[derive(thiserror::Error, Debug)]
@@ -23,6 +23,13 @@ impl From<fred::error::Error> for Error {
     }
 }
 
+#[cfg(feature = "postgres-store")]
+impl From<sqlx::Error> for Error {
+    fn from(value: sqlx::Error) -> Self {
+        Error::Backend(value.to_string())
+    }
+}
+
 #[cfg(feature = "bincode")]
 impl From<bincode::error::EncodeError> for Error {
     fn from(value: bincode::error::EncodeError) -> Self {
@@ -37,6 +44,48 @@ impl From<bincode::error::DecodeError> for Error {
     }
 }
 
+#[cfg(feature = "messagepack")]
+pub(crate) fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
+    rmp_serde::to_vec(value).map_err(|e| Error::Encode(e.to_string()))
+}
+
+#[cfg(feature = "messagepack")]
+pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, Error> {
+    rmp_serde::from_slice(value).map_err(|e| Error::Decode(e.to_string()))
+}
+
+#[cfg(feature = "bincode")]
+pub(crate) fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
+    let e = bincode::serde::encode_to_vec(value, bincode::config::standard())?;
+    Ok(e)
+}
+
+#[cfg(feature = "bincode")]
+pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, Error> {
+    let (d, _) = bincode::serde::decode_from_slice(value, bincode::config::standard())?;
+    Ok(d)
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionMap(DashMap<String, Vec<u8>>);
+
+impl SessionMap {
+    pub(crate) fn new(map: DashMap<String, Vec<u8>>) -> Self {
+        Self(map)
+    }
+
+    /// Deserializes a specific field from the session data into a requested type.
+    ///
+    /// Returns `Ok(None)` if the field does not exist, `Err` if deserialization fails,
+    /// and `Ok(Some(value))` on success.
+    pub fn get<T: DeserializeOwned>(&self, field: &str) -> Result<Option<T>, Error> {
+        match self.0.get(field) {
+            Some(bytes) => deserialize_value(&**bytes).map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
 pub trait SessionStore: Clone + Send + Sync + 'static {
     /// Gets the `value` for a `field` stored at `session_id`
     fn get<T>(
@@ -48,9 +97,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         T: Clone + Send + Sync + DeserializeOwned;
 
     /// Gets all the `field`-`value` pairs stored at `session_id`
-    fn get_all<T>(&self, session_id: &Id) -> impl Future<Output = Result<Option<T>, Error>> + Send
-    where
-        T: Clone + Send + Sync + DeserializeOwned;
+    fn get_all(&self, session_id: &Id) -> impl Future<Output = Result<Option<SessionMap>, Error>> + Send;
 
     /// Sets a `field` stored at `session_id` to its provided `value`,
     /// only if the `field` does not exist.

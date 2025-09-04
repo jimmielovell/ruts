@@ -12,7 +12,7 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruts = "0.5.9"
+ruts = "0.6.0"
 ```
 
 ## Quick Start
@@ -76,7 +76,10 @@ async fn handler(session: Session<RedisStore<Client>>) -> String {
 
 ```rust
 // Get session data
-let value: ValueType = session.get("key").await?;
+let value: Option<T> = session.get("key").await?;
+
+// Get all session data
+let value: Option<SessionMap> = session.get_all().await?;
 
 // Insert new data
 session.insert("key", &value, optional_field_expiration).await?;
@@ -108,11 +111,14 @@ session.expire(seconds)
 session.id()
 ```
 
-### Redis Store (Default session store)
+## Stores
+
+### Redis
 A Redis-backed session store implementation.
 
 #### Requirements
 
+- The `redis-store` feature.
 - Redis 7.4 or later (required for field-level expiration using [HEXPIRE](https://redis.io/docs/latest/commands/hexpire/))
 - For Redis < 7.4, field-level expiration will not be available
 
@@ -120,6 +126,32 @@ A Redis-backed session store implementation.
 use ruts::store::redis::RedisStore;
 
 let store = RedisStore::new(Arc::new(fred_client_or_pool));
+```
+
+### Postgres
+A Postgres-backed session store implementation.
+
+#### Requirements
+
+- The `postgres-store` feature.
+
+```rust
+use ruts::store::postgres::PostgresStoreBuilder;
+
+// 1. Set up your database connection pool.
+let database_url = std::env::var("DATABASE_URL")
+    .expect("DATABASE_URL must be set");
+let pool = PgPool::connect(&database_url).await.unwrap();
+
+// 2. Create the session store using the builder.
+// This will also run a migration to create the `sessions` table.
+let store = PostgresStoreBuilder::new(pool)
+    // Optionally, you can customize the schema and table name
+    // .schema_name("my_app")
+    // .table_name("user_sessions")
+    .build()
+    .await
+    .unwrap();
 ```
 
 ### Serialization
@@ -134,7 +166,6 @@ To use `MessagePack` instead of the default `bincode`, add this to your `Cargo.t
 [dependencies]
 ruts = { version = "0.5.9", default-features = false, features = ["axum", "redis-store", "messagepack"] }
 ```
-
 
 ### Cookie Configuration
 

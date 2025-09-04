@@ -1,5 +1,7 @@
-mod memory;
-pub use memory::*;
+pub mod memory;
+
+#[cfg(feature = "postgres-store")]
+pub mod postgres;
 
 #[cfg(feature = "redis-store")]
 pub mod redis;
