@@ -64,7 +64,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ruts = { version = "0.5.9", default-features = false, features = ["axum", "redis-store", "messagepack"] }
+//! ruts = { version = "0.6.0", default-features = false, features = ["axum", "redis-store", "messagepack"] }
 //! ```
 //!
 //! ## Important Notes

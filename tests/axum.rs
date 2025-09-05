@@ -12,7 +12,7 @@ mod tests {
     };
     use common::*;
     use http::header::{COOKIE, SET_COOKIE};
-    use ruts::store::MemoryStore;
+    use ruts::store::memory::MemoryStore;
     use ruts::{CookieOptions, Session, SessionLayer};
     use std::sync::Arc;
     use tower::ServiceExt;

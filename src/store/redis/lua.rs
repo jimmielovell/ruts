@@ -2,6 +2,7 @@ use tokio::sync::OnceCell;
 
 pub(crate) static INSERT_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
 pub(crate) static UPDATE_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
+pub(crate) static UPDATE_MANY_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
 pub(crate) static INSERT_WITH_RENAME_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
 pub(crate) static UPDATE_WITH_RENAME_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
 pub(crate) static RENAME_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
@@ -41,6 +42,53 @@ pub(crate) static UPDATE_SCRIPT: &str = r#"
     
     if field_seconds_num and field_seconds_num > 0 then
         redis.call('HEXPIRE', key, field_seconds_num, 'FIELDS', 1, field)
+    end
+
+    return 1
+"#;
+
+pub(crate) static UPDATE_MANY_SCRIPT: &str = r#"
+    -- KEYS[1]: session key
+    -- ARGV[1...N]: A flattened list of field-value-field_expiry_seconds triples.
+
+    local key = KEYS[1]
+
+    if (#ARGV % 3) ~= 0 then
+        return redis.error_reply("ARGV must be field,value,expiry triples")
+    end
+
+    local hset_args = {key}
+    local max_field_seconds = 0
+    local has_persistent_field = false
+
+    for i = 1, #ARGV, 3 do
+        table.insert(hset_args, ARGV[i])     -- field
+        table.insert(hset_args, ARGV[i + 1]) -- value
+
+        if not has_persistent_field then
+            local field_seconds = tonumber(ARGV[i + 2])
+            if field_seconds and field_seconds < 0 then
+                has_persistent_field = true
+            elseif field_seconds and field_seconds > max_field_seconds then
+                max_field_seconds = field_seconds
+            end
+        end
+    end
+
+    redis.call('HSET', unpack(hset_args))
+
+    if has_persistent_field then
+        redis.call('PERSIST', key)
+    elseif max_field_seconds > 0 then
+        redis.call('EXPIRE', key, max_field_seconds)
+    end
+
+    for i = 1, #ARGV, 3 do
+        local field = ARGV[i]
+        local field_seconds = tonumber(ARGV[i + 2])
+        if field_seconds and field_seconds > 0 then
+            redis.call('HEXPIRE', key, field_seconds, 'FIELDS', 1, field)
+        end
     end
 
     return 1

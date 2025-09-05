@@ -13,8 +13,7 @@ mod cookie_options;
 mod id;
 
 use crate::store;
-use crate::store::redis::RedisStore;
-use crate::store::SessionStore;
+use crate::store::{SessionMap, SessionStore};
 pub use cookie_options::CookieOptions;
 pub use id::Id;
 
@@ -29,10 +28,8 @@ pub enum Error {
 type Result<T> = result::Result<T, Error>;
 
 /// A parsed on-demand session store.
-///
-/// The default store is the `RedisStore`<RedisPool>
 #[derive(Clone, Debug)]
-pub struct Session<S: SessionStore = RedisStore> {
+pub struct Session<S: SessionStore> {
     inner: Arc<Inner<S>>,
 }
 
@@ -49,7 +46,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use serde::Deserialize;
@@ -94,18 +91,18 @@ where
         }
     }
 
-    /// Retrieves values for all fields from the session store.
+    //// Retrieves all fields from the session store as a `SessionMap`.
+    ///
+    /// This method performs one bulk query to the store and returns a wrapper
+    /// that allows for lazy, on-demand deserialization of each field.
     #[tracing::instrument(
         name = "session-store: getting values for all fields for session id",
         skip(self)
     )]
-    pub async fn get_all<T>(&self) -> Result<Option<T>>
-    where
-        T: Clone + Send + Sync + DeserializeOwned,
-    {
+    pub async fn get_all(&self) -> Result<Option<SessionMap>> {
         match self.id() {
             Some(id) => self.inner.store.get_all(&id).await.map_err(|err| {
-                tracing::error!(err = %err, "failed to get values for all fields from the session store");
+                tracing::error!(err = %err, "failed to get all values from session store");
                 err.into()
             }),
             None => {
@@ -121,7 +118,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use serde::Serialize;
@@ -163,7 +160,7 @@ where
     )]
     pub async fn insert<T>(&self, field: &str, value: &T, field_expire: Option<i64>) -> Result<bool>
     where
-        T: Send + Sync + Serialize,
+        T: Send + Sync + Serialize + 'static,
     {
         let current_id = self.inner.get_or_set_id();
         let pending_id = self.inner.take_pending_id();
@@ -209,7 +206,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use serde::Serialize;
@@ -245,10 +242,13 @@ where
     ///     let updated = session.update("app", &app, Some(5)).await.unwrap();
     /// }
     /// ```
-    #[tracing::instrument(name = "session-store: updating field", skip(self, field, value, field_expire))]
+    #[tracing::instrument(
+        name = "session-store: updating field",
+        skip(self, field, value, field_expire)
+    )]
     pub async fn update<T>(&self, field: &str, value: &T, field_expire: Option<i64>) -> Result<bool>
     where
-        T: Send + Sync + Serialize,
+        T: Send + Sync + Serialize + 'static,
     {
         let current_id = self.inner.get_or_set_id();
         let pending_id = self.inner.take_pending_id();
@@ -294,7 +294,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
@@ -330,7 +330,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
@@ -367,7 +367,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
@@ -419,7 +419,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
@@ -457,7 +457,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::Session;
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
@@ -549,13 +549,11 @@ impl<T: SessionStore> Inner<T> {
     }
 
     pub fn set_changed(&self) {
-        self.state
-            .fetch_or(SESSION_STATE_CHANGED, Ordering::SeqCst);
+        self.state.fetch_or(SESSION_STATE_CHANGED, Ordering::SeqCst);
     }
 
     pub fn set_deleted(&self) {
-        self.state
-            .fetch_or(SESSION_STATE_DELETED, Ordering::SeqCst);
+        self.state.fetch_or(SESSION_STATE_DELETED, Ordering::SeqCst);
     }
 
     pub fn get_cookies(&self) -> Option<&Cookies> {

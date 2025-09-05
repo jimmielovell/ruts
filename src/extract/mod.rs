@@ -26,9 +26,9 @@ where
         })?;
 
         // Cookies are only used if the SessionLayer has a cookie_options set.
-        let cookie_name = session_inner.cookie_name.ok_or_else(|| {
-            (StatusCode::INTERNAL_SERVER_ERROR, "Missing cookie options")
-        })?;
+        let cookie_name = session_inner
+            .cookie_name
+            .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "Missing cookie options"))?;
 
         let cookies_ext = parts.extensions.get::<Cookies>().ok_or_else(|| {
             tracing::error!("cookies not found in the request extensions");

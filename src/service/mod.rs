@@ -3,24 +3,22 @@
 //! This module provides [`SessionLayer`] for integrating
 //! session management into tower applications.
 
-use http::{Request, Response};
-use tower::{Layer, Service};
-use tower_cookies::{Cookie, Cookies};
-
-use crate::store::redis::RedisStore;
 use crate::store::SessionStore;
 use crate::{session::Inner, CookieOptions, Id};
 use cookie::time::Duration;
+use http::{Request, Response};
 use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::task::{ready, Context, Poll};
+use tower::{Layer, Service};
+use tower_cookies::{Cookie, Cookies};
 
 /// A Tower Middleware to use `Session`.
 #[derive(Clone, Debug)]
-pub struct SessionService<S, T: SessionStore = RedisStore> {
+pub struct SessionService<S, T: SessionStore> {
     inner: S,
     cookie_options: Option<Arc<CookieOptions>>,
     store: Arc<T>,

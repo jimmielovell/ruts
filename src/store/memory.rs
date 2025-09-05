@@ -1,33 +1,9 @@
-use parking_lot::RwLock;
+use crate::store::{deserialize_value, serialize_value, Error, SessionMap, SessionStore};
+use crate::Id;
+use dashmap::DashMap;
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-use crate::store::{Error, SessionStore};
-use crate::Id;
-
-#[cfg(feature = "messagepack")]
-pub(crate) fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
-    rmp_serde::to_vec(value).map_err(|e| Error::Encode(e.to_string()))
-}
-
-#[cfg(feature = "messagepack")]
-pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, Error> {
-    rmp_serde::from_slice(value).map_err(|e| Error::Decode(e.to_string()))
-}
-
-#[cfg(feature = "bincode")]
-pub(crate) fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
-    let e = bincode::serde::encode_to_vec(value, bincode::config::standard())?;
-    Ok(e)
-}
-
-#[cfg(feature = "bincode")]
-pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, Error> {
-    let (d, _) = bincode::serde::decode_from_slice(value, bincode::config::standard())?;
-    Ok(d)
-}
 
 #[derive(Debug, Clone)]
 struct StoredValue {
@@ -45,7 +21,7 @@ struct StoredValue {
 /// Do not use this in a production environment.
 #[derive(Debug, Clone)]
 pub struct MemoryStore {
-    data: Arc<RwLock<HashMap<String, HashMap<String, StoredValue>>>>,
+    data: DashMap<String, HashMap<String, StoredValue>>,
 }
 
 impl Default for MemoryStore {
@@ -57,13 +33,12 @@ impl Default for MemoryStore {
 impl MemoryStore {
     pub fn new() -> Self {
         Self {
-            data: Arc::new(RwLock::new(HashMap::new())),
+            data: DashMap::new(),
         }
     }
 
     fn cleanup_expired(&self) {
-        let mut data = self.data.write();
-        data.retain(|_, fields| {
+        self.data.retain(|_, fields| {
             fields.retain(|_, value| {
                 value
                     .expires_at
@@ -82,8 +57,7 @@ impl SessionStore for MemoryStore {
     {
         self.cleanup_expired();
 
-        let data = self.data.read();
-        if let Some(fields) = data.get(&session_id.to_string()) {
+        if let Some(fields) = self.data.get(&session_id.to_string()) {
             if let Some(value) = fields.get(field) {
                 if value.expires_at.map(|e| e > Instant::now()).unwrap_or(true) {
                     return Ok(Some(deserialize_value(&value.data)?));
@@ -93,21 +67,24 @@ impl SessionStore for MemoryStore {
         Ok(None)
     }
 
-    async fn get_all<T>(&self, session_id: &Id) -> Result<Option<T>, Error>
-    where
-        T: Clone + Send + Sync + DeserializeOwned,
-    {
-        self.cleanup_expired();
-
-        let data = self.data.read();
-        if let Some(fields) = data.get(&session_id.to_string()) {
-            if let Some(value) = fields.get("__all") {
-                if value.expires_at.map(|e| e > Instant::now()).unwrap_or(true) {
-                    return Ok(Some(deserialize_value(&value.data)?));
-                }
-            }
-        }
-        Ok(None)
+    /// This method is not implemented for `MemoryStore`.
+    ///
+    /// The `get_all` functionality is designed as an optimization for stores
+    /// where a single bulk fetch is more performant than multiple individual
+    /// lookups (e.g., Redis, Postgres).
+    ///
+    /// For `MemoryStore`, all data is already in local memory, making direct calls
+    /// to `session.get()` optimally efficient. Implementing `get_all` would
+    /// introduce an unnecessary intermediate allocation (`SessionMap`) without any
+    /// performance gain.
+    ///
+    /// It is recommended to use `session.get()` for individual field access when
+    /// using `MemoryStore`.
+    async fn get_all(&self, _session_id: &Id) -> Result<Option<SessionMap>, Error> {
+        unimplemented!(
+            "`get_all` is intentionally not implemented for `MemoryStore`.
+            Please use `session.get()` directly for the most efficient access."
+        );
     }
 
     async fn insert<T>(
@@ -122,9 +99,7 @@ impl SessionStore for MemoryStore {
         T: Send + Sync + Serialize,
     {
         self.cleanup_expired();
-
-        let mut data = self.data.write();
-        let fields = data.entry(session_id.to_string()).or_default();
+        let mut fields = self.data.entry(session_id.to_string()).or_default();
 
         if fields.contains_key(field) {
             return Ok(false);
@@ -160,8 +135,7 @@ impl SessionStore for MemoryStore {
     {
         self.cleanup_expired();
 
-        let mut data = self.data.write();
-        let fields = data.entry(session_id.to_string()).or_default();
+        let mut fields = self.data.entry(session_id.to_string()).or_default();
 
         let expires_at = if key_seconds > 0 {
             Some(Instant::now() + Duration::from_secs(key_seconds as u64))
@@ -194,29 +168,23 @@ impl SessionStore for MemoryStore {
     {
         self.cleanup_expired();
 
-        let mut data = self.data.write();
-
-        // Check if old session exists and new session doesn't
-        if !data.contains_key(&old_session_id.to_string())
-            || data.contains_key(&new_session_id.to_string())
+        if !self.data.contains_key(&old_session_id.to_string())
+            || self.data.contains_key(&new_session_id.to_string())
         {
             return Ok(false);
         }
 
-        // Get the fields map, return false if field exists
-        let fields = data.get_mut(&old_session_id.to_string()).unwrap();
+        let mut fields = self.data.get_mut(&old_session_id.to_string()).unwrap();
         if fields.contains_key(field) {
             return Ok(false);
         }
 
-        // Calculate expiration
         let expires_at = if key_seconds > 0 {
             Some(Instant::now() + Duration::from_secs(key_seconds as u64))
         } else {
             None
         };
 
-        // Insert the new field
         fields.insert(
             field.to_string(),
             StoredValue {
@@ -225,9 +193,8 @@ impl SessionStore for MemoryStore {
             },
         );
 
-        // Move the map to the new session ID
-        let fields = data.remove(&old_session_id.to_string()).unwrap();
-        data.insert(new_session_id.to_string(), fields);
+        let (_, fields) = self.data.remove(&old_session_id.to_string()).unwrap();
+        self.data.insert(new_session_id.to_string(), fields);
 
         Ok(true)
     }
@@ -246,24 +213,19 @@ impl SessionStore for MemoryStore {
     {
         self.cleanup_expired();
 
-        let mut data = self.data.write();
-
-        // Check if old session exists and new session doesn't
-        if !data.contains_key(&old_session_id.to_string())
-            || data.contains_key(&new_session_id.to_string())
+        if !self.data.contains_key(&old_session_id.to_string())
+            || self.data.contains_key(&new_session_id.to_string())
         {
             return Ok(false);
         }
 
-        // Calculate expiration
         let expires_at = if key_seconds > 0 {
             Some(Instant::now() + Duration::from_secs(key_seconds as u64))
         } else {
             None
         };
 
-        // Update the field
-        let fields = data.get_mut(&old_session_id.to_string()).unwrap();
+        let mut fields = self.data.get_mut(&old_session_id.to_string()).unwrap();
         fields.insert(
             field.to_string(),
             StoredValue {
@@ -272,9 +234,8 @@ impl SessionStore for MemoryStore {
             },
         );
 
-        // Move the map to the new session ID
-        let fields = data.remove(&old_session_id.to_string()).unwrap();
-        data.insert(new_session_id.to_string(), fields);
+        let (_, fields) = self.data.remove(&old_session_id.to_string()).unwrap();
+        self.data.insert(new_session_id.to_string(), fields);
 
         Ok(true)
     }
@@ -287,14 +248,11 @@ impl SessionStore for MemoryStore {
     ) -> Result<bool, Error> {
         self.cleanup_expired();
 
-        let mut data = self.data.write();
-
-        if data.contains_key(&new_session_id.to_string()) {
+        if self.data.contains_key(&new_session_id.to_string()) {
             return Ok(false);
         }
 
-        if let Some(mut fields) = data.remove(&old_session_id.to_string()) {
-            // Update expiration for all fields
+        if let Some((_, mut fields)) = self.data.remove(&old_session_id.to_string()) {
             if seconds > 0 {
                 let new_expires_at = Instant::now() + Duration::from_secs(seconds as u64);
                 for value in fields.values_mut() {
@@ -302,7 +260,7 @@ impl SessionStore for MemoryStore {
                 }
             }
 
-            data.insert(new_session_id.to_string(), fields);
+            self.data.insert(new_session_id.to_string(), fields);
             Ok(true)
         } else {
             Ok(false)
@@ -312,8 +270,7 @@ impl SessionStore for MemoryStore {
     async fn remove(&self, session_id: &Id, field: &str) -> Result<i8, Error> {
         self.cleanup_expired();
 
-        let mut data = self.data.write();
-        if let Some(fields) = data.get_mut(&session_id.to_string()) {
+        if let Some(mut fields) = self.data.get_mut(&session_id.to_string()) {
             fields.remove(field);
             Ok(if fields.is_empty() { 0 } else { 1 })
         } else {
@@ -324,8 +281,7 @@ impl SessionStore for MemoryStore {
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
         self.cleanup_expired();
 
-        let mut data = self.data.write();
-        Ok(data.remove(&session_id.to_string()).is_some())
+        Ok(self.data.remove(&session_id.to_string()).is_some())
     }
 
     async fn expire(&self, session_id: &Id, seconds: i64) -> Result<bool, Error> {
@@ -333,8 +289,7 @@ impl SessionStore for MemoryStore {
             return self.delete(session_id).await;
         }
 
-        let mut data = self.data.write();
-        if let Some(fields) = data.get_mut(&session_id.to_string()) {
+        if let Some(mut fields) = self.data.get_mut(&session_id.to_string()) {
             let expires_at = Instant::now() + Duration::from_secs(seconds as u64);
             for value in fields.values_mut() {
                 value.expires_at = Some(expires_at);
@@ -367,17 +322,14 @@ mod tests {
             name: "Test User".to_string(),
         };
 
-        // Test insert
         assert!(store
             .insert(&session_id, "user", &user, 60, None)
             .await
             .unwrap());
 
-        // Test get
         let retrieved: Option<TestUser> = store.get(&session_id, "user").await.unwrap();
         assert_eq!(retrieved.unwrap(), user);
 
-        // Test update
         let updated_user = TestUser {
             id: 1,
             name: "Updated User".to_string(),
@@ -387,7 +339,6 @@ mod tests {
             .await
             .unwrap());
 
-        // Test delete
         assert!(store.delete(&session_id).await.unwrap());
         let retrieved: Option<TestUser> = store.get(&session_id, "user").await.unwrap();
         assert!(retrieved.is_none());
@@ -402,20 +353,16 @@ mod tests {
             name: "Test User".to_string(),
         };
 
-        // Insert with 1 second expiration
         assert!(store
             .insert(&session_id, "user", &user, 1, None)
             .await
             .unwrap());
 
-        // Should exist immediately
         let retrieved: Option<TestUser> = store.get(&session_id, "user").await.unwrap();
         assert!(retrieved.is_some());
 
-        // Wait for expiration
         sleep(Duration::from_secs(2)).await;
 
-        // Should be gone after expiration
         let retrieved: Option<TestUser> = store.get(&session_id, "user").await.unwrap();
         assert!(retrieved.is_none());
     }
