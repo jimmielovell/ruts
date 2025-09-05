@@ -12,11 +12,11 @@ mod tests {
     };
     use common::*;
     use http::header::{COOKIE, SET_COOKIE};
+    use ruts::store::memory::MemoryStore;
     use ruts::{CookieOptions, Session, SessionLayer};
     use std::sync::Arc;
     use tower::ServiceExt;
     use tower_cookies::CookieManagerLayer;
-    use ruts::store::memory::MemoryStore;
 
     // Test handler that requires Session
     async fn insert_handler(session: Session<MemoryStore>) -> Result<String, StatusCode> {

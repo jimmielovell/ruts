@@ -114,7 +114,7 @@ session.id()
 ## Stores
 
 ### Redis
-A Redis-backed session store implementation.
+A Redis-backed session store.
 
 #### Requirements
 
@@ -154,17 +154,78 @@ let store = PostgresStoreBuilder::new(pool)
     .unwrap();
 ```
 
+### LayeredStore
+
+A composite store that layers a fast, ephemeral "hot" cache (like Redis) on top of a slower, persistent "cold" store (like Postgres). It is designed for scenarios where sessions can have long lifespans but should only occupy expensive cache memory when actively being used thus balancing performance and durability.
+
+
+#### Core Strategies
+
+- **Cache-Aside Reads**: On a read operation (`get`, `get_all`), the store
+  first checks the hot cache. If the data is present (a cache hit), it is
+  returned immediately. If not (a cache miss), the store queries the cold
+  store, and if the data is found, it "warms" the hot cache by populating it
+  with the data before returning it. This ensures subsequent reads are fast.
+
+- **Write-Through (Default)**: By default, write operations (`insert`, `update`)
+  are written to both the hot and cold stores simultaneously. This guarantees
+  data consistency.
+
+#### Fine-Grained Write Control
+
+The default write-through behavior can be overridden on a per-call basis
+using the `LayeredWriteStrategy`. This gives you precise control over
+where your session data is stored, This allows you to:
+
+- Write to the hot cache only.
+- Write to the cold store only.
+- Write through to both, but with a specific, shorter TTL for the hot cache.
+
+
+```rust
+use ruts::store::layered::LayeredWriteStrategy;
+use ruts::Session;
+use ruts::store::redis::RedisStore;
+use ruts::store::postgres::PostgresStore;
+use ruts::store::layered::LayeredStore;
+
+type MySession = Session<LayeredStore<RedisStore, PostgresStore>>;
+
+#[derive(serde::Serialize)]
+struct User { id: i32 }
+
+async fn handler(session: MySession) {
+    let user = User { id: 1 };
+    
+    // This session field is valid for 1 month in the persistent store.
+    let long_term_expiry = 60  * 60 * 24 * 30;
+    
+    // However, we only want it to live in the hot cache (Redis) for 1 hour.
+    let short_term_hot_cache_expiry = 60 * 60;
+    
+    // The value is wrapped in the strategy enum to control write behavior.
+    let strategy = LayeredWriteStrategy::WriteThrough(
+        user,
+        Some(short_term_hot_cache_expiry),
+    );
+    
+    // The cold store (Postgres) will get the long-term expiry,
+    // but the hot store (Redis) will be capped at the shorter TTL.
+    session.update("user", &strategy, Some(long_term_expiry)).await.unwrap();
+}
+```
+
 ### Serialization
 Ruts supports two serialization backends for session data storage:
 
-`bincode` (default) - Fast binary serialization
-`messagepack` - Cross-language compatible serialization
+[`bincode`](https://crates.io/crates/bincode) (default) - Fast, compact binary serialization.
+[`messagepack`](https://crates.io/crates/rmp-serde) - Cross-language compatible serialization
 
-To use `MessagePack` instead of the default `bincode`, add this to your `Cargo.toml`:
+To use [`MessagePack`](https://crates.io/crates/rmp-serde) instead of the default [`bincode`](https://crates.io/crates/bincode), add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruts = { version = "0.5.9", default-features = false, features = ["axum", "redis-store", "messagepack"] }
+ruts = { version = "0.6.0", default-features = false, features = ["axum", "redis-store", "messagepack"] }
 ```
 
 ### Cookie Configuration

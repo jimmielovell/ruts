@@ -4,7 +4,8 @@
 
 ### Added
 
-- A new session store backend for PostgreSQL, available under the postgres-store feature flag.
+- `PostgresStore`, a new session store backend for PostgreSQL, available under the postgres-store feature flag.
+- `LayeredStore` that layers a fast, ephemeral "hot" cache (like Redis) on top of a slower, persistent "cold" store (like Postgres).
 
 ### Changed
 

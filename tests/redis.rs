@@ -5,7 +5,13 @@ mod common;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{body::Body, extract::Request, http::{self, StatusCode}, routing::get, Json, Router};
+    use axum::{
+        body::Body,
+        extract::Request,
+        http::{self, StatusCode},
+        routing::get,
+        Json, Router,
+    };
     use common::*;
     use cookie::time::Duration;
     use cookie::Cookie;
@@ -56,7 +62,9 @@ mod tests {
             .await
             .map_err(|err| {
                 println!("{:?}", err);
-                StatusCode::INTERNAL_SERVER_ERROR })?.unwrap();
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+            .unwrap();
 
         Ok(Json(TestSession {
             user: data.get("user").unwrap().unwrap(),

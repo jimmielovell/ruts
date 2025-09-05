@@ -14,12 +14,13 @@ documentation = "https://docs.rs/ruts"
 readme = "README.md"
 
 [features]
-default = ["axum", "redis-store", "bincode"]
+default = ["axum", "layered-store", "bincode"]
 axum = ["dep:axum-core"]
 bincode = ["dep:bincode"]
 messagepack = ["dep:rmp-serde"]
 postgres-store = ["dep:sqlx", "dep:time"]
 redis-store = ["dep:fred"]
+layered-store = ["redis-store", "postgres-store"]
 
 [dependencies]
 axum-core = {  version = "0.5.2", optional = true }
@@ -63,9 +64,16 @@ name = "axum"
 path = "tests/axum.rs"
 
 [[test]]
-name = "postgres"
-path = "tests/postgres.rs"
-
-[[test]]
 name = "redis"
 path = "tests/redis.rs"
+required-features = ["redis-store"]
+
+[[test]]
+name = "postgres"
+path = "tests/postgres.rs"
+required-features = ["postgres-store"]
+
+[[test]]
+name = "layered"
+path = "tests/layered.rs"
+required-features = ["layered-store"]

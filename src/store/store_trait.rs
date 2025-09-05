@@ -1,8 +1,8 @@
+use crate::Id;
+use dashmap::DashMap;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Debug;
 use std::future::Future;
-use dashmap::DashMap;
-use crate::Id;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -80,9 +80,14 @@ impl SessionMap {
     /// and `Ok(Some(value))` on success.
     pub fn get<T: DeserializeOwned>(&self, field: &str) -> Result<Option<T>, Error> {
         match self.0.get(field) {
-            Some(bytes) => deserialize_value(&**bytes).map(Some),
+            Some(bytes) => deserialize_value(&bytes).map(Some),
             None => Ok(None),
         }
+    }
+
+    #[cfg(feature = "layered-store")]
+    pub(crate) fn iter(&self) -> dashmap::iter::Iter<'_, String, Vec<u8>> {
+        self.0.iter()
     }
 }
 
@@ -97,7 +102,10 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         T: Clone + Send + Sync + DeserializeOwned;
 
     /// Gets all the `field`-`value` pairs stored at `session_id`
-    fn get_all(&self, session_id: &Id) -> impl Future<Output = Result<Option<SessionMap>, Error>> + Send;
+    fn get_all(
+        &self,
+        session_id: &Id,
+    ) -> impl Future<Output = Result<Option<SessionMap>, Error>> + Send;
 
     /// Sets a `field` stored at `session_id` to its provided `value`,
     /// only if the `field` does not exist.
@@ -112,7 +120,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         field_seconds: Option<i64>,
     ) -> impl Future<Output = Result<bool, Error>> + Send
     where
-        T: Send + Sync + Serialize;
+        T: Send + Sync + Serialize + 'static;
 
     /// Updates a `field` stored at `session_id` to the new `value`.
     ///
@@ -128,7 +136,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         field_seconds: Option<i64>,
     ) -> impl Future<Output = Result<bool, Error>> + Send
     where
-        T: Send + Sync + Serialize;
+        T: Send + Sync + Serialize + 'static;
 
     /// Sets a `field` stored at `session_id` to its provided `value` and renames
     /// the session ID from `old_session_id` to `new_session_id`,
@@ -145,7 +153,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         field_seconds: Option<i64>,
     ) -> impl Future<Output = Result<bool, Error>> + Send
     where
-        T: Send + Sync + Serialize;
+        T: Send + Sync + Serialize + 'static;
 
     /// Updates a `field` stored at `session_id` to the new `value` and renames
     /// the session ID from `old_session_id` to `new_session_id`.
@@ -163,7 +171,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         field_seconds: Option<i64>,
     ) -> impl Future<Output = Result<bool, Error>> + Send
     where
-        T: Send + Sync + Serialize;
+        T: Send + Sync + Serialize + 'static;
 
     /// Renames the `old_session_id` to `new_session_id` if the `old_session_id` exists.
     ///
@@ -195,5 +203,13 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         &self,
         session_id: &Id,
         seconds: i64,
+    ) -> impl Future<Output = Result<bool, Error>> + Send;
+}
+
+pub trait LayeredHotStore: Clone + Send + Sync + 'static {
+    fn update_many(
+        &self,
+        session_id: &Id,
+        pairs: &[(String, Vec<u8>, Option<i64>)],
     ) -> impl Future<Output = Result<bool, Error>> + Send;
 }

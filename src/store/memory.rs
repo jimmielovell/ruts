@@ -1,9 +1,9 @@
+use crate::store::{deserialize_value, serialize_value, Error, SessionMap, SessionStore};
+use crate::Id;
+use dashmap::DashMap;
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use dashmap::DashMap;
-use crate::store::{deserialize_value, serialize_value, Error, SessionMap, SessionStore};
-use crate::Id;
 
 #[derive(Debug, Clone)]
 struct StoredValue {

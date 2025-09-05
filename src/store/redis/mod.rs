@@ -2,24 +2,26 @@ mod lua;
 
 use crate::store::redis::lua::{
     INSERT_SCRIPT, INSERT_SCRIPT_HASH, INSERT_WITH_RENAME_SCRIPT, INSERT_WITH_RENAME_SCRIPT_HASH,
-    RENAME_SCRIPT, RENAME_SCRIPT_HASH, UPDATE_SCRIPT, UPDATE_SCRIPT_HASH,
-    UPDATE_WITH_RENAME_SCRIPT, UPDATE_WITH_RENAME_SCRIPT_HASH,
+    RENAME_SCRIPT, RENAME_SCRIPT_HASH, UPDATE_MANY_SCRIPT, UPDATE_MANY_SCRIPT_HASH, UPDATE_SCRIPT,
+    UPDATE_SCRIPT_HASH, UPDATE_WITH_RENAME_SCRIPT, UPDATE_WITH_RENAME_SCRIPT_HASH,
 };
-use crate::store::{deserialize_value, serialize_value, Error, SessionMap, SessionStore};
+use crate::store::{
+    deserialize_value, serialize_value, Error, LayeredHotStore, SessionMap, SessionStore,
+};
 use crate::Id;
+use dashmap::DashMap;
 use fred::clients::Pool;
 use fred::interfaces::{HashesInterface, KeysInterface};
 use fred::prelude::LuaInterface;
+use fred::types::Value;
 use serde::{de::DeserializeOwned, Serialize};
-use std::{fmt::Debug, sync::Arc};
 use std::collections::HashMap;
-use dashmap::DashMap;
+use std::{fmt::Debug, sync::Arc};
 use tokio::sync::OnceCell;
 
 /// A redis session store implementation.
 ///
-/// It uses a Redis Hash to manage session data and supports
-/// serialization/deserialization using [MessagePack](https://crates.io/crates/rmp-serde).
+/// It uses a Redis Hash to manage session data
 ///
 /// # Redis Version Requirements
 ///
@@ -63,21 +65,22 @@ where
         Ok(deserialized)
     }
 
-    async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error>
-    {
+    async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error> {
         let result = self
             .client
             .hgetall::<Option<HashMap<String, Vec<u8>>>, _>(session_id)
             .await?;
-        
+
         if result.is_none() {
-            return Ok(None)
+            return Ok(None);
         }
-        
+
         let result = result.unwrap();
         let map = DashMap::with_capacity(result.len());
-        result.into_iter().for_each(|(field, value)| { map.insert(field, value); });
-        
+        result.into_iter().for_each(|(field, value)| {
+            map.insert(field, value);
+        });
+
         Ok(Some(SessionMap::new(map)))
     }
 
@@ -222,6 +225,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn insert_update<C, T>(
     client: Arc<C>,
     session_ids: Vec<&Id>,
@@ -264,4 +268,42 @@ where
         .await?;
 
     Ok(done)
+}
+
+impl<C> LayeredHotStore for RedisStore<C>
+where
+    C: HashesInterface + KeysInterface + LuaInterface + Clone + Send + Sync + 'static,
+{
+    async fn update_many(
+        &self,
+        session_id: &Id,
+        pairs: &[(String, Vec<u8>, Option<i64>)],
+    ) -> Result<bool, Error> {
+        if pairs.is_empty() {
+            return Ok(true);
+        }
+
+        let hash = UPDATE_MANY_SCRIPT_HASH
+            .get_or_try_init(|| async {
+                let hash = fred::util::sha1_hash(UPDATE_MANY_SCRIPT);
+                if !self.client.script_exists::<bool, _>(&hash).await? {
+                    let _: () = self.client.script_load(UPDATE_MANY_SCRIPT).await?;
+                }
+                Ok::<String, fred::error::Error>(hash)
+            })
+            .await?;
+
+        let mut args: Vec<Value> = Vec::with_capacity(pairs.len() * 3);
+
+        for (field, value, field_expiry) in pairs {
+            args.push(field.into());
+            args.push(value.as_slice().into());
+            // -1 is interpreted as persistent fields
+            args.push(field_expiry.unwrap_or(-1).into());
+        }
+
+        let updated: bool = self.client.evalsha(hash, vec![session_id], args).await?;
+
+        Ok(updated)
+    }
 }

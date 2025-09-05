@@ -1,6 +1,6 @@
-use dashmap::DashMap;
 use crate::store::{deserialize_value, serialize_value, Error, SessionMap, SessionStore};
 use crate::Id;
+use dashmap::DashMap;
 use serde::{de::DeserializeOwned, Serialize};
 use sqlx::{Executor, PgPool, Postgres};
 use time::{Duration, OffsetDateTime};
@@ -144,7 +144,7 @@ impl SessionStore for PostgresStore {
 
         match result {
             Some((value, expires_at)) => {
-                if expires_at.map_or(false, |e| e < OffsetDateTime::now_utc()) {
+                if expires_at.is_some_and(|err| err < OffsetDateTime::now_utc()) {
                     self._remove(&mut *tx, session_id, field).await?;
                     tx.commit().await?;
                     return Ok(None);
@@ -159,9 +159,8 @@ impl SessionStore for PostgresStore {
         }
     }
 
-    async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error>
-    {
-        let mut map = DashMap::new();
+    async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error> {
+        let map = DashMap::new();
 
         let mut tx = self.pool.begin().await?;
         let query = format!(
@@ -180,7 +179,7 @@ impl SessionStore for PostgresStore {
 
         let mut expired_fields = Vec::new();
         for (field, value, expires_at) in rows {
-            if expires_at.map_or(false, |e| e < OffsetDateTime::now_utc()) {
+            if expires_at.is_some_and(|err| err < OffsetDateTime::now_utc()) {
                 expired_fields.push(field);
             } else {
                 map.insert(field, value);

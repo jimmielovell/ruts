@@ -92,7 +92,9 @@ mod tests {
             .await
             .map_err(|err| {
                 println!("{:?}", err);
-                StatusCode::INTERNAL_SERVER_ERROR })?.unwrap();
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+            .unwrap();
 
         Ok(Json(TestSession {
             user: data.get("user").unwrap().unwrap(),

@@ -46,7 +46,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use serde::Deserialize;
@@ -101,15 +101,10 @@ where
     )]
     pub async fn get_all(&self) -> Result<Option<SessionMap>> {
         match self.id() {
-            Some(id) => self
-                .inner
-                .store
-                .get_all(&id)
-                .await
-                .map_err(|err| {
-                    tracing::error!(err = %err, "failed to get all values from session store");
-                    err.into()
-                }),
+            Some(id) => self.inner.store.get_all(&id).await.map_err(|err| {
+                tracing::error!(err = %err, "failed to get all values from session store");
+                err.into()
+            }),
             None => {
                 tracing::debug!("session has not been initialized");
                 Ok(None)
@@ -123,7 +118,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use serde::Serialize;
@@ -165,7 +160,7 @@ where
     )]
     pub async fn insert<T>(&self, field: &str, value: &T, field_expire: Option<i64>) -> Result<bool>
     where
-        T: Send + Sync + Serialize,
+        T: Send + Sync + Serialize + 'static,
     {
         let current_id = self.inner.get_or_set_id();
         let pending_id = self.inner.take_pending_id();
@@ -211,7 +206,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use serde::Serialize;
@@ -253,7 +248,7 @@ where
     )]
     pub async fn update<T>(&self, field: &str, value: &T, field_expire: Option<i64>) -> Result<bool>
     where
-        T: Send + Sync + Serialize,
+        T: Send + Sync + Serialize + 'static,
     {
         let current_id = self.inner.get_or_set_id();
         let pending_id = self.inner.take_pending_id();
@@ -299,7 +294,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
@@ -335,7 +330,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
@@ -372,7 +367,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
@@ -424,7 +419,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
@@ -462,7 +457,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use ruts::Session;
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
