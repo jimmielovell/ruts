@@ -1,7 +1,7 @@
-use crate::store::{deserialize_value, serialize_value, Error, SessionMap, SessionStore};
 use crate::Id;
+use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize_value};
 use dashmap::DashMap;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -322,10 +322,12 @@ mod tests {
             name: "Test User".to_string(),
         };
 
-        assert!(store
-            .insert(&session_id, "user", &user, 60, None)
-            .await
-            .unwrap());
+        assert!(
+            store
+                .insert(&session_id, "user", &user, 60, None)
+                .await
+                .unwrap()
+        );
 
         let retrieved: Option<TestUser> = store.get(&session_id, "user").await.unwrap();
         assert_eq!(retrieved.unwrap(), user);
@@ -334,10 +336,12 @@ mod tests {
             id: 1,
             name: "Updated User".to_string(),
         };
-        assert!(store
-            .update(&session_id, "user", &updated_user, 60, None)
-            .await
-            .unwrap());
+        assert!(
+            store
+                .update(&session_id, "user", &updated_user, 60, None)
+                .await
+                .unwrap()
+        );
 
         assert!(store.delete(&session_id).await.unwrap());
         let retrieved: Option<TestUser> = store.get(&session_id, "user").await.unwrap();
@@ -353,10 +357,12 @@ mod tests {
             name: "Test User".to_string(),
         };
 
-        assert!(store
-            .insert(&session_id, "user", &user, 1, None)
-            .await
-            .unwrap());
+        assert!(
+            store
+                .insert(&session_id, "user", &user, 1, None)
+                .await
+                .unwrap()
+        );
 
         let retrieved: Option<TestUser> = store.get(&session_id, "user").await.unwrap();
         assert!(retrieved.is_some());

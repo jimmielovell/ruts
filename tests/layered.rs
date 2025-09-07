@@ -4,20 +4,20 @@ mod common;
 
 #[cfg(test)]
 mod tests {
-    use super::common::{create_test_session, TestPreferences, TestUser};
+    use super::common::{TestPreferences, TestUser, create_test_session};
     use fred::{clients::Client, interfaces::*};
     use ruts::{
+        Id,
         store::{
+            SessionStore,
             layered::{LayeredStore, LayeredWriteStrategy},
             postgres::{PostgresStore, PostgresStoreBuilder},
             redis::RedisStore,
-            SessionStore,
         },
-        Id,
     };
     use sqlx::PgPool;
     use std::{sync::Arc, time::Duration};
-    
+
     async fn setup_layered_store() -> LayeredStore<RedisStore<Client>, PostgresStore> {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
@@ -88,18 +88,22 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(store
-            .get::<TestUser>(&session_id, "user_hot")
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            store
+                .get::<TestUser>(&session_id, "user_hot")
+                .await
+                .unwrap()
+                .is_some()
+        );
 
         tokio::time::sleep(Duration::from_secs(2)).await;
-        assert!(store
-            .get::<TestUser>(&session_id, "user_hot")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .get::<TestUser>(&session_id, "user_hot")
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         let cold_only_strategy = LayeredWriteStrategy::ColdCache(test_session.preferences.clone());
         store
@@ -119,11 +123,13 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_secs(2)).await; // Wait for Redis session to expire.
 
-        assert!(store
-            .get::<TestPreferences>(&session_id, "prefs_cold")
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            store
+                .get::<TestPreferences>(&session_id, "prefs_cold")
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -136,18 +142,22 @@ mod tests {
             .update(&session_id, "user", &test_user, 3600, None)
             .await
             .unwrap();
-        assert!(store
-            .get::<TestUser>(&session_id, "user")
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            store
+                .get::<TestUser>(&session_id, "user")
+                .await
+                .unwrap()
+                .is_some()
+        );
 
         store.delete(&session_id).await.unwrap();
 
-        assert!(store
-            .get::<TestUser>(&session_id, "user")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .get::<TestUser>(&session_id, "user")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

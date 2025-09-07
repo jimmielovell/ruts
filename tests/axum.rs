@@ -4,11 +4,11 @@ mod common;
 mod tests {
     use super::*;
     use axum::{
+        Router,
         body::Body,
         extract::Request,
         http::{self, StatusCode},
         routing::get,
-        Router,
     };
     use common::*;
     use http::header::{COOKIE, SET_COOKIE};

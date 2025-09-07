@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum_core::extract::FromRequestParts;
-use http::{request::Parts, StatusCode};
+use http::{StatusCode, request::Parts};
 use tower_cookies::Cookies;
 
 use crate::session::Inner;

@@ -1,7 +1,7 @@
-use std::collections::HashMap;
-use crate::store::{Error, SessionMap};
 use crate::Id;
+use crate::store::{Error, SessionMap};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::future::Future;
 
 /// This trait acts as a private API, allowing the `LayeredStore` to store multiple
@@ -95,5 +95,6 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
     fn get_all_with_meta(
         &self,
         session_id: &Id,
-    ) -> impl Future<Output = Result<Option<(SessionMap, HashMap<String, LayeredCacheMeta>)>, Error>> + Send;
+    ) -> impl Future<Output = Result<Option<(SessionMap, HashMap<String, LayeredCacheMeta>)>, Error>>
+    + Send;
 }

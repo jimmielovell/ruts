@@ -1,9 +1,9 @@
+use crate::Id;
 use crate::store::{
     Error, LayeredCacheBehavior, LayeredCacheMeta, LayeredColdStore, LayeredHotStore, SessionMap,
     SessionStore,
 };
-use crate::Id;
-use serde::{de::DeserializeOwned, Serialize, Serializer};
+use serde::{Serialize, Serializer, de::DeserializeOwned};
 
 /// An enum for explicit control over the write strategy for a
 /// specific `insert` or `update` operation.
@@ -50,7 +50,7 @@ impl<T: Send + Sync + Serialize + 'static> Serialize for LayeredWriteStrategy<T>
 ///   first checks the hot cache. If the data is present, it is
 ///   returned immediately. If not, the store queries the cold
 ///   store, and if the data is found, it "warms" the hot cache by populating it
-///   with the data before returning it if during `insert`/`update` 
+///   with the data before returning it if during `insert`/`update`
 ///   `LayeredWriteStrategy::WriteThrough`(default) was the strategy used.
 ///
 /// - **Write-Through (Default)**: By default, write operations (`insert`, `update`)
@@ -132,7 +132,7 @@ where
 {
     async fn get<T>(&self, session_id: &Id, field: &str) -> Result<Option<T>, Error>
     where
-        T: Clone + Send + Sync + DeserializeOwned,
+        T: Send + Sync + DeserializeOwned,
     {
         match self.hot.get(session_id, field).await? {
             Some(value) => Ok(Some(value)),
@@ -300,8 +300,15 @@ where
                     };
                     return self
                         .cold
-                        .update_with_meta(session_id, field, inner_value, key_seconds, field_seconds, &meta)
-                        .await
+                        .update_with_meta(
+                            session_id,
+                            field,
+                            inner_value,
+                            key_seconds,
+                            field_seconds,
+                            &meta,
+                        )
+                        .await;
                 }
                 LayeredWriteStrategy::WriteThrough(inner_value, secs) => {
                     meta.hot_cache_ttl = *secs;
@@ -376,9 +383,9 @@ where
                             inner_value,
                             key_seconds,
                             field_seconds,
-                            &meta
+                            &meta,
                         )
-                        .await
+                        .await;
                 }
                 LayeredWriteStrategy::WriteThrough(inner_value, secs) => {
                     meta.hot_cache_ttl = *secs;
@@ -466,9 +473,9 @@ where
                             inner_value,
                             key_seconds,
                             field_seconds,
-                            &meta
+                            &meta,
                         )
-                        .await
+                        .await;
                 }
                 LayeredWriteStrategy::WriteThrough(inner_value, secs) => {
                     meta.hot_cache_ttl = *secs;

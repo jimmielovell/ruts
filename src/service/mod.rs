@@ -4,15 +4,15 @@
 //! session management into tower applications.
 
 use crate::store::SessionStore;
-use crate::{session::Inner, CookieOptions, Id};
+use crate::{CookieOptions, Id, session::Inner};
 use cookie::time::Duration;
 use http::{Request, Response};
 use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::task::{ready, Context, Poll};
+use std::sync::atomic::Ordering;
+use std::task::{Context, Poll, ready};
 use tower::{Layer, Service};
 use tower_cookies::{Cookie, Cookies};
 

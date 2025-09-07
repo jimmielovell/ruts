@@ -1,6 +1,6 @@
 use crate::Id;
 use dashmap::DashMap;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::fmt::Debug;
 use std::future::Future;
 

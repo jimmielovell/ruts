@@ -6,11 +6,11 @@ mod common;
 mod tests {
     use super::*;
     use axum::{
+        Json, Router,
         body::Body,
         extract::Request,
         http::{self, StatusCode},
         routing::get,
-        Json, Router,
     };
     use common::*;
     use cookie::Cookie;
