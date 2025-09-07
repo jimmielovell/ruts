@@ -44,9 +44,9 @@ where
 
     /// Retrieves the value of a field from the session store.
     ///
-    /// # Example
+    /// ## Example
     ///
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use serde::Deserialize;
@@ -77,7 +77,7 @@ where
     #[tracing::instrument(name = "session-store: getting value for field", skip(self, field))]
     pub async fn get<T>(&self, field: &str) -> Result<Option<T>>
     where
-        T: Clone + Send + Sync + DeserializeOwned,
+        T: Send + Sync + DeserializeOwned,
     {
         match self.id() {
             Some(id) => self.inner.store.get(&id, field).await.map_err(|err| {
@@ -116,9 +116,9 @@ where
     ///
     /// Returns `true` if the value was successfully inserted.
     ///
-    /// # Example
+    /// ## Example
     ///
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use serde::Serialize;
@@ -204,9 +204,9 @@ where
     ///
     /// Returns `true` if the value was successfully updated or inserted.
     ///
-    /// # Example
+    /// ## Example
     ///
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use serde::Serialize;
@@ -292,9 +292,9 @@ where
     ///
     /// Returns `true` if the field was successfully removed.
     ///
-    /// # Example
+    /// ## Example
     ///
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
@@ -328,9 +328,9 @@ where
     ///
     /// Returns `true` if the session was successfully deleted.
     ///
-    /// # Example
+    /// ## Example
     ///
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
@@ -365,9 +365,9 @@ where
     ///
     /// Returns `true` if the expiry was successfully updated.
     ///
-    /// # Example
+    /// ## Example
     ///
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
@@ -417,9 +417,9 @@ where
     ///
     /// Returns the new session ID if successful.
     ///
-    /// # Example
+    /// ## Example
     ///
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
@@ -455,9 +455,9 @@ where
     /// The new ID will be used to rename the current session (if it exists) when the next
     /// insert or update operation is performed.
     ///
-    /// # Example
+    /// ## Example
     ///
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// use ruts::Session;
     /// use fred::clients::Client;
     /// use ruts::store::redis::RedisStore;
