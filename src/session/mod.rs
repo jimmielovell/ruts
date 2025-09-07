@@ -1,9 +1,9 @@
 //! Session management for web applications.
 
 use parking_lot::RwLock;
-use serde::{de::DeserializeOwned, Serialize};
-use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
+use serde::{Serialize, de::DeserializeOwned};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::{result, sync::Arc};
 
 use thiserror::Error;

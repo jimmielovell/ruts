@@ -1,9 +1,12 @@
-use crate::store::{deserialize_value, serialize_value, Error, SessionMap, SessionStore};
 use crate::Id;
+use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize_value};
 use dashmap::DashMap;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use sqlx::{Executor, PgPool, Postgres};
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
+
+// Re-export Duration
+pub use tokio::time::Duration;
 
 /// A builder for creating a `PostgresStore`.
 ///
@@ -13,6 +16,7 @@ pub struct PostgresStoreBuilder {
     pool: PgPool,
     table_name: String,
     schema_name: Option<String>,
+    cleanup_interval: Option<Duration>,
 }
 
 impl PostgresStoreBuilder {
@@ -22,6 +26,7 @@ impl PostgresStoreBuilder {
             pool,
             table_name: "sessions".to_string(),
             schema_name: None,
+            cleanup_interval: None,
         }
     }
 
@@ -37,10 +42,18 @@ impl PostgresStoreBuilder {
         self
     }
 
+    /// Sets the interval for the background task that cleans up expired sessions.
+    ///
+    /// If this is not set, the cleanup task defaults to running every 5 minutes.
+    pub fn cleanup_interval(mut self, interval: Duration) -> Self {
+        self.cleanup_interval = Some(interval);
+        self
+    }
+
     /// Builds the `PostgresStore`, creating the schema and table if they don't exist.
     pub async fn build(self) -> Result<PostgresStore, sqlx::Error> {
         let qualified_table_name = if let Some(schema) = &self.schema_name {
-            // Create schema if it doesn't exist. Quoted to handle special characters.
+            // Quoted to handle special characters.
             sqlx::query(&format!("create schema if not exists \"{}\"", schema))
                 .execute(&self.pool)
                 .await?;
@@ -63,6 +76,26 @@ impl PostgresStoreBuilder {
         );
         sqlx::query(&create_table_query).execute(&self.pool).await?;
 
+        let pool_clone = self.pool.clone();
+        let delete_query = format!(
+            "delete from {} where expires_at is not null and expires_at < now()",
+            qualified_table_name
+        );
+
+        let cleanup_interval = self
+            .cleanup_interval
+            .unwrap_or_else(|| Duration::from_secs(300));
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(cleanup_interval);
+            loop {
+                interval.tick().await;
+                if let Err(err) = sqlx::query(&delete_query).execute(&pool_clone).await {
+                    tracing::error!("Failed to clean up expired sessions: {err:?}");
+                }
+            }
+        });
+
         Ok(PostgresStore {
             pool: self.pool,
             qualified_table_name,
@@ -80,7 +113,7 @@ pub struct PostgresStore {
 /// Helper to calculate the expiration time.
 fn expires_at(seconds: i64) -> Option<OffsetDateTime> {
     if seconds > 0 {
-        Some(OffsetDateTime::now_utc() + Duration::seconds(seconds))
+        Some(OffsetDateTime::now_utc() + time::Duration::seconds(seconds))
     } else {
         None
     }
@@ -412,7 +445,13 @@ impl crate::store::LayeredColdStore for PostgresStore {
     async fn get_all_with_meta(
         &self,
         session_id: &Id,
-    ) -> Result<Option<(SessionMap, std::collections::HashMap<String, crate::store::LayeredCacheMeta>)>, Error> {
+    ) -> Result<
+        Option<(
+            SessionMap,
+            std::collections::HashMap<String, crate::store::LayeredCacheMeta>,
+        )>,
+        Error,
+    > {
         let session_map = DashMap::new();
         let mut meta_map = std::collections::HashMap::new();
 
@@ -421,10 +460,11 @@ impl crate::store::LayeredColdStore for PostgresStore {
             "select field, value, expires_at, cache_behavior, hot_cache_ttl from {} where session_id = $1",
             self.qualified_table_name
         );
-        let rows: Vec<(String, Vec<u8>, Option<OffsetDateTime>, i16, Option<i64>)> = sqlx::query_as(&query)
-            .bind(session_id.to_string())
-            .fetch_all(&mut *tx)
-            .await?;
+        let rows: Vec<(String, Vec<u8>, Option<OffsetDateTime>, i16, Option<i64>)> =
+            sqlx::query_as(&query)
+                .bind(session_id.to_string())
+                .fetch_all(&mut *tx)
+                .await?;
 
         if rows.is_empty() {
             tx.commit().await?;
@@ -437,10 +477,13 @@ impl crate::store::LayeredColdStore for PostgresStore {
                 expired_fields.push(field);
             } else {
                 session_map.insert(field.clone(), value);
-                meta_map.insert(field, crate::store::LayeredCacheMeta {
-                    hot_cache_ttl,
-                    behavior: cache_behaviour.into(),
-                });
+                meta_map.insert(
+                    field,
+                    crate::store::LayeredCacheMeta {
+                        hot_cache_ttl,
+                        behavior: cache_behaviour.into(),
+                    },
+                );
             }
         }
 
@@ -463,7 +506,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
 
         Ok(Some((SessionMap::new(session_map), meta_map)))
     }
-    
+
     async fn insert_with_meta<T: Serialize + Send + Sync + 'static>(
         &self,
         session_id: &Id,
@@ -542,7 +585,8 @@ impl crate::store::LayeredColdStore for PostgresStore {
         let mut tx = self.pool.begin().await?;
 
         // First, rename any existing rows for the session.
-        self._rename_session_id(&mut *tx, old_session_id, new_session_id, key_seconds).await?;
+        self._rename_session_id(&mut *tx, old_session_id, new_session_id, key_seconds)
+            .await?;
 
         // Now, insert the new field with its metadata.
         let value = serialize_value(value)?;
@@ -551,16 +595,17 @@ impl crate::store::LayeredColdStore for PostgresStore {
 
         let result = sqlx::query(&format!(
             "insert into {} (session_id, field, value, expires_at, hot_cache_ttl, cache_behavior)
-             values ($1, $2, $3, $4, $5, $6) on conflict do nothing", self.qualified_table_name
+             values ($1, $2, $3, $4, $5, $6) on conflict do nothing",
+            self.qualified_table_name
         ))
-            .bind(new_session_id.to_string())
-            .bind(field)
-            .bind(value)
-            .bind(expires)
-            .bind(hot_ttl)
-            .bind(meta.behavior as i16)
-            .execute(&mut *tx)
-            .await?;
+        .bind(new_session_id.to_string())
+        .bind(field)
+        .bind(value)
+        .bind(expires)
+        .bind(hot_ttl)
+        .bind(meta.behavior as i16)
+        .execute(&mut *tx)
+        .await?;
 
         tx.commit().await?;
         Ok(result.rows_affected() > 0)
@@ -578,7 +623,8 @@ impl crate::store::LayeredColdStore for PostgresStore {
     ) -> Result<bool, Error> {
         let mut tx = self.pool.begin().await?;
 
-        self._rename_session_id(&mut *tx, old_session_id, new_session_id, key_seconds).await?;
+        self._rename_session_id(&mut *tx, old_session_id, new_session_id, key_seconds)
+            .await?;
 
         let value = serialize_value(value)?;
         let expires = expires_at(key_seconds);
@@ -591,16 +637,17 @@ impl crate::store::LayeredColdStore for PostgresStore {
                 value = excluded.value,
                 expires_at = excluded.expires_at,
                 hot_cache_ttl = excluded.hot_cache_ttl,
-                cache_behavior = excluded.cache_behavior", self.qualified_table_name
+                cache_behavior = excluded.cache_behavior",
+            self.qualified_table_name
         ))
-            .bind(new_session_id.to_string())
-            .bind(field)
-            .bind(value)
-            .bind(expires)
-            .bind(hot_ttl)
-            .bind(meta.behavior as i16)
-            .execute(&mut *tx)
-            .await?;
+        .bind(new_session_id.to_string())
+        .bind(field)
+        .bind(value)
+        .bind(expires)
+        .bind(hot_ttl)
+        .bind(meta.behavior as i16)
+        .execute(&mut *tx)
+        .await?;
 
         tx.commit().await?;
         Ok(result.rows_affected() > 0)

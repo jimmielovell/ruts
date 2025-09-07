@@ -5,8 +5,8 @@ mod tests {
     use super::*;
 
     use common::*;
-    use ruts::store::memory::MemoryStore;
     use ruts::store::SessionStore;
+    use ruts::store::memory::MemoryStore;
     use ruts::{Inner, Session};
     use std::sync::Arc;
 

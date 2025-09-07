@@ -6,15 +6,15 @@ mod common;
 mod tests {
     use super::*;
     use axum::{
+        Json, Router,
         body::Body,
         extract::Request,
         http::{self, StatusCode},
         routing::get,
-        Json, Router,
     };
     use common::*;
-    use cookie::time::Duration;
     use cookie::Cookie;
+    use cookie::time::Duration;
     use fred::{clients::Client, interfaces::ClientLike};
     use http::header::{COOKIE, SET_COOKIE};
     use ruts::store::redis::RedisStore;
