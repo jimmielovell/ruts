@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.6.1] - 2025-09-06
+
+### Fixed
+
+- Fixed a bug in `LayeredStore` where warming up the hot cache would ignore the original write strategy.
+
+### Breaking Changes
+
+- `redis-store` is no longer enabled by default. One has to explicitly enable it in `Cargo.toml`.
+
 ## [0.6.0] - 2025-09-05
 
 ### Added

@@ -3,7 +3,7 @@
 [![Documentation](https://docs.rs/ruts/badge.svg)](https://docs.rs/ruts)
 [![Crates.io](https://img.shields.io/crates/v/ruts.svg)](https://crates.io/crates/ruts)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/rust-1.75.0%2B-blue.svg?maxAge=3600)](
+[![Rust](https://img.shields.io/badge/rust-1.85.0%2B-blue.svg?maxAge=3600)](
 https://github.com/jimmielovell/ruts)
 
 ## Installation
@@ -12,12 +12,12 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruts = "0.6.0"
+ruts = "0.6.1"
 ```
 
 ## Quick Start
 
-Here's a basic example with [Axum](https://docs.rs/axum/latest/axum/):
+Here's a basic example with [Axum](https://docs.rs/axum/latest/axum/) and the `RedisStore`. This requires the features `axum`(enabled by default) and `redis-store` to be enabled.
 
 ```rust
 use axum::{Router, routing::get};
@@ -75,40 +75,44 @@ async fn handler(session: Session<RedisStore<Client>>) -> String {
 ### Basic Operations
 
 ```rust
-// Get session data
-let value: Option<T> = session.get("key").await?;
+[derive(serde::Deserialize)]
+struct User;
 
-// Get all session data
-let value: Option<SessionMap> = session.get_all().await?;
+async fn handler(session: Session<MemoryStore>) {
+  // Get a single field's data
+  let value: Option<User> = session.get("key").await.unwrap();
 
-// Insert new data
-session.insert("key", &value, optional_field_expiration).await?;
+  // Get all session data as a map for lazy deserialization
+  let session_map: Option<SessionMap> = session.get_all().await.unwrap();
+  if let Some(map) = session_map {
+      let user: Option<User> = map.get("user").unwrap();
+  }
 
-// Prepare a new session ID for the next insert
-let new_id = session.prepare_regenerate();
-session.insert("key", &value, optional_field_expiration).await?;
-
-// Update existing data
-session.update("key", &new_value, optional_field_expiration).await?;
-
-// Prepare a new session ID for the next update
-let new_id = session.prepare_regenerate();
-session.update("key", &value, optional_field_expiration).await?;
-
-// Remove data
-session.remove("key").await?;
-
-// Delete entire session
-session.delete().await?;
-
-// Regenerate session ID (for security)
-session.regenerate().await?;
-
-// Update session expiry
-session.expire(seconds)
-
-// Get session ID
-session.id()
+  // Insert new data with an optional field-level expiration (in seconds)
+  session.insert("key", &"some_value", Some(3600)).await.unwrap();
+  
+  // Update existing data
+  session.update("key", &"new_value", None).await.unwrap();
+  
+  // Prepare a new session ID before an insert/update to prevent session fixation
+  let new_id = session.prepare_regenerate();
+  session.update("key", &"value_with_new_id", None).await.unwrap();
+  
+  // Remove a single field
+  session.remove("key").await.unwrap();
+  
+  // Delete the entire session
+  session.delete().await.unwrap();
+  
+  // Regenerate session ID for security
+  session.regenerate().await.unwrap();
+  
+  // Update the session's overall expiry time
+  session.expire(7200).await.unwrap();
+  
+  // Get the current session ID
+  let id = session.id();
+}
 ```
 
 ## Stores
@@ -161,11 +165,7 @@ A composite store that layers a fast, ephemeral "hot" cache (like Redis) on top 
 
 #### Core Strategies
 
-- **Cache-Aside Reads**: On a read operation (`get`, `get_all`), the store
-  first checks the hot cache. If the data is present (a cache hit), it is
-  returned immediately. If not (a cache miss), the store queries the cold
-  store, and if the data is found, it "warms" the hot cache by populating it
-  with the data before returning it. This ensures subsequent reads are fast.
+- **Cache-Aside Reads**: On a read operation (`get`, `get_all`), the store first checks the hot cache. If the data is present, it is returned immediately. If not, the store queries the cold store, and if the data is found, it "warms" the hot cache by populating it with the data before returning it if during `insert`/`update` `LayeredWriteStrategy::WriteThrough`(default) was the strategy used.
 
 - **Write-Through (Default)**: By default, write operations (`insert`, `update`)
   are written to both the hot and cold stores simultaneously. This guarantees
@@ -180,7 +180,6 @@ where your session data is stored, This allows you to:
 - Write to the hot cache only.
 - Write to the cold store only.
 - Write through to both, but with a specific, shorter TTL for the hot cache.
-
 
 ```rust
 use ruts::store::layered::LayeredWriteStrategy;
@@ -218,14 +217,14 @@ async fn handler(session: MySession) {
 ### Serialization
 Ruts supports two serialization backends for session data storage:
 
-[`bincode`](https://crates.io/crates/bincode) (default) - Fast, compact binary serialization.
-[`messagepack`](https://crates.io/crates/rmp-serde) - Cross-language compatible serialization
+- [`bincode`](https://crates.io/crates/bincode) (default) - Fast, compact binary serialization.
+- [`messagepack`](https://crates.io/crates/rmp-serde) - Cross-language compatible serialization
 
 To use [`MessagePack`](https://crates.io/crates/rmp-serde) instead of the default [`bincode`](https://crates.io/crates/bincode), add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruts = { version = "0.6.0", default-features = false, features = ["axum", "redis-store", "messagepack"] }
+ruts = { version = "0.6.1", default-features = false, features = ["axum", "redis-store", "messagepack"] }
 ```
 
 ### Cookie Configuration
@@ -251,7 +250,7 @@ app.layer(session_layer)              // First: SessionLayer
    .layer(CookieManagerLayer::new()); // Then CookieManagerLayer
 ```
 
-### Security Best Practices
+### Best Practices
 
 - Enable HTTPS in production (set `secure: true` in cookie options)
 - Use appropriate `SameSite` cookie settings

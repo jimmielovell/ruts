@@ -1,4 +1,7 @@
-use crate::store::{Error, LayeredHotStore, SessionMap, SessionStore};
+use crate::store::{
+    Error, LayeredCacheBehavior, LayeredCacheMeta, LayeredColdStore, LayeredHotStore, SessionMap,
+    SessionStore,
+};
 use crate::Id;
 use serde::{de::DeserializeOwned, Serialize, Serializer};
 
@@ -41,19 +44,20 @@ impl<T: Send + Sync + Serialize + 'static> Serialize for LayeredWriteStrategy<T>
 /// long lifespans but should only occupy expensive cache memory when actively
 /// being used thus balancing performance and durability.
 ///
-/// # Core Strategies
+/// ## Core Strategies
 ///
 /// - **Cache-Aside Reads**: On a read operation (`get`, `get_all`), the store
-///   first checks the hot cache. If the data is present (a cache hit), it is
-///   returned immediately. If not (a cache miss), the store queries the cold
+///   first checks the hot cache. If the data is present, it is
+///   returned immediately. If not, the store queries the cold
 ///   store, and if the data is found, it "warms" the hot cache by populating it
-///   with the data before returning it. This ensures subsequent reads are fast.
+///   with the data before returning it if during `insert`/`update` 
+///   `LayeredWriteStrategy::WriteThrough`(default) was the strategy used.
 ///
 /// - **Write-Through (Default)**: By default, write operations (`insert`, `update`)
 ///   are written to both the hot and cold stores simultaneously. This guarantees
 ///   data consistency.
 ///
-/// # Fine-Grained Write Control
+/// ## Fine-Grained Write Control
 ///
 /// The default write-through behavior can be overridden on a per-call basis
 /// using the [`LayeredWriteStrategy`] enum. This gives you precise control over
@@ -65,7 +69,7 @@ impl<T: Send + Sync + Serialize + 'static> Serialize for LayeredWriteStrategy<T>
 /// 2.  Write to the cold store only.
 /// 3.  Write through to both, but with a specific, shorter TTL for the hot cache.
 ///
-/// # Example: Using `LayeredWriteStrategy`
+/// ## Example
 ///
 /// ```rust,no_run
 /// use ruts::store::layered::LayeredWriteStrategy;
@@ -108,7 +112,7 @@ where
 impl<Hot, Cold> LayeredStore<Hot, Cold>
 where
     Hot: SessionStore + LayeredHotStore,
-    Cold: SessionStore,
+    Cold: SessionStore + LayeredColdStore,
 {
     /// Creates a new `LayeredStore`.
     ///
@@ -124,7 +128,7 @@ where
 impl<Hot, Cold> SessionStore for LayeredStore<Hot, Cold>
 where
     Hot: SessionStore + LayeredHotStore,
-    Cold: SessionStore,
+    Cold: SessionStore + LayeredColdStore,
 {
     async fn get<T>(&self, session_id: &Id, field: &str) -> Result<Option<T>, Error>
     where
@@ -132,12 +136,24 @@ where
     {
         match self.hot.get(session_id, field).await? {
             Some(value) => Ok(Some(value)),
-            None => match self.cold.get_all(session_id).await? {
-                Some(session_map) => {
+            None => match self.cold.get_all_with_meta(session_id).await? {
+                Some((session_map, meta_map)) => {
                     let pairs_to_cache: Vec<(String, Vec<u8>, Option<i64>)> = session_map
                         .iter()
-                        .map(|entry| (entry.key().to_owned(), entry.value().to_owned(), None))
+                        .filter_map(|entry| {
+                            let meta = meta_map.get(entry.key());
+                            let should_cache = meta
+                                .is_none_or(|m| m.behavior != LayeredCacheBehavior::ColdCacheOnly);
+
+                            if should_cache {
+                                let hot_ttl = meta.and_then(|m| m.hot_cache_ttl);
+                                Some((entry.key().to_owned(), entry.value().to_owned(), hot_ttl))
+                            } else {
+                                None
+                            }
+                        })
                         .collect();
+
                     if !pairs_to_cache.is_empty() {
                         self.hot.update_many(session_id, &pairs_to_cache).await?;
                     }
@@ -152,12 +168,24 @@ where
     async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error> {
         match self.hot.get_all(session_id).await? {
             Some(session_map) => Ok(Some(session_map)),
-            None => match self.cold.get_all(session_id).await? {
-                Some(session_map) => {
+            None => match self.cold.get_all_with_meta(session_id).await? {
+                Some((session_map, meta_map)) => {
                     let pairs_to_cache: Vec<(String, Vec<u8>, Option<i64>)> = session_map
                         .iter()
-                        .map(|entry| (entry.key().to_owned(), entry.value().to_owned(), None))
+                        .filter_map(|entry| {
+                            let meta = meta_map.get(entry.key());
+                            let should_cache = meta
+                                .is_none_or(|m| m.behavior != LayeredCacheBehavior::ColdCacheOnly);
+
+                            if should_cache {
+                                let hot_ttl = meta.and_then(|m| m.hot_cache_ttl);
+                                Some((entry.key().to_owned(), entry.value().to_owned(), hot_ttl))
+                            } else {
+                                None
+                            }
+                        })
                         .collect();
+
                     if !pairs_to_cache.is_empty() {
                         self.hot.update_many(session_id, &pairs_to_cache).await?;
                     }
@@ -182,6 +210,10 @@ where
     {
         let mut value = value;
         let mut hot_cache_ttl = &None;
+        let mut meta = LayeredCacheMeta {
+            behavior: LayeredCacheBehavior::ColdCacheOnly,
+            hot_cache_ttl: None,
+        };
 
         if let Some(strategy) =
             (value as &dyn std::any::Any).downcast_ref::<LayeredWriteStrategy<T>>()
@@ -194,12 +226,24 @@ where
                         .await;
                 }
                 LayeredWriteStrategy::ColdCache(inner_value) => {
+                    let meta = LayeredCacheMeta {
+                        behavior: LayeredCacheBehavior::ColdCacheOnly,
+                        hot_cache_ttl: None,
+                    };
                     return self
                         .cold
-                        .insert(session_id, field, inner_value, key_seconds, field_seconds)
-                        .await
+                        .insert_with_meta(
+                            session_id,
+                            field,
+                            inner_value,
+                            key_seconds,
+                            field_seconds,
+                            &meta,
+                        )
+                        .await;
                 }
                 LayeredWriteStrategy::WriteThrough(inner_value, secs) => {
+                    meta.hot_cache_ttl = *secs;
                     value = inner_value;
                     hot_cache_ttl = secs;
                 }
@@ -215,7 +259,7 @@ where
             self.hot
                 .insert(session_id, field, value, hot_cache_ttl, Some(hot_cache_ttl)),
             self.cold
-                .insert(session_id, field, value, key_seconds, field_seconds),
+                .insert_with_meta(session_id, field, value, key_seconds, field_seconds, &meta),
         )?;
 
         Ok(hot_result && cold_result)
@@ -234,6 +278,10 @@ where
     {
         let mut value = value;
         let mut hot_cache_ttl = &None;
+        let mut meta = LayeredCacheMeta {
+            behavior: LayeredCacheBehavior::ColdCacheOnly,
+            hot_cache_ttl: None,
+        };
 
         if let Some(strategy) =
             (value as &dyn std::any::Any).downcast_ref::<LayeredWriteStrategy<T>>()
@@ -246,12 +294,17 @@ where
                         .await;
                 }
                 LayeredWriteStrategy::ColdCache(inner_value) => {
+                    let meta = LayeredCacheMeta {
+                        behavior: LayeredCacheBehavior::ColdCacheOnly,
+                        hot_cache_ttl: None,
+                    };
                     return self
                         .cold
-                        .update(session_id, field, inner_value, key_seconds, field_seconds)
+                        .update_with_meta(session_id, field, inner_value, key_seconds, field_seconds, &meta)
                         .await
                 }
                 LayeredWriteStrategy::WriteThrough(inner_value, secs) => {
+                    meta.hot_cache_ttl = *secs;
                     value = inner_value;
                     hot_cache_ttl = secs;
                 }
@@ -267,7 +320,7 @@ where
             self.hot
                 .update(session_id, field, value, hot_cache_ttl, Some(hot_cache_ttl)),
             self.cold
-                .update(session_id, field, value, key_seconds, field_seconds),
+                .update_with_meta(session_id, field, value, key_seconds, field_seconds, &meta),
         )?;
 
         Ok(hot_result && cold_result)
@@ -287,6 +340,10 @@ where
     {
         let mut value = value;
         let mut hot_cache_ttl = &None;
+        let mut meta = LayeredCacheMeta {
+            behavior: LayeredCacheBehavior::ColdCacheOnly,
+            hot_cache_ttl: None,
+        };
 
         if let Some(strategy) =
             (value as &dyn std::any::Any).downcast_ref::<LayeredWriteStrategy<T>>()
@@ -306,19 +363,25 @@ where
                         .await;
                 }
                 LayeredWriteStrategy::ColdCache(inner_value) => {
+                    let meta = LayeredCacheMeta {
+                        behavior: LayeredCacheBehavior::ColdCacheOnly,
+                        hot_cache_ttl: None,
+                    };
                     return self
                         .cold
-                        .insert_with_rename(
+                        .insert_with_rename_with_meta(
                             old_session_id,
                             new_session_id,
                             field,
                             inner_value,
                             key_seconds,
                             field_seconds,
+                            &meta
                         )
                         .await
                 }
                 LayeredWriteStrategy::WriteThrough(inner_value, secs) => {
+                    meta.hot_cache_ttl = *secs;
                     value = inner_value;
                     hot_cache_ttl = secs;
                 }
@@ -339,13 +402,14 @@ where
                 hot_cache_ttl,
                 Some(hot_cache_ttl),
             ),
-            self.cold.insert_with_rename(
+            self.cold.insert_with_rename_with_meta(
                 old_session_id,
                 new_session_id,
                 field,
                 value,
                 key_seconds,
                 field_seconds,
+                &meta
             ),
         )?;
 
@@ -366,6 +430,10 @@ where
     {
         let mut value = value;
         let mut hot_cache_ttl = &None;
+        let mut meta = LayeredCacheMeta {
+            behavior: LayeredCacheBehavior::ColdCacheOnly,
+            hot_cache_ttl: None,
+        };
 
         if let Some(strategy) =
             (value as &dyn std::any::Any).downcast_ref::<LayeredWriteStrategy<T>>()
@@ -385,19 +453,25 @@ where
                         .await;
                 }
                 LayeredWriteStrategy::ColdCache(inner_value) => {
+                    let meta = LayeredCacheMeta {
+                        behavior: LayeredCacheBehavior::ColdCacheOnly,
+                        hot_cache_ttl: None,
+                    };
                     return self
                         .cold
-                        .update_with_rename(
+                        .update_with_rename_with_meta(
                             old_session_id,
                             new_session_id,
                             field,
                             inner_value,
                             key_seconds,
                             field_seconds,
+                            &meta
                         )
                         .await
                 }
                 LayeredWriteStrategy::WriteThrough(inner_value, secs) => {
+                    meta.hot_cache_ttl = *secs;
                     value = inner_value;
                     hot_cache_ttl = secs;
                 }
@@ -418,13 +492,14 @@ where
                 hot_cache_ttl,
                 Some(hot_cache_ttl),
             ),
-            self.cold.update_with_rename(
+            self.cold.update_with_rename_with_meta(
                 old_session_id,
                 new_session_id,
                 field,
                 value,
                 key_seconds,
                 field_seconds,
+                &meta
             ),
         )?;
 

@@ -99,7 +99,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         field: &str,
     ) -> impl Future<Output = Result<Option<T>, Error>> + Send
     where
-        T: Clone + Send + Sync + DeserializeOwned;
+        T: Send + Sync + DeserializeOwned;
 
     /// Gets all the `field`-`value` pairs stored at `session_id`
     fn get_all(
@@ -203,13 +203,5 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         &self,
         session_id: &Id,
         seconds: i64,
-    ) -> impl Future<Output = Result<bool, Error>> + Send;
-}
-
-pub trait LayeredHotStore: Clone + Send + Sync + 'static {
-    fn update_many(
-        &self,
-        session_id: &Id,
-        pairs: &[(String, Vec<u8>, Option<i64>)],
     ) -> impl Future<Output = Result<bool, Error>> + Send;
 }

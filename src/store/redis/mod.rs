@@ -5,9 +5,7 @@ use crate::store::redis::lua::{
     RENAME_SCRIPT, RENAME_SCRIPT_HASH, UPDATE_MANY_SCRIPT, UPDATE_MANY_SCRIPT_HASH, UPDATE_SCRIPT,
     UPDATE_SCRIPT_HASH, UPDATE_WITH_RENAME_SCRIPT, UPDATE_WITH_RENAME_SCRIPT_HASH,
 };
-use crate::store::{
-    deserialize_value, serialize_value, Error, LayeredHotStore, SessionMap, SessionStore,
-};
+use crate::store::{deserialize_value, serialize_value, Error, SessionMap, SessionStore};
 use crate::Id;
 use dashmap::DashMap;
 use fred::clients::Pool;
@@ -49,7 +47,7 @@ where
 {
     async fn get<T>(&self, session_id: &Id, field: &str) -> Result<Option<T>, Error>
     where
-        T: Clone + Send + Sync + DeserializeOwned,
+        T: Send + Sync + DeserializeOwned,
     {
         let value = self
             .client
@@ -270,7 +268,8 @@ where
     Ok(done)
 }
 
-impl<C> LayeredHotStore for RedisStore<C>
+#[cfg(feature = "layered-store")]
+impl<C> crate::store::LayeredHotStore for RedisStore<C>
 where
     C: HashesInterface + KeysInterface + LuaInterface + Clone + Send + Sync + 'static,
 {

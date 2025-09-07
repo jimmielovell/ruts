@@ -1,8 +1,14 @@
 //! # Ruts: Rust Tower Session for HTTP Applications
 //!
-//! ## Quick Start
+//! `ruts` is a powerful and flexible session management middleware for Rust's Tower web
+//! framework, with a focus on performance, durability, and ergonomic design.
 //!
-//! ```rust,no_run
+//! # Quick Start
+//!
+//! Here's a basic example with [Axum](https://docs.rs/axum/latest/axum/) and the `RedisStore`.
+//! This requires the `axum` (enabled by default) and `redis-store` features.
+//!
+//! ```rust,ignore
 //! use axum::{Router, routing::get};
 //! use ruts::{Session, SessionLayer, CookieOptions};
 //! use ruts::store::redis::RedisStore;
@@ -25,7 +31,7 @@
 //!     let cookie_options = CookieOptions::build()
 //!         .name("session")
 //!         .http_only(true)
-//!         .same_site(cookie::SameSite::Lax)
+//!         .same_site(ruts::cookie::SameSite::Lax)
 //!         .secure(true)
 //!         .max_age(3600) // 1 hour
 //!         .path("/");
@@ -53,30 +59,232 @@
 //! }
 //! ```
 //!
-//! ## Serialization
+//! # Session Management
 //!
+//! ## Basic Operations
+//!
+//! ```rust,no_run
+//! # use ruts::Session;
+//! # use ruts::store::SessionMap;
+//! # use ruts::store::memory::MemoryStore;
+//!
+//! # #[derive(serde::Deserialize)]
+//! # struct User;
+//!
+//! # async fn handler(session: Session<MemoryStore>) {
+//! // Get a single field's data
+//! let value: Option<User> = session.get("key").await.unwrap();
+//!
+//! // Get all session data as a map for lazy deserialization
+//! let session_map: Option<SessionMap> = session.get_all().await.unwrap();
+//! if let Some(map) = session_map {
+//!     let user: Option<User> = map.get("user").unwrap();
+//! }
+//!
+//! // Insert new data with an optional field-level expiration (in seconds)
+//! session.insert("key", &"some_value", Some(3600)).await.unwrap();
+//!
+//! // Update existing data
+//! session.update("key", &"new_value", None).await.unwrap();
+//!
+//! // Prepare a new session ID before an insert/update to prevent session fixation
+//! let new_id = session.prepare_regenerate();
+//! session.update("key", &"value_with_new_id", None).await.unwrap();
+//!
+//! // Remove a single field
+//! session.remove("key").await.unwrap();
+//!
+//! // Delete the entire session
+//! session.delete().await.unwrap();
+//!
+//! // Regenerate session ID for security
+//! session.regenerate().await.unwrap();
+//!
+//! // Update the session's overall expiry time
+//! session.expire(7200).await.unwrap();
+//!
+//! // Get the current session ID
+//! let id = session.id();
+//! # }
+//! ```
+//!
+//! # Stores
+//!
+//! `ruts` offers several backend stores for session data, each enabled by a feature flag.
+//!
+//! ## Redis
+//! A high-performance Redis-backed session store. Ideal for production use as a primary or caching layer.
+//!
+//! ### Requirements
+//!
+//! - The `redis-store` feature.
+//! - Redis 7.4 or later (required for field-level expiration using `HEXPIRE`).
+//!
+//! ```rust,ignore
+//! # use std::sync::Arc;
+//! # use fred::clients::Client;
+//! use ruts::store::redis::RedisStore;
+//!
+//! # let fred_client_or_pool = Client::default();
+//! let store = RedisStore::new(Arc::new(fred_client_or_pool));
+//! ```
+//!
+//! ## Postgres
+//! A durable, persistent session store backed by a Postgres database.
+//!
+//! ### Requirements
+//!
+//! - The `postgres-store` feature.
+//!
+//! ```rust,ignore
+//! use std::sync::Arc;
+//! use sqlx::PgPool;
+//! use ruts::store::postgres::PostgresStoreBuilder;
+//!
+//! # async {
+//! // 1. Set up your database connection pool.
+//! let database_url = std::env::var("DATABASE_URL")
+//!     .expect("DATABASE_URL must be set");
+//! let pool = PgPool::connect(&database_url).await.unwrap();
+//!
+//! // 2. Create the session store using the builder.
+//! // This will also run a migration to create the `sessions` table.
+//! let store = PostgresStoreBuilder::new(pool)
+//!     // Optionally, you can customize the schema and table name
+//!     // .schema_name("my_app")
+//!     // .table_name("user_sessions")
+//!     .build()
+//!     .await
+//!     .unwrap();
+//! # };
+//! ```
+//!
+//! ## LayeredStore
+//!
+//! (Requires the `layered-store`, `redis-store`, and `postgres-store` features)
+//!
+//! A composite store that layers a fast, ephemeral "hot" cache (like Redis) on top of a
+//! slower, persistent "cold" store (like Postgres). It is designed for scenarios where
+//! sessions can have long lifespans but should only occupy expensive cache memory when
+//! actively being used, thus balancing performance and durability.
+//!
+//!
+//! ### Core Strategies
+//!
+//! - **Cache-Aside Reads**: On a read operation (`get`, `get_all`), the store first
+//!   checks the hot cache. If the data is present, it is returned immediately. If not,
+//!   the store queries the cold store, and if the data is found, it "warms" the hot
+//!   cache by populating it with the data before returning it (unless the write
+//!   strategy was `ColdCacheOnly`).
+//!
+//! - **Write-Through (Default)**: By default, write operations (`insert`, `update`)
+//!   are written to both the hot and cold stores simultaneously to guarantee data
+//!   consistency.
+//!
+//! ### Fine-Grained Write Control
+//!
+//! The default write-through behavior can be overridden on a per-call basis
+//! using the `LayeredWriteStrategy`. This gives you precise control over
+//! where your session data is stored, allowing you to:
+//!
+//! - Write to the hot cache only.
+//! - Write to the cold store only.
+//! - Write through to both, but with a specific, shorter TTL for the hot cache.
+//!
+//!
+//! ```rust,ignore
+//! use ruts::store::redis::RedisStore;
+//! use ruts::store::postgres::PostgresStore;
+//! use fred::clients::Client;
+//! use sqlx::PgPool;
+//! use ruts::store::layered::{LayeredStore, LayeredWriteStrategy};
+//! use ruts::Session;
+//!
+//! // Define a type alias for your specific layered store setup
+//! type MyLayeredStore = LayeredStore<RedisStore<Client>, PostgresStore>;
+//! type MySession = Session<MyLayeredStore>;
+//!
+//! #[derive(serde::Serialize)]
+//! struct User { id: i32 }
+//!
+//! async fn handler(session: MySession) {
+//!     let user = User { id: 1 };
+//!
+//!     // This session field is valid for 1 month in the persistent store.
+//!     let long_term_expiry = 60 * 60 * 24 * 30;
+//!
+//!     // However, we only want it to live in the hot cache (Redis) for 1 hour.
+//!     let short_term_hot_cache_expiry = 60 * 60;
+//!
+//!     // The value is wrapped in the strategy enum to control write behavior.
+//!     let strategy = LayeredWriteStrategy::WriteThrough(
+//!         user,
+//!         Some(short_term_hot_cache_expiry),
+//!     );
+//!
+//!     // The cold store (Postgres) will get the long-term expiry,
+//!     // but the hot store (Redis) will be capped at the shorter TTL.
+//!     session.update("user", &strategy, long_term_expiry, None).await.unwrap();
+//! }
+//! ```
+//!
+//! ## Serialization
 //! Ruts supports two serialization backends for session data storage:
 //!
-//! - `bincode` (default) - Fast binary serialization
-//! - `messagepack` - Cross-language compatible serialization
+//! - [`bincode`](https://crates.io/crates/bincode) (default) - Fast, compact binary serialization.
+//! - [`rmp-serde`](https://crates.io/crates/rmp-serde) (MessagePack) - Cross-language compatible serialization.
 //!
-//! To use `MessagePack` instead of the default `bincode`:
+//! To use `MessagePack` instead of the default `bincode`, add this to your `Cargo.toml`:
 //!
 //! ```toml
 //! [dependencies]
-//! ruts = { version = "0.6.0", default-features = false, features = ["axum", "redis-store", "messagepack"] }
+//! ruts = { version = "0.6.1", default-features = false, features = ["axum", "redis-store", "messagepack"] }
 //! ```
 //!
-//! ## Important Notes
+//! ## Cookie Configuration
 //!
-//! ### Middleware Ordering
+//! ```rust
+//! # use ruts::CookieOptions;
+//! # use ruts::cookie::SameSite;
+//! let cookie_options = CookieOptions::build()
+//!     .name("my_session_cookie")
+//!     .http_only(true)
+//!     .same_site(SameSite::Strict)
+//!     .secure(true) // Set to true in production
+//!     .max_age(7200) // 2 hours
+//!     .path("/")
+//!     .domain("example.com");
+//! ```
 //!
+//! # Important Notes
+//!
+//! ## Middleware Ordering
 //! The `SessionLayer` must be applied **before** the `CookieManagerLayer`:
 //!
-//! ### Redis Requirements
+//! ```rust
+//! # use axum::Router;
+//! # use ruts::{SessionLayer, store::memory::MemoryStore};
+//! # use tower_cookies::CookieManagerLayer;
+//! # use std::sync::Arc;
 //!
-//! - Redis 7.4 or later (required for field-level expiration using [HEXPIRE](https://redis.io/docs/latest/commands/hexpire/))
-//! - For Redis < 7.4, field-level expiration will not be available
+//! # let app = Router::new();
+//! # let session_layer = SessionLayer::new(Arc::new(MemoryStore::new()));
+//!
+//! // Correct order
+//! let router = app
+//!     .layer(session_layer)
+//!     .layer(CookieManagerLayer::new());
+//! ```
+//!
+//! ## Best Practices
+//!
+//! - Enable HTTPS in production and set `secure: true` in cookie options.
+//! - Use appropriate `SameSite` cookie settings (e.g., `Strict` or `Lax`).
+//! - Always set a session expiration time (`max_age`).
+//! - Regularly regenerate session IDs using `session.regenerate()` or `session.prepare_regenerate()`,
+//!   especially after a change in privilege level (like logging in).
+//! - Enable HTTP Only mode (`http_only: true`) to prevent client-side script access to the
+//!   session cookie.
 
 pub use cookie;
 
@@ -85,6 +293,9 @@ mod extract;
 
 #[cfg(feature = "redis-store")]
 pub use fred;
+
+#[cfg(feature = "postgres-store")]
+pub use sqlx;
 
 mod service;
 pub use service::*;

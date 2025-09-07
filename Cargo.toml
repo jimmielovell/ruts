@@ -1,9 +1,9 @@
 [package]
 name = "ruts"
 description = "A middleware for tower sessions"
-version = "0.6.0"
-edition = "2021"
-rust-version = "1.75.0"
+version = "0.6.1"
+edition = "2024"
+rust-version = "1.85.0"
 authors = ["Jimmie Lovell <jimmieomlovell@gmail.com>"]
 license = "MIT"
 homepage = "https://github.com/jimmielovell/ruts"
@@ -14,7 +14,7 @@ documentation = "https://docs.rs/ruts"
 readme = "README.md"
 
 [features]
-default = ["axum", "layered-store", "bincode"]
+default = ["axum", "bincode"]
 axum = ["dep:axum-core"]
 bincode = ["dep:bincode"]
 messagepack = ["dep:rmp-serde"]
@@ -50,10 +50,7 @@ serde_json = "1.0.143"
 [[example]]
 name = "axum"
 path = "examples/axum.rs"
-
-[[example]]
-name = "counter"
-path = "examples/counter.rs"
+required-features = ["axum", "redis-store"]
 
 [[test]]
 name = "core"

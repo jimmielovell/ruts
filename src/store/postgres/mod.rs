@@ -55,6 +55,8 @@ impl PostgresStoreBuilder {
                 field text not null,
                 value bytea not null,
                 expires_at timestamptz,
+                hot_cache_ttl integer,
+                cache_behavior smallint not null default 0,
                 primary key (session_id, field)
             );",
             qualified_table_name
@@ -129,7 +131,7 @@ impl PostgresStore {
 impl SessionStore for PostgresStore {
     async fn get<T>(&self, session_id: &Id, field: &str) -> Result<Option<T>, Error>
     where
-        T: Clone + Send + Sync + DeserializeOwned,
+        T: Send + Sync + DeserializeOwned,
     {
         let mut tx = self.pool.begin().await?;
         let query = format!(
@@ -401,6 +403,206 @@ impl SessionStore for PostgresStore {
             .bind(session_id.to_string())
             .execute(&self.pool)
             .await?;
+        Ok(result.rows_affected() > 0)
+    }
+}
+
+#[cfg(feature = "layered-store")]
+impl crate::store::LayeredColdStore for PostgresStore {
+    async fn get_all_with_meta(
+        &self,
+        session_id: &Id,
+    ) -> Result<Option<(SessionMap, std::collections::HashMap<String, crate::store::LayeredCacheMeta>)>, Error> {
+        let session_map = DashMap::new();
+        let mut meta_map = std::collections::HashMap::new();
+
+        let mut tx = self.pool.begin().await?;
+        let query = format!(
+            "select field, value, expires_at, cache_behavior, hot_cache_ttl from {} where session_id = $1",
+            self.qualified_table_name
+        );
+        let rows: Vec<(String, Vec<u8>, Option<OffsetDateTime>, i16, Option<i64>)> = sqlx::query_as(&query)
+            .bind(session_id.to_string())
+            .fetch_all(&mut *tx)
+            .await?;
+
+        if rows.is_empty() {
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        let mut expired_fields = Vec::new();
+        for (field, value, expires_at, cache_behaviour, hot_cache_ttl) in rows {
+            if expires_at.is_some_and(|err| err < OffsetDateTime::now_utc()) {
+                expired_fields.push(field);
+            } else {
+                session_map.insert(field.clone(), value);
+                meta_map.insert(field, crate::store::LayeredCacheMeta {
+                    hot_cache_ttl,
+                    behavior: cache_behaviour.into(),
+                });
+            }
+        }
+
+        if !expired_fields.is_empty() {
+            let delete_query = format!(
+                "delete from {} where session_id = $1 and field = any($2)",
+                self.qualified_table_name
+            );
+            sqlx::query(&delete_query)
+                .bind(session_id.to_string())
+                .bind(expired_fields)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+
+        if session_map.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some((SessionMap::new(session_map), meta_map)))
+    }
+    
+    async fn insert_with_meta<T: Serialize + Send + Sync + 'static>(
+        &self,
+        session_id: &Id,
+        field: &str,
+        value: &T,
+        key_seconds: i64,
+        _field_seconds: Option<i64>, // Not used in Postgres
+        meta: &crate::store::LayeredCacheMeta,
+    ) -> Result<bool, Error> {
+        let value = serialize_value(value)?;
+        let expires = expires_at(key_seconds);
+        let hot_ttl: Option<i32> = meta.hot_cache_ttl.and_then(|t| t.try_into().ok());
+
+        let result = sqlx::query(&format!(
+            "insert into {} (session_id, field, value, expires_at, hot_cache_ttl, cache_behavior)
+             values ($1, $2, $3, $4, $5, $6) on conflict do nothing",
+            self.qualified_table_name
+        ))
+        .bind(session_id.to_string())
+        .bind(field)
+        .bind(value)
+        .bind(expires)
+        .bind(hot_ttl)
+        .bind(meta.behavior as i16)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn update_with_meta<T: Serialize + Send + Sync + 'static>(
+        &self,
+        session_id: &Id,
+        field: &str,
+        value: &T,
+        key_seconds: i64,
+        _field_seconds: Option<i64>,
+        meta: &crate::store::LayeredCacheMeta,
+    ) -> Result<bool, Error> {
+        let value = serialize_value(value)?;
+        let expires = expires_at(key_seconds);
+        let hot_ttl: Option<i32> = meta.hot_cache_ttl.and_then(|t| t.try_into().ok());
+
+        let result = sqlx::query(&format!(
+            "insert into {} (session_id, field, value, expires_at, hot_cache_ttl, cache_behavior)
+             values ($1, $2, $3, $4, $5, $6)
+             on conflict (session_id, field) do update set
+                value = excluded.value,
+                expires_at = excluded.expires_at,
+                hot_cache_ttl = excluded.hot_cache_ttl,
+                cache_behavior = excluded.cache_behavior",
+            self.qualified_table_name
+        ))
+        .bind(session_id.to_string())
+        .bind(field)
+        .bind(value)
+        .bind(expires)
+        .bind(hot_ttl)
+        .bind(meta.behavior as i16)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn insert_with_rename_with_meta<T: Serialize + Send + Sync + 'static>(
+        &self,
+        old_session_id: &Id,
+        new_session_id: &Id,
+        field: &str,
+        value: &T,
+        key_seconds: i64,
+        _field_seconds: Option<i64>,
+        meta: &crate::store::LayeredCacheMeta,
+    ) -> Result<bool, Error> {
+        let mut tx = self.pool.begin().await?;
+
+        // First, rename any existing rows for the session.
+        self._rename_session_id(&mut *tx, old_session_id, new_session_id, key_seconds).await?;
+
+        // Now, insert the new field with its metadata.
+        let value = serialize_value(value)?;
+        let expires = expires_at(key_seconds);
+        let hot_ttl: Option<i32> = meta.hot_cache_ttl.and_then(|t| t.try_into().ok());
+
+        let result = sqlx::query(&format!(
+            "insert into {} (session_id, field, value, expires_at, hot_cache_ttl, cache_behavior)
+             values ($1, $2, $3, $4, $5, $6) on conflict do nothing", self.qualified_table_name
+        ))
+            .bind(new_session_id.to_string())
+            .bind(field)
+            .bind(value)
+            .bind(expires)
+            .bind(hot_ttl)
+            .bind(meta.behavior as i16)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn update_with_rename_with_meta<T: Serialize + Send + Sync + 'static>(
+        &self,
+        old_session_id: &Id,
+        new_session_id: &Id,
+        field: &str,
+        value: &T,
+        key_seconds: i64,
+        _field_seconds: Option<i64>,
+        meta: &crate::store::LayeredCacheMeta,
+    ) -> Result<bool, Error> {
+        let mut tx = self.pool.begin().await?;
+
+        self._rename_session_id(&mut *tx, old_session_id, new_session_id, key_seconds).await?;
+
+        let value = serialize_value(value)?;
+        let expires = expires_at(key_seconds);
+        let hot_ttl: Option<i32> = meta.hot_cache_ttl.and_then(|t| t.try_into().ok());
+
+        let result = sqlx::query(&format!(
+            "insert into {} (session_id, field, value, expires_at, hot_cache_ttl, cache_behavior)
+             values ($1, $2, $3, $4, $5, $6)
+             on conflict (session_id, field) do update set
+                value = excluded.value,
+                expires_at = excluded.expires_at,
+                hot_cache_ttl = excluded.hot_cache_ttl,
+                cache_behavior = excluded.cache_behavior", self.qualified_table_name
+        ))
+            .bind(new_session_id.to_string())
+            .bind(field)
+            .bind(value)
+            .bind(expires)
+            .bind(hot_ttl)
+            .bind(meta.behavior as i16)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
         Ok(result.rows_affected() > 0)
     }
 }

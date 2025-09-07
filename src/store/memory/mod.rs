@@ -53,7 +53,7 @@ impl MemoryStore {
 impl SessionStore for MemoryStore {
     async fn get<T>(&self, session_id: &Id, field: &str) -> Result<Option<T>, Error>
     where
-        T: Clone + Send + Sync + DeserializeOwned,
+        T: Send + Sync + DeserializeOwned,
     {
         self.cleanup_expired();
 
