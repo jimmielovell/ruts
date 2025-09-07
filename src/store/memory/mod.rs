@@ -93,7 +93,7 @@ impl SessionStore for MemoryStore {
         field: &str,
         value: &T,
         key_seconds: i64,
-        _field_seconds: Option<i64>,
+        field_seconds: Option<i64>,
     ) -> Result<bool, Error>
     where
         T: Send + Sync + Serialize,
@@ -104,9 +104,10 @@ impl SessionStore for MemoryStore {
         if fields.contains_key(field) {
             return Ok(false);
         }
-
-        let expires_at = if key_seconds > 0 {
-            Some(Instant::now() + Duration::from_secs(key_seconds as u64))
+        
+        let ttl = field_seconds.unwrap_or(key_seconds).min(key_seconds);
+        let expires_at = if ttl > 0 {
+            Some(Instant::now() + Duration::from_secs(ttl as u64))
         } else {
             None
         };
@@ -128,7 +129,7 @@ impl SessionStore for MemoryStore {
         field: &str,
         value: &T,
         key_seconds: i64,
-        _field_seconds: Option<i64>,
+        field_seconds: Option<i64>,
     ) -> Result<bool, Error>
     where
         T: Send + Sync + Serialize,
@@ -137,8 +138,9 @@ impl SessionStore for MemoryStore {
 
         let mut fields = self.data.entry(session_id.to_string()).or_default();
 
-        let expires_at = if key_seconds > 0 {
-            Some(Instant::now() + Duration::from_secs(key_seconds as u64))
+        let ttl = field_seconds.unwrap_or(key_seconds).min(key_seconds);
+        let expires_at = if ttl > 0 {
+            Some(Instant::now() + Duration::from_secs(ttl as u64))
         } else {
             None
         };
@@ -161,7 +163,7 @@ impl SessionStore for MemoryStore {
         field: &str,
         value: &T,
         key_seconds: i64,
-        _field_seconds: Option<i64>,
+        field_seconds: Option<i64>,
     ) -> Result<bool, Error>
     where
         T: Send + Sync + Serialize,
@@ -179,8 +181,9 @@ impl SessionStore for MemoryStore {
             return Ok(false);
         }
 
-        let expires_at = if key_seconds > 0 {
-            Some(Instant::now() + Duration::from_secs(key_seconds as u64))
+        let ttl = field_seconds.unwrap_or(key_seconds).min(key_seconds);
+        let expires_at = if ttl > 0 {
+            Some(Instant::now() + Duration::from_secs(ttl as u64))
         } else {
             None
         };
@@ -206,7 +209,7 @@ impl SessionStore for MemoryStore {
         field: &str,
         value: &T,
         key_seconds: i64,
-        _field_seconds: Option<i64>,
+        field_seconds: Option<i64>,
     ) -> Result<bool, Error>
     where
         T: Send + Sync + Serialize,
@@ -219,8 +222,9 @@ impl SessionStore for MemoryStore {
             return Ok(false);
         }
 
-        let expires_at = if key_seconds > 0 {
-            Some(Instant::now() + Duration::from_secs(key_seconds as u64))
+        let ttl = field_seconds.unwrap_or(key_seconds).min(key_seconds);
+        let expires_at = if ttl > 0 {
+            Some(Instant::now() + Duration::from_secs(ttl as u64))
         } else {
             None
         };
