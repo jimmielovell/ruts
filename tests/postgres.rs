@@ -19,7 +19,6 @@ mod tests {
     use ruts::{Session, SessionLayer};
     use sqlx::PgPool;
     use std::sync::Arc;
-    use time::Duration;
     use tower::ServiceExt;
     use tower_cookies::CookieManagerLayer;
 
@@ -388,6 +387,9 @@ mod tests {
             .to_string();
 
         let parsed_cookie = Cookie::parse_encoded(&new_cookie).expect("Should be a valid cookie");
-        assert_eq!(parsed_cookie.max_age(), Some(Duration::seconds(30)));
+        assert_eq!(
+            parsed_cookie.max_age(),
+            Some(cookie::time::Duration::seconds(30))
+        );
     }
 }

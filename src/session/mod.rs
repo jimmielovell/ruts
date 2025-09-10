@@ -46,11 +46,11 @@ where
     ///
     /// ## Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use serde::Deserialize;
-    /// use ruts::store::redis::RedisStore;
+    /// use ruts::store::memory::MemoryStore;
     ///
     /// #[derive(Clone, Deserialize)]
     /// struct User {
@@ -70,7 +70,7 @@ where
     ///     theme: Option<Theme>,
     /// }
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
+    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
     ///     session.get::<AppSession>("app").await.unwrap();
     /// }
     /// ```
@@ -118,11 +118,11 @@ where
     ///
     /// ## Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use serde::Serialize;
-    /// use ruts::store::redis::RedisStore;
+    /// use ruts::store::memory::MemoryStore;
     ///
     /// #[derive(Serialize)]
     /// struct User {
@@ -142,7 +142,7 @@ where
     ///     theme: Option<Theme>,
     /// }
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
+    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
     ///     let app = AppSession {
     ///             user: User {
     ///             id: 34895634,
@@ -156,34 +156,48 @@ where
     /// ```
     #[tracing::instrument(
         name = "session-store: inserting field-value",
-        skip(self, field, value, field_expire)
+        skip(self, field, value, field_ttl_secs)
     )]
-    pub async fn insert<T>(&self, field: &str, value: &T, field_expire: Option<i64>) -> Result<bool>
+    pub async fn insert<T>(
+        &self,
+        field: &str,
+        value: &T,
+        field_ttl_secs: Option<i64>,
+    ) -> Result<bool>
     where
         T: Send + Sync + Serialize + 'static,
     {
         let current_id = self.inner.get_or_set_id();
         let pending_id = self.inner.take_pending_id();
 
-        let inserted = match pending_id {
+        let key_ttl_secs = self.max_age();
+        let key_ttl_secs = if key_ttl_secs == -1 {
+            None
+        } else if let Some(ttl) = field_ttl_secs && ttl > key_ttl_secs {
+            Some(ttl)
+        } else {
+            Some(key_ttl_secs)
+        };
+
+        let max_age = match pending_id {
             Some(new_id) => {
-                let inserted = self.inner
+                let max_age = self.inner
                     .store
-                    .insert_with_rename(&current_id, &new_id, field, value, self.max_age(), field_expire)
+                    .insert_with_rename(&current_id, &new_id, field, value, key_ttl_secs, field_ttl_secs)
                     .await
                     .map_err(|err| {
                         tracing::error!(err = %err, "failed to insert field-value with rename to session store");
                         err
                     })?;
-                if inserted {
+                if max_age.is_some() {
                     *self.inner.id.write() = Some(new_id);
                 }
-                inserted
+                max_age
             }
             None => self
                 .inner
                 .store
-                .insert(&current_id, field, value, self.max_age(), field_expire)
+                .insert(&current_id, field, value, key_ttl_secs, field_ttl_secs)
                 .await
                 .map_err(|err| {
                     tracing::error!(err = %err, "failed to insert field-value to session store");
@@ -191,11 +205,12 @@ where
                 })?,
         };
 
-        if inserted {
+        if let Some(max_age) = max_age {
             self.inner.set_changed();
+            self.set_expiration(max_age);
         }
 
-        Ok(inserted)
+        Ok(max_age.is_some())
     }
 
     /// Updates a value in the session store.
@@ -206,11 +221,11 @@ where
     ///
     /// ## Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
     /// use serde::Serialize;
-    /// use ruts::store::redis::RedisStore;
+    /// use ruts::store::memory::MemoryStore;
     ///
     /// #[derive(Serialize)]
     /// struct User {
@@ -230,7 +245,7 @@ where
     ///     theme: Option<Theme>,
     /// }
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
+    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
     ///     let app = AppSession {
     ///         user: User {
     ///             id: 21342365,
@@ -244,36 +259,50 @@ where
     /// ```
     #[tracing::instrument(
         name = "session-store: updating field",
-        skip(self, field, value, field_expire)
+        skip(self, field, value, field_ttl_secs)
     )]
-    pub async fn update<T>(&self, field: &str, value: &T, field_expire: Option<i64>) -> Result<bool>
+    pub async fn update<T>(
+        &self,
+        field: &str,
+        value: &T,
+        field_ttl_secs: Option<i64>,
+    ) -> Result<bool>
     where
         T: Send + Sync + Serialize + 'static,
     {
         let current_id = self.inner.get_or_set_id();
         let pending_id = self.inner.take_pending_id();
 
-        let updated = match pending_id {
+        let key_ttl_secs = self.max_age();
+        let key_ttl_secs = if key_ttl_secs == -1 {
+            None
+        } else if let Some(ttl) = field_ttl_secs && ttl > key_ttl_secs {
+            Some(ttl)
+        } else {
+            Some(key_ttl_secs)
+        };
+
+        let max_age = match pending_id {
             Some(new_id) => {
-                let updated = self.inner
+                let max_age = self.inner
                     .store
-                    .update_with_rename(&current_id, &new_id, field, value, self.max_age(), field_expire)
+                    .update_with_rename(&current_id, &new_id, field, value, key_ttl_secs, field_ttl_secs)
                     .await
                     .map_err(|err| {
                         tracing::error!(err = %err, "failed to update field-value with rename in session store");
                         err
                     })?;
 
-                if updated {
+                if max_age.is_some() {
                     *self.inner.id.write() = Some(new_id);
                 }
 
-                updated
+                max_age
             }
             None => self
                 .inner
                 .store
-                .update(&current_id, field, value, self.max_age(), field_expire)
+                .update(&current_id, field, value, key_ttl_secs, field_ttl_secs)
                 .await
                 .map_err(|err| {
                     tracing::error!(err = %err, "failed to update field in session store");
@@ -281,11 +310,12 @@ where
                 })?,
         };
 
-        if updated {
+        if let Some(max_age) = max_age {
             self.inner.set_changed();
+            self.set_expiration(max_age);
         }
 
-        Ok(updated)
+        Ok(max_age.is_some())
     }
 
     /// Removes a field along with its value from the session store.
@@ -294,12 +324,12 @@ where
     ///
     /// ## Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
-    /// use ruts::store::redis::RedisStore;
+    /// use ruts::store::memory::MemoryStore;
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
+    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
     ///     let removed = session.remove("app").await.unwrap();
     /// }
     /// ```
@@ -330,12 +360,12 @@ where
     ///
     /// ## Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
-    /// use ruts::store::redis::RedisStore;
+    /// use ruts::store::memory::MemoryStore;
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
+    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
     ///     let deleted = session.delete().await.unwrap();
     /// }
     /// ```
@@ -367,12 +397,12 @@ where
     ///
     /// ## Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use ruts::{Session};
     /// use fred::clients::Client;
-    /// use ruts::store::redis::RedisStore;
+    /// use ruts::store::memory::MemoryStore;
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
+    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
     ///     session.expire(30).await.unwrap();
     /// }
     /// ```
@@ -419,15 +449,17 @@ where
     ///
     /// ## Example
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use ruts::{Session};
     /// use fred::clients::Client;
-    /// use ruts::store::redis::RedisStore;
+    /// use ruts::store::memory::MemoryStore;
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
+    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
     ///     let id = session.regenerate().await.unwrap();
     /// }
     /// ```
+    ///
+    /// **Note**: This does not renew the session expiry.
     #[tracing::instrument(name = "regenerating session id", skip(self))]
     pub async fn regenerate(&self) -> Result<Option<Id>> {
         let old_id = self.id();
@@ -435,7 +467,7 @@ where
         let renamed = self
             .inner
             .store
-            .rename_session_id(&old_id.unwrap(), &new_id, self.max_age())
+            .rename_session_id(&old_id.unwrap(), &new_id)
             .await
             .map_err(|err| {
                 tracing::error!(err = %err, "failed to regenerate session id: {err:?}");
@@ -457,12 +489,12 @@ where
     ///
     /// ## Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// use ruts::Session;
     /// use fred::clients::Client;
-    /// use ruts::store::redis::RedisStore;
+    /// use ruts::store::memory::MemoryStore;
     ///
-    /// async fn some_handler_could_be_axum(session: Session<RedisStore<Client>>) {
+    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
     ///     let new_id = session.prepare_regenerate();
     ///     // The next update/insert operation will use this new ID
     ///     session.update("field", &"value", None).await.unwrap();
@@ -490,7 +522,6 @@ where
 
 const SESSION_STATE_CHANGED: u8 = 0b01;
 const SESSION_STATE_DELETED: u8 = 0b10;
-const DEFAULT_COOKIE_MAX_AGE: i64 = 10 * 60;
 
 #[derive(Debug)]
 pub struct Inner<T: SessionStore> {
@@ -513,7 +544,7 @@ impl<T: SessionStore> Inner<T> {
             state: AtomicU8::new(0),
             id: RwLock::new(None),
             pending_id: RwLock::new(None),
-            cookie_max_age: AtomicI64::new(cookie_max_age.unwrap_or(DEFAULT_COOKIE_MAX_AGE)),
+            cookie_max_age: AtomicI64::new(cookie_max_age.unwrap_or(-1)),
             cookie_name,
             cookies: OnceLock::new(),
             store,

@@ -70,7 +70,7 @@ fn routes() -> Router<()> {
                 let short_term_hot_cache_expiry = 60; // 1 minute in Redis
 
                 let strategy =
-                    LayeredWriteStrategy::WriteThrough(user, Some(short_term_hot_cache_expiry));
+                    LayeredWriteStrategy::WriteThrough(user, short_term_hot_cache_expiry);
 
                 session
                     .update("user", &strategy, Some(long_term_expiry))

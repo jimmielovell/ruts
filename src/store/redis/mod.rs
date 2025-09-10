@@ -3,11 +3,10 @@ mod lua;
 use crate::Id;
 use crate::store::redis::lua::{
     INSERT_SCRIPT, INSERT_SCRIPT_HASH, INSERT_WITH_RENAME_SCRIPT, INSERT_WITH_RENAME_SCRIPT_HASH,
-    RENAME_SCRIPT, RENAME_SCRIPT_HASH, UPDATE_MANY_SCRIPT, UPDATE_MANY_SCRIPT_HASH, UPDATE_SCRIPT,
+    UPDATE_MANY_SCRIPT, UPDATE_MANY_SCRIPT_HASH, UPDATE_SCRIPT,
     UPDATE_SCRIPT_HASH, UPDATE_WITH_RENAME_SCRIPT, UPDATE_WITH_RENAME_SCRIPT_HASH,
 };
 use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize_value};
-use dashmap::DashMap;
 use fred::clients::Pool;
 use fred::interfaces::{HashesInterface, KeysInterface};
 use fred::prelude::LuaInterface;
@@ -74,7 +73,7 @@ where
         }
 
         let result = result.unwrap();
-        let map = DashMap::with_capacity(result.len());
+        let mut map = HashMap::with_capacity(result.len());
         result.into_iter().for_each(|(field, value)| {
             map.insert(field, value);
         });
@@ -87,9 +86,9 @@ where
         session_id: &Id,
         field: &str,
         value: &T,
-        key_seconds: i64,
-        field_seconds: Option<i64>,
-    ) -> Result<bool, Error>
+        key_ttl_secs: Option<i64>,
+        field_ttl_secs: Option<i64>,
+    ) -> Result<Option<i64>, Error>
     where
         T: Send + Sync + Serialize,
     {
@@ -98,8 +97,8 @@ where
             vec![session_id],
             field,
             value,
-            key_seconds,
-            field_seconds,
+            key_ttl_secs,
+            field_ttl_secs,
             &INSERT_SCRIPT_HASH,
             INSERT_SCRIPT,
         )
@@ -111,9 +110,9 @@ where
         session_id: &Id,
         field: &str,
         value: &T,
-        key_seconds: i64,
-        field_seconds: Option<i64>,
-    ) -> Result<bool, Error>
+        key_ttl_secs: Option<i64>,
+        field_ttl_secs: Option<i64>,
+    ) -> Result<Option<i64>, Error>
     where
         T: Send + Sync + Serialize,
     {
@@ -122,8 +121,8 @@ where
             vec![session_id],
             field,
             value,
-            key_seconds,
-            field_seconds,
+            key_ttl_secs,
+            field_ttl_secs,
             &UPDATE_SCRIPT_HASH,
             UPDATE_SCRIPT,
         )
@@ -136,9 +135,9 @@ where
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_seconds: i64,
-        field_seconds: Option<i64>,
-    ) -> Result<bool, Error>
+        key_ttl_secs: Option<i64>,
+        field_ttl_secs: Option<i64>,
+    ) -> Result<Option<i64>, Error>
     where
         T: Send + Sync + Serialize,
     {
@@ -147,8 +146,8 @@ where
             vec![old_session_id, new_session_id],
             field,
             value,
-            key_seconds,
-            field_seconds,
+            key_ttl_secs,
+            field_ttl_secs,
             &INSERT_WITH_RENAME_SCRIPT_HASH,
             INSERT_WITH_RENAME_SCRIPT,
         )
@@ -161,9 +160,9 @@ where
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_seconds: i64,
-        field_seconds: Option<i64>,
-    ) -> Result<bool, Error>
+        key_ttl_secs: Option<i64>,
+        field_ttl_secs: Option<i64>,
+    ) -> Result<Option<i64>, Error>
     where
         T: Send + Sync + Serialize,
     {
@@ -172,8 +171,8 @@ where
             vec![old_session_id, new_session_id],
             field,
             value,
-            key_seconds,
-            field_seconds,
+            key_ttl_secs,
+            field_ttl_secs,
             &UPDATE_WITH_RENAME_SCRIPT_HASH,
             UPDATE_WITH_RENAME_SCRIPT,
         )
@@ -184,26 +183,10 @@ where
         &self,
         old_session_id: &Id,
         new_session_id: &Id,
-        seconds: i64,
     ) -> Result<bool, Error> {
-        let hash = RENAME_SCRIPT_HASH
-            .get_or_try_init(|| async {
-                let hash = fred::util::sha1_hash(RENAME_SCRIPT);
-                if !self.client.script_exists::<bool, _>(&hash).await? {
-                    let _: () = self.client.script_load(RENAME_SCRIPT).await?;
-                }
-                Ok::<String, fred::error::Error>(hash)
-            })
-            .await?;
-
         let renamed: bool = self
             .client
-            .evalsha(
-                hash,
-                vec![old_session_id, new_session_id],
-                vec![seconds.to_string().as_bytes()],
-            )
-            .await?;
+            .renamenx(old_session_id, new_session_id).await?;
 
         Ok(renamed)
     }
@@ -229,11 +212,11 @@ async fn insert_update<C, T>(
     session_ids: Vec<&Id>,
     field: &str,
     value: &T,
-    key_seconds: i64,
-    field_seconds: Option<i64>,
+    key_ttl_secs: Option<i64>,
+    field_ttl_secs: Option<i64>,
     once_cell: &OnceCell<String>,
     script: &str,
-) -> Result<bool, Error>
+) -> Result<Option<i64>, Error>
 where
     C: LuaInterface + Clone + Send + Sync + 'static,
     T: Send + Sync + Serialize,
@@ -250,22 +233,25 @@ where
         .await?;
 
     let serialized_value = serialize_value(value)?;
-    let field_seconds = field_seconds.unwrap_or(key_seconds);
 
-    let done: bool = client
+    let result: i64 = client
         .evalsha(
             hash,
             session_ids,
             vec![
                 field.as_bytes(),
                 &serialized_value,
-                key_seconds.to_string().as_bytes(),
-                field_seconds.to_string().as_bytes(),
+                key_ttl_secs.unwrap_or(-1).to_string().as_bytes(),
+                field_ttl_secs.unwrap_or(-1).to_string().as_bytes(),
             ],
         )
         .await?;
 
-    Ok(done)
+    if result >= 0 {
+        Ok(Some(result))
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(feature = "layered-store")]

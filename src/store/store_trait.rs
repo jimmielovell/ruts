@@ -1,5 +1,5 @@
+use std::collections::HashMap;
 use crate::Id;
-use dashmap::DashMap;
 use serde::{Serialize, de::DeserializeOwned};
 use std::fmt::Debug;
 use std::future::Future;
@@ -67,10 +67,10 @@ pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, 
 }
 
 #[derive(Debug, Clone)]
-pub struct SessionMap(DashMap<String, Vec<u8>>);
+pub struct SessionMap(HashMap<String, Vec<u8>>);
 
 impl SessionMap {
-    pub(crate) fn new(map: DashMap<String, Vec<u8>>) -> Self {
+    pub(crate) fn new(map: HashMap<String, Vec<u8>>) -> Self {
         Self(map)
     }
 
@@ -80,13 +80,13 @@ impl SessionMap {
     /// and `Ok(Some(value))` on success.
     pub fn get<T: DeserializeOwned>(&self, field: &str) -> Result<Option<T>, Error> {
         match self.0.get(field) {
-            Some(bytes) => deserialize_value(&bytes).map(Some),
+            Some(bytes) => deserialize_value(bytes).map(Some),
             None => Ok(None),
         }
     }
 
     #[cfg(feature = "layered-store")]
-    pub(crate) fn iter(&self) -> dashmap::iter::Iter<'_, String, Vec<u8>> {
+    pub(crate) fn iter(&self) -> std::collections::hash_map::Iter<'_, String, Vec<u8>> {
         self.0.iter()
     }
 }
@@ -110,15 +110,15 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
     /// Sets a `field` stored at `session_id` to its provided `value`,
     /// only if the `field` does not exist.
     ///
-    /// Returns `true` if the `field` was inserted, otherwise, `false` if the `field` already exists.
+    /// Returns the new max_age of the session if the `field` was inserted, otherwise, `None`.
     fn insert<T>(
         &self,
         session_id: &Id,
         field: &str,
         value: &T,
-        key_seconds: i64,
-        field_seconds: Option<i64>,
-    ) -> impl Future<Output = Result<bool, Error>> + Send
+        key_ttl_secs: Option<i64>,
+        field_ttl_secs: Option<i64>,
+    ) -> impl Future<Output = Result<Option<i64>, Error>> + Send
     where
         T: Send + Sync + Serialize + 'static;
 
@@ -126,15 +126,15 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
     ///
     /// If the `field` does not exist, it is set to the corresponding `value`.
     ///
-    /// Returns `true` if the `field` was updated, `false` if the `value` has not changed.
+    /// Returns the new max_age of the session if the `field` was updated.
     fn update<T>(
         &self,
         session_id: &Id,
         field: &str,
         value: &T,
-        key_seconds: i64,
-        field_seconds: Option<i64>,
-    ) -> impl Future<Output = Result<bool, Error>> + Send
+        key_ttl_secs: Option<i64>,
+        field_ttl_secs: Option<i64>,
+    ) -> impl Future<Output = Result<Option<i64>, Error>> + Send
     where
         T: Send + Sync + Serialize + 'static;
 
@@ -142,16 +142,16 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
     /// the session ID from `old_session_id` to `new_session_id`,
     /// only if the `field` does not exist.
     ///
-    /// Returns `true` if the `field` was inserted, otherwise, `false` if the `field` already exists.
+    /// Returns the new max_age of the session if the `field` was inserted, otherwise, `None`.
     fn insert_with_rename<T>(
         &self,
         old_session_id: &Id,
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_seconds: i64,
-        field_seconds: Option<i64>,
-    ) -> impl Future<Output = Result<bool, Error>> + Send
+        key_ttl_secs: Option<i64>,
+        field_ttl_secs: Option<i64>,
+    ) -> impl Future<Output = Result<Option<i64>, Error>> + Send
     where
         T: Send + Sync + Serialize + 'static;
 
@@ -160,16 +160,16 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
     ///
     /// If the `field` does not exist, it is set to the corresponding `value`.
     ///
-    /// Returns `true` if the `field` was updated, `false` if the `value` has not changed.
+    /// Returns the new max_age of the session if the `field` was updated.
     fn update_with_rename<T>(
         &self,
         old_session_id: &Id,
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_seconds: i64,
-        field_seconds: Option<i64>,
-    ) -> impl Future<Output = Result<bool, Error>> + Send
+        key_ttl_secs: Option<i64>,
+        field_ttl_secs: Option<i64>,
+    ) -> impl Future<Output = Result<Option<i64>, Error>> + Send
     where
         T: Send + Sync + Serialize + 'static;
 
@@ -180,7 +180,6 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         &self,
         old_session_id: &Id,
         new_session_id: &Id,
-        seconds: i64,
     ) -> impl Future<Output = Result<bool, Error>> + Send;
 
     /// Remove the `field` along with its `value` stored at `session_id`.
@@ -202,6 +201,6 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
     fn expire(
         &self,
         session_id: &Id,
-        seconds: i64,
+        ttl_secs: i64,
     ) -> impl Future<Output = Result<bool, Error>> + Send;
 }

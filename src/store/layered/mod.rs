@@ -15,7 +15,7 @@ pub enum LayeredWriteStrategy<T: Send + Sync + Serialize + 'static> {
     /// The `Option<i64>` allows you to specify a separate, often shorter,
     /// time-to-live (TTL) in seconds exclusively for the hot cache. If `None`,
     /// the hot cache will use the main expiration time.
-    WriteThrough(T, Option<i64>),
+    WriteThrough(T, i64),
     /// Writes the value *only* to the hot cache (e.g., Redis).
     /// This is useful for short-lived, ephemeral data that does not require
     /// long-term persistence.
@@ -91,7 +91,7 @@ impl<T: Send + Sync + Serialize + 'static> Serialize for LayeredWriteStrategy<T>
 /// // The value is wrapped in the strategy enum.
 /// let strategy = LayeredWriteStrategy::WriteThrough(
 ///     user,
-///     Some(short_term_hot_cache_expiry),
+///     short_term_hot_cache_expiry,
 /// );
 ///
 /// // The cold store (Postgres) will get the long-term expiry,
@@ -140,14 +140,14 @@ where
                 Some((session_map, meta_map)) => {
                     let pairs_to_cache: Vec<(String, Vec<u8>, Option<i64>)> = session_map
                         .iter()
-                        .filter_map(|entry| {
-                            let meta = meta_map.get(entry.key());
+                        .filter_map(|(key, value)| {
+                            let meta = meta_map.get(key);
                             let should_cache = meta
                                 .is_none_or(|m| m.behavior != LayeredCacheBehavior::ColdCacheOnly);
 
                             if should_cache {
                                 let hot_ttl = meta.and_then(|m| m.hot_cache_ttl);
-                                Some((entry.key().to_owned(), entry.value().to_owned(), hot_ttl))
+                                Some((key.to_owned(), value.to_owned(), hot_ttl))
                             } else {
                                 None
                             }
@@ -172,14 +172,14 @@ where
                 Some((session_map, meta_map)) => {
                     let pairs_to_cache: Vec<(String, Vec<u8>, Option<i64>)> = session_map
                         .iter()
-                        .filter_map(|entry| {
-                            let meta = meta_map.get(entry.key());
+                        .filter_map(|(key, value)| {
+                            let meta = meta_map.get(key);
                             let should_cache = meta
                                 .is_none_or(|m| m.behavior != LayeredCacheBehavior::ColdCacheOnly);
 
                             if should_cache {
                                 let hot_ttl = meta.and_then(|m| m.hot_cache_ttl);
-                                Some((entry.key().to_owned(), entry.value().to_owned(), hot_ttl))
+                                Some((key.to_owned(), value.to_owned(), hot_ttl))
                             } else {
                                 None
                             }
@@ -202,18 +202,14 @@ where
         session_id: &Id,
         field: &str,
         value: &T,
-        key_seconds: i64,
-        field_seconds: Option<i64>,
-    ) -> Result<bool, Error>
+        key_ttl_secs: Option<i64>,
+        field_ttl_secs: Option<i64>,
+    ) -> Result<Option<i64>, Error>
     where
         T: Send + Sync + Serialize + 'static,
     {
         let mut value = value;
-        let mut hot_cache_ttl = &None;
-        let mut meta = LayeredCacheMeta {
-            behavior: LayeredCacheBehavior::ColdCacheOnly,
-            hot_cache_ttl: None,
-        };
+        let mut hot_cache_ttl = field_ttl_secs;
 
         if let Some(strategy) =
             (value as &dyn std::any::Any).downcast_ref::<LayeredWriteStrategy<T>>()
@@ -222,7 +218,7 @@ where
                 LayeredWriteStrategy::HotCache(inner_value) => {
                     return self
                         .hot
-                        .insert(session_id, field, inner_value, key_seconds, field_seconds)
+                        .insert(session_id, field, inner_value, key_ttl_secs, field_ttl_secs)
                         .await;
                 }
                 LayeredWriteStrategy::ColdCache(inner_value) => {
@@ -236,33 +232,42 @@ where
                             session_id,
                             field,
                             inner_value,
-                            key_seconds,
-                            field_seconds,
-                            &meta,
+                            key_ttl_secs,
+                            field_ttl_secs,
+                            meta,
                         )
                         .await;
                 }
-                LayeredWriteStrategy::WriteThrough(inner_value, secs) => {
-                    meta.hot_cache_ttl = *secs;
+                LayeredWriteStrategy::WriteThrough(inner_value, hot_ttl) => {
                     value = inner_value;
-                    hot_cache_ttl = secs;
+                    hot_cache_ttl = Some(*hot_ttl);
                 }
             };
         }
 
-        let hot_cache_ttl = hot_cache_ttl
-            .unwrap_or(key_seconds)
-            .min(key_seconds)
-            .min(field_seconds.unwrap_or(key_seconds));
-
         let (hot_result, cold_result) = tokio::try_join!(
-            self.hot
-                .insert(session_id, field, value, hot_cache_ttl, Some(hot_cache_ttl)),
-            self.cold
-                .insert_with_meta(session_id, field, value, key_seconds, field_seconds, &meta),
+            self.hot.insert(session_id, field, value, hot_cache_ttl, hot_cache_ttl),
+            self.cold.insert_with_meta(
+                session_id,
+                field,
+                value,
+                key_ttl_secs,
+                field_ttl_secs,
+                LayeredCacheMeta {
+                    behavior: LayeredCacheBehavior::WriteThrough,
+                    hot_cache_ttl,
+                }
+            ),
         )?;
 
-        Ok(hot_result && cold_result)
+        let max_age = match (hot_result, cold_result) {
+            (Some(hot_cache_max_age), None) => Some(hot_cache_max_age),
+            (None, Some(cold_cache_max_age)) => Some(cold_cache_max_age),
+            (Some(hot_cache_max_age), Some(cold_cache_max_age)) => Some(hot_cache_max_age.max(cold_cache_max_age)),
+            (None, None) => None,
+        };
+
+        Ok(max_age)
     }
 
     async fn update<T>(
@@ -270,18 +275,14 @@ where
         session_id: &Id,
         field: &str,
         value: &T,
-        key_seconds: i64,
-        field_seconds: Option<i64>,
-    ) -> Result<bool, Error>
+        key_ttl_secs: Option<i64>,
+        field_ttl_secs: Option<i64>,
+    ) -> Result<Option<i64>, Error>
     where
         T: Send + Sync + Serialize + 'static,
     {
         let mut value = value;
-        let mut hot_cache_ttl = &None;
-        let mut meta = LayeredCacheMeta {
-            behavior: LayeredCacheBehavior::ColdCacheOnly,
-            hot_cache_ttl: None,
-        };
+        let mut hot_cache_ttl = field_ttl_secs;
 
         if let Some(strategy) =
             (value as &dyn std::any::Any).downcast_ref::<LayeredWriteStrategy<T>>()
@@ -290,7 +291,7 @@ where
                 LayeredWriteStrategy::HotCache(inner_value) => {
                     return self
                         .hot
-                        .update(session_id, field, inner_value, key_seconds, field_seconds)
+                        .update(session_id, field, inner_value, key_ttl_secs, field_ttl_secs)
                         .await;
                 }
                 LayeredWriteStrategy::ColdCache(inner_value) => {
@@ -304,33 +305,43 @@ where
                             session_id,
                             field,
                             inner_value,
-                            key_seconds,
-                            field_seconds,
-                            &meta,
+                            key_ttl_secs,
+                            field_ttl_secs,
+                            meta,
                         )
                         .await;
                 }
-                LayeredWriteStrategy::WriteThrough(inner_value, secs) => {
-                    meta.hot_cache_ttl = *secs;
+                LayeredWriteStrategy::WriteThrough(inner_value, hot_ttl) => {
                     value = inner_value;
-                    hot_cache_ttl = secs;
+                    hot_cache_ttl = Some(*hot_ttl);
                 }
             };
         }
 
-        let hot_cache_ttl = hot_cache_ttl
-            .unwrap_or(key_seconds)
-            .min(key_seconds)
-            .min(field_seconds.unwrap_or(key_seconds));
-
         let (hot_result, cold_result) = tokio::try_join!(
             self.hot
-                .update(session_id, field, value, hot_cache_ttl, Some(hot_cache_ttl)),
-            self.cold
-                .update_with_meta(session_id, field, value, key_seconds, field_seconds, &meta),
+                .update(session_id, field, value, hot_cache_ttl, hot_cache_ttl),
+            self.cold.update_with_meta(
+                session_id,
+                field,
+                value,
+                key_ttl_secs,
+                field_ttl_secs,
+                LayeredCacheMeta {
+                    behavior: LayeredCacheBehavior::WriteThrough,
+                    hot_cache_ttl,
+                }
+            ),
         )?;
 
-        Ok(hot_result && cold_result)
+        let max_age = match (hot_result, cold_result) {
+            (Some(hot_cache_max_age), None) => Some(hot_cache_max_age),
+            (None, Some(cold_cache_max_age)) => Some(cold_cache_max_age),
+            (Some(hot_cache_max_age), Some(cold_cache_max_age)) => Some(hot_cache_max_age.max(cold_cache_max_age)),
+            (None, None) => None,
+        };
+
+        Ok(max_age)
     }
 
     async fn insert_with_rename<T>(
@@ -339,18 +350,14 @@ where
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_seconds: i64,
-        field_seconds: Option<i64>,
-    ) -> Result<bool, Error>
+        key_ttl_secs: Option<i64>,
+        field_ttl_secs: Option<i64>,
+    ) -> Result<Option<i64>, Error>
     where
         T: Send + Sync + Serialize + 'static,
     {
         let mut value = value;
-        let mut hot_cache_ttl = &None;
-        let mut meta = LayeredCacheMeta {
-            behavior: LayeredCacheBehavior::ColdCacheOnly,
-            hot_cache_ttl: None,
-        };
+        let mut hot_cache_ttl = field_ttl_secs;
 
         if let Some(strategy) =
             (value as &dyn std::any::Any).downcast_ref::<LayeredWriteStrategy<T>>()
@@ -364,8 +371,8 @@ where
                             new_session_id,
                             field,
                             inner_value,
-                            key_seconds,
-                            field_seconds,
+                            key_ttl_secs,
+                            field_ttl_secs,
                         )
                         .await;
                 }
@@ -381,24 +388,18 @@ where
                             new_session_id,
                             field,
                             inner_value,
-                            key_seconds,
-                            field_seconds,
-                            &meta,
+                            key_ttl_secs,
+                            field_ttl_secs,
+                            meta,
                         )
                         .await;
                 }
-                LayeredWriteStrategy::WriteThrough(inner_value, secs) => {
-                    meta.hot_cache_ttl = *secs;
+                LayeredWriteStrategy::WriteThrough(inner_value, hot_ttl) => {
                     value = inner_value;
-                    hot_cache_ttl = secs;
+                    hot_cache_ttl = Some(*hot_ttl);
                 }
             };
         }
-
-        let hot_cache_ttl = hot_cache_ttl
-            .unwrap_or(key_seconds)
-            .min(key_seconds)
-            .min(field_seconds.unwrap_or(key_seconds));
 
         let (hot_result, cold_result) = tokio::try_join!(
             self.hot.insert_with_rename(
@@ -407,20 +408,30 @@ where
                 field,
                 value,
                 hot_cache_ttl,
-                Some(hot_cache_ttl),
+                hot_cache_ttl,
             ),
             self.cold.insert_with_rename_with_meta(
                 old_session_id,
                 new_session_id,
                 field,
                 value,
-                key_seconds,
-                field_seconds,
-                &meta
+                key_ttl_secs,
+                field_ttl_secs,
+                LayeredCacheMeta {
+                    behavior: LayeredCacheBehavior::WriteThrough,
+                    hot_cache_ttl,
+                }
             ),
         )?;
 
-        Ok(hot_result && cold_result)
+        let max_age = match (hot_result, cold_result) {
+            (Some(hot_cache_max_age), None) => Some(hot_cache_max_age),
+            (None, Some(cold_cache_max_age)) => Some(cold_cache_max_age),
+            (Some(hot_cache_max_age), Some(cold_cache_max_age)) => Some(hot_cache_max_age.max(cold_cache_max_age)),
+            (None, None) => None,
+        };
+
+        Ok(max_age)
     }
 
     async fn update_with_rename<T>(
@@ -429,18 +440,14 @@ where
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_seconds: i64,
-        field_seconds: Option<i64>,
-    ) -> Result<bool, Error>
+        key_ttl_secs: Option<i64>,
+        field_ttl_secs: Option<i64>,
+    ) -> Result<Option<i64>, Error>
     where
         T: Send + Sync + Serialize + 'static,
     {
         let mut value = value;
-        let mut hot_cache_ttl = &None;
-        let mut meta = LayeredCacheMeta {
-            behavior: LayeredCacheBehavior::ColdCacheOnly,
-            hot_cache_ttl: None,
-        };
+        let mut hot_cache_ttl = field_ttl_secs;
 
         if let Some(strategy) =
             (value as &dyn std::any::Any).downcast_ref::<LayeredWriteStrategy<T>>()
@@ -454,8 +461,8 @@ where
                             new_session_id,
                             field,
                             inner_value,
-                            key_seconds,
-                            field_seconds,
+                            key_ttl_secs,
+                            field_ttl_secs,
                         )
                         .await;
                 }
@@ -471,24 +478,18 @@ where
                             new_session_id,
                             field,
                             inner_value,
-                            key_seconds,
-                            field_seconds,
-                            &meta,
+                            key_ttl_secs,
+                            field_ttl_secs,
+                            meta,
                         )
                         .await;
                 }
-                LayeredWriteStrategy::WriteThrough(inner_value, secs) => {
-                    meta.hot_cache_ttl = *secs;
+                LayeredWriteStrategy::WriteThrough(inner_value, hot_ttl) => {
                     value = inner_value;
-                    hot_cache_ttl = secs;
+                    hot_cache_ttl = Some(*hot_ttl);
                 }
             };
         }
-
-        let hot_cache_ttl = hot_cache_ttl
-            .unwrap_or(key_seconds)
-            .min(key_seconds)
-            .min(field_seconds.unwrap_or(key_seconds));
 
         let (hot_result, cold_result) = tokio::try_join!(
             self.hot.update_with_rename(
@@ -497,33 +498,42 @@ where
                 field,
                 value,
                 hot_cache_ttl,
-                Some(hot_cache_ttl),
+                hot_cache_ttl,
             ),
             self.cold.update_with_rename_with_meta(
                 old_session_id,
                 new_session_id,
                 field,
                 value,
-                key_seconds,
-                field_seconds,
-                &meta
+                key_ttl_secs,
+                field_ttl_secs,
+                LayeredCacheMeta {
+                    behavior: LayeredCacheBehavior::WriteThrough,
+                    hot_cache_ttl,
+                }
             ),
         )?;
 
-        Ok(hot_result && cold_result)
+        let max_age = match (hot_result, cold_result) {
+            (Some(hot_cache_max_age), None) => Some(hot_cache_max_age),
+            (None, Some(cold_cache_max_age)) => Some(cold_cache_max_age),
+            (Some(hot_cache_max_age), Some(cold_cache_max_age)) => Some(hot_cache_max_age.max(cold_cache_max_age)),
+            (None, None) => None,
+        };
+
+        Ok(max_age)
     }
 
     async fn rename_session_id(
         &self,
         old_session_id: &Id,
         new_session_id: &Id,
-        seconds: i64,
     ) -> Result<bool, Error> {
         let (hot_result, cold_result) = tokio::try_join!(
             self.hot
-                .rename_session_id(old_session_id, new_session_id, seconds),
+                .rename_session_id(old_session_id, new_session_id),
             self.cold
-                .rename_session_id(old_session_id, new_session_id, seconds),
+                .rename_session_id(old_session_id, new_session_id),
         )?;
         Ok(hot_result && cold_result)
     }
@@ -534,11 +544,7 @@ where
             self.cold.remove(session_id, field),
         )?;
 
-        if hot_result == 0 || cold_result == 0 {
-            return Ok(0);
-        }
-
-        Ok(1)
+        Ok((hot_result != 0 || cold_result != 0) as i8)
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {

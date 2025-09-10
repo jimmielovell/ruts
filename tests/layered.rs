@@ -49,9 +49,9 @@ mod tests {
 
         // 1. Write a value with a long TTL for the cold store, but a very short TTL
         //    for the hot cache. This simulates a cache entry that will expire quickly.
-        let strategy = LayeredWriteStrategy::WriteThrough(test_user.clone(), Some(1));
+        let strategy = LayeredWriteStrategy::WriteThrough(test_user.clone(), 1);
         store
-            .update(&session_id, "user", &strategy, 3600, None)
+            .update(&session_id, "user", &strategy, Some(3600), Some(3600))
             .await
             .unwrap();
 
@@ -84,7 +84,7 @@ mod tests {
 
         let hot_only_strategy = LayeredWriteStrategy::HotCache(test_session.user.clone());
         store
-            .update(&session_id, "user_hot", &hot_only_strategy, 1, None)
+            .update(&session_id, "user_hot", &hot_only_strategy, Some(1), Some(1))
             .await
             .unwrap();
 
@@ -107,7 +107,7 @@ mod tests {
 
         let cold_only_strategy = LayeredWriteStrategy::ColdCache(test_session.preferences.clone());
         store
-            .update(&session_id, "prefs_cold", &cold_only_strategy, 3600, None)
+            .update(&session_id, "prefs_cold", &cold_only_strategy, Some(3600), Some(3600))
             .await
             .unwrap();
 
@@ -116,8 +116,8 @@ mod tests {
                 &session_id,
                 "temp",
                 &LayeredWriteStrategy::HotCache("...".to_string()),
-                1,
-                None,
+                Some(1),
+                Some(1),
             )
             .await
             .unwrap();
@@ -139,7 +139,7 @@ mod tests {
         let test_user = create_test_session().user;
 
         store
-            .update(&session_id, "user", &test_user, 3600, None)
+            .update(&session_id, "user", &test_user, Some(3600), Some(3600))
             .await
             .unwrap();
         assert!(
