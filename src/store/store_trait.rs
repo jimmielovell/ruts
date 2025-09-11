@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use crate::Id;
 use serde::{Serialize, de::DeserializeOwned};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
 
@@ -74,15 +74,20 @@ impl SessionMap {
         Self(map)
     }
 
-    /// Deserializes a specific field from the session data into a requested type.
+    /// Deserializes a specific field from the session data into `T`.
     ///
-    /// Returns `Ok(None)` if the field does not exist, `Err` if deserialization fails,
+    /// Returns `Ok(None)` if the field does not exist, `Err` if deserialization failed,
     /// and `Ok(Some(value))` on success.
     pub fn get<T: DeserializeOwned>(&self, field: &str) -> Result<Option<T>, Error> {
         match self.0.get(field) {
             Some(bytes) => deserialize_value(bytes).map(Some),
             None => Ok(None),
         }
+    }
+
+    /// Returns the number of elements in the map
+    pub fn len(&self) -> usize {
+        self.0.len()
     }
 
     #[cfg(feature = "layered-store")]
@@ -118,7 +123,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-    ) -> impl Future<Output = Result<Option<i64>, Error>> + Send
+    ) -> impl Future<Output = Result<i64, Error>> + Send
     where
         T: Send + Sync + Serialize + 'static;
 
@@ -134,7 +139,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-    ) -> impl Future<Output = Result<Option<i64>, Error>> + Send
+    ) -> impl Future<Output = Result<i64, Error>> + Send
     where
         T: Send + Sync + Serialize + 'static;
 
@@ -151,7 +156,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-    ) -> impl Future<Output = Result<Option<i64>, Error>> + Send
+    ) -> impl Future<Output = Result<i64, Error>> + Send
     where
         T: Send + Sync + Serialize + 'static;
 
@@ -169,7 +174,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-    ) -> impl Future<Output = Result<Option<i64>, Error>> + Send
+    ) -> impl Future<Output = Result<i64, Error>> + Send
     where
         T: Send + Sync + Serialize + 'static;
 
@@ -184,12 +189,14 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
 
     /// Remove the `field` along with its `value` stored at `session_id`.
     ///
-    /// Returns `1` if there are remaining keys or `0` otherwise.
+    /// Returns the `TTL` of the entire session stored at `session_id`.
+    /// - -1 if the session is persistent.
+    /// - \> 0
     fn remove(
         &self,
         session_id: &Id,
         field: &str,
-    ) -> impl Future<Output = Result<i8, Error>> + Send;
+    ) -> impl Future<Output = Result<i64, Error>> + Send;
 
     /// Deletes all `field`s along with its `value`s stored in the `session_id`.
     fn delete(&self, session_id: &Id) -> impl Future<Output = Result<bool, Error>> + Send;

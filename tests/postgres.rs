@@ -1,33 +1,25 @@
 #![cfg(feature = "postgres-store")]
 
-mod common;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use axum::{
-        Json, Router,
-        body::Body,
-        extract::Request,
-        http::{self, StatusCode},
-        routing::get,
-    };
-    use common::*;
-    use cookie::Cookie;
-    use http::header::{COOKIE, SET_COOKIE};
+    use ruts::Id;
+    use ruts::store::SessionStore;
     use ruts::store::postgres::{PostgresStore, PostgresStoreBuilder};
-    use ruts::{Session, SessionLayer};
+    use serde::{Deserialize, Serialize};
     use sqlx::PgPool;
     use std::sync::Arc;
-    use tower::ServiceExt;
-    use tower_cookies::CookieManagerLayer;
 
-    async fn setup_postgres() -> Arc<PostgresStore> {
+    #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+    struct TestData {
+        value: String,
+    }
+
+    async fn setup_store() -> Arc<PostgresStore> {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
         let pool = PgPool::connect(&database_url).await.unwrap();
 
-        // Clean up table before each test run for test isolation
+        // Clean up table before each test run
         sqlx::query("drop table if exists sessions")
             .execute(&pool)
             .await
@@ -40,356 +32,152 @@ mod tests {
         Arc::new(store)
     }
 
-    /// Sets up a connection to a test Postgres database with custom schema and table.
-    async fn setup_postgres_custom(schema: &str, table: &str) -> Arc<PostgresStore> {
-        let database_url =
-            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
-        let pool = PgPool::connect(&database_url).await.unwrap();
+    // --- Basic Insert/Get/Update ---
+    #[tokio::test]
+    async fn test_insert_and_get() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "field1";
+        let value = TestData { value: "hello".into() };
 
-        sqlx::query(&format!("drop schema if exists \"{}\" cascade", schema))
-            .execute(&pool)
-            .await
-            .unwrap();
+        let ttl = store.insert(&session_id, field, &value, Some(60), Some(60)).await.unwrap();
+        assert!(ttl > 55);
 
-        let store = PostgresStoreBuilder::new(pool.clone())
-            .schema_name(schema)
-            .table_name(table)
-            .build()
-            .await
-            .unwrap();
-        Arc::new(store)
-    }
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert_eq!(fetched, Some(value.clone()));
 
-    async fn insert_handler(session: Session<PostgresStore>) -> Result<String, StatusCode> {
-        let test_data = create_test_session();
-        session
-            .insert("user", &test_data.user, Some(60))
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        session
-            .insert("preferences", &test_data.preferences, Some(60))
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        Ok("Success".to_string())
-    }
-
-    async fn get_handler(session: Session<PostgresStore>) -> Result<String, StatusCode> {
-        let data: Option<TestUser> = session
-            .get("user")
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        Ok(data
-            .map(|d| d.name)
-            .unwrap_or_else(|| "Not found".to_string()))
-    }
-
-    async fn get_all_handler(
-        session: Session<PostgresStore>,
-    ) -> Result<Json<TestSession>, StatusCode> {
-        let data = session
-            .get_all()
-            .await
-            .map_err(|err| {
-                println!("{:?}", err);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?
-            .unwrap();
-
-        Ok(Json(TestSession {
-            user: data.get("user").unwrap().unwrap(),
-            preferences: data.get("preferences").unwrap().unwrap(),
-        }))
-    }
-
-    async fn regenerate_handler(session: Session<PostgresStore>) -> Result<String, StatusCode> {
-        session
-            .regenerate()
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        Ok("Regenerated".to_string())
-    }
-
-    async fn prepare_regenerate_handler(
-        session: Session<PostgresStore>,
-    ) -> Result<String, StatusCode> {
-        session.prepare_regenerate();
-        let mut updated_data = create_test_session();
-        updated_data.user.name = "Updated User".to_string();
-        session
-            .update("user", &updated_data.user, None)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        Ok("Success".to_string())
-    }
-
-    async fn set_expiration_handler(session: Session<PostgresStore>) -> Result<String, StatusCode> {
-        session.set_expiration(30);
-        let updated_data = create_test_session();
-        session
-            .update("user", &updated_data.user, Some(30))
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        Ok("Success".to_string())
-    }
-
-    async fn delete_handler(session: Session<PostgresStore>) -> Result<String, StatusCode> {
-        session
-            .delete()
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        Ok("Deleted".to_string())
-    }
-
-    fn create_test_app(store: Arc<PostgresStore>) -> Router {
-        let session_layer = SessionLayer::new(store).with_cookie_options(build_cookie_options());
-        Router::new()
-            .route("/set", get(insert_handler))
-            .route("/get", get(get_handler))
-            .route("/get_all", get(get_all_handler))
-            .route("/regenerate", get(regenerate_handler))
-            .route("/prepare_regenerate", get(prepare_regenerate_handler))
-            .route("/set_expiration", get(set_expiration_handler))
-            .route("/delete", get(delete_handler))
-            .layer(session_layer)
-            .layer(CookieManagerLayer::new())
+        // Insert again shouldn't overwrite
+        store.insert(&session_id, field, &TestData { value: "x".into() }, Some(60), Some(60))
+            .await.unwrap();
+        let fetched2: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert_eq!(fetched2, Some(value));
     }
 
     #[tokio::test]
-    async fn test_postgres_session_lifecycle() {
-        let store = setup_postgres().await;
-        let app = create_test_app(store);
+    async fn test_update_overwrites() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "field_update";
+        let value = TestData { value: "initial".into() };
+        let updated_value = TestData { value: "updated".into() };
 
-        let response = app
-            .clone()
-            .oneshot(Request::builder().uri("/set").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let cookie = response
-            .headers()
-            .get(SET_COOKIE)
-            .expect("Set-Cookie header should be present")
-            .to_str()
-            .unwrap()
-            .to_string();
+        store.insert(&session_id, field, &value, Some(60), Some(60)).await.unwrap();
+        store.update(&session_id, field, &updated_value, Some(60), Some(60)).await.unwrap();
 
-        // Verify data was stored.
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/get")
-                    .header(COOKIE, &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body_str = String::from_utf8(body.to_vec()).unwrap();
-        assert_eq!(body_str, "Test User");
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert_eq!(fetched, Some(updated_value));
+    }
 
-        // Verify the entire session object.
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/get_all")
-                    .header(COOKIE, &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let session_data: TestSession = serde_json::from_slice(&body).unwrap();
-        assert_eq!(session_data, create_test_session());
+    // --- TTL behaviors ---
+    #[tokio::test]
+    async fn test_ttl_zero_removes() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "ttl_zero";
 
-        // Regenerate the session ID.
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/regenerate")
-                    .header(COOKIE, &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let new_cookie = response
-            .headers()
-            .get(SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-        assert_ne!(cookie, new_cookie);
+        // Field TTL = 0 triggers removal
+        let ttl = store.insert(&session_id, field, &TestData { value: "x".into() }, Some(60), Some(0))
+            .await.unwrap();
+        assert_eq!(ttl, -2);
 
-        // Verify data persists after regeneration.
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/get_all")
-                    .header(COOKIE, &new_cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let session_data: TestSession = serde_json::from_slice(&body).unwrap();
-        assert_eq!(session_data, create_test_session());
-
-        // Delete the session.
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/delete")
-                    .header(COOKIE, &new_cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        // Verify the session data is gone.
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/get")
-                    .header(COOKIE, new_cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body_str = String::from_utf8(body.to_vec()).unwrap();
-        assert_eq!(body_str, "Not found");
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert!(fetched.is_none());
     }
 
     #[tokio::test]
-    async fn test_postgres_custom_schema_and_table() {
-        let store = setup_postgres_custom("my_schema", "my_table").await;
-        let app = create_test_app(store);
+    async fn test_ttl_negative_persists() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "ttl_neg";
 
-        let response = app
-            .clone()
-            .oneshot(Request::builder().uri("/set").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let cookie = response
-            .headers()
-            .get(SET_COOKIE)
-            .expect("Set-Cookie header should be present")
-            .to_str()
-            .unwrap()
-            .to_string();
+        let ttl = store.insert(&session_id, field, &TestData { value: "y".into() }, Some(60), Some(-1))
+            .await.unwrap();
+        assert_eq!(ttl, -1);
 
-        // Verify data was stored.
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/get")
-                    .header(COOKIE, &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body_str = String::from_utf8(body.to_vec()).unwrap();
-        assert_eq!(body_str, "Test User");
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert!(fetched.is_some());
     }
 
     #[tokio::test]
-    async fn test_prepare_regenerate_flow() {
-        let store = setup_postgres().await;
-        let app = create_test_app(store);
+    async fn test_expire_method() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "expire_field";
+        store.insert(&session_id, field, &TestData { value: "temp".into() }, Some(2), Some(2))
+            .await.unwrap();
 
-        let response = app
-            .clone()
-            .oneshot(Request::builder().uri("/set").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        let original_cookie = response
-            .headers()
-            .get(SET_COOKIE)
-            .expect("Set-Cookie header should be present")
-            .to_str()
-            .unwrap()
-            .to_string();
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert!(fetched.is_none());
+    }
 
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/prepare_regenerate")
-                    .header(COOKIE, &original_cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let new_cookie = response
-            .headers()
-            .get(SET_COOKIE)
-            .expect("Set-Cookie header should be present")
-            .to_str()
-            .unwrap()
-            .to_string();
+    // --- Remove/Delete ---
+    #[tokio::test]
+    async fn test_remove_and_delete() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "to_remove";
 
-        assert_ne!(
-            original_cookie, new_cookie,
-            "Session ID should have changed after prepare_regenerate"
-        );
+        store.insert(&session_id, field, &TestData { value: "bye".into() }, Some(60), Some(60))
+            .await.unwrap();
+        let ttl = store.remove(&session_id, field).await.unwrap();
+        assert_eq!(ttl, -2);
+
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert!(fetched.is_none());
+
+        store.delete(&session_id).await.unwrap();
+        let all = store.get_all(&session_id).await.unwrap();
+        assert!(all.is_none());
+    }
+
+    // --- Rename ---
+    #[tokio::test]
+    async fn test_insert_with_rename() {
+        let store = setup_store().await;
+        let old_id = Id::default();
+        let new_id = Id::default();
+        let field = "rename_field";
+        let value = TestData { value: "rename".into() };
+
+        store.insert_with_rename(&old_id, &new_id, field, &value, Some(60), Some(60))
+            .await.unwrap();
+
+        assert!(store.get::<TestData>(&old_id, field).await.unwrap().is_none());
+        assert_eq!(store.get::<TestData>(&new_id, field).await.unwrap(), Some(value));
     }
 
     #[tokio::test]
-    async fn test_set_expiration() {
-        let store = setup_postgres().await;
-        let app = create_test_app(store);
+    async fn test_rename_to_existing_session() {
+        let store = setup_store().await;
+        let old_id = Id::default();
+        let new_id = Id::default();
+        let field_old = "f1";
+        let field_new = "f2";
 
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/set_expiration")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        store.insert(&old_id, field_old, &TestData { value: "v1".into() }, Some(60), Some(60))
+            .await.unwrap();
+        store.insert(&new_id, field_new, &TestData { value: "v2".into() }, Some(60), Some(60))
+            .await.unwrap();
 
-        let new_cookie = response
-            .headers()
-            .get(SET_COOKIE)
-            .expect("Set-Cookie header should be present")
-            .to_str()
-            .unwrap()
-            .to_string();
+        store.update_with_rename(&old_id, &new_id, field_old, &TestData { value: "v1_upd".into() }, Some(60), Some(60))
+            .await.unwrap();
 
-        let parsed_cookie = Cookie::parse_encoded(&new_cookie).expect("Should be a valid cookie");
-        assert_eq!(
-            parsed_cookie.max_age(),
-            Some(cookie::time::Duration::seconds(30))
-        );
+        assert!(store.get::<TestData>(&old_id, field_old).await.unwrap().is_none());
+        let fetched_new: Option<TestData> = store.get(&new_id, field_old).await.unwrap();
+        assert_eq!(fetched_new.unwrap().value, "v1_upd");
+    }
+
+    // --- Get All ---
+    #[tokio::test]
+    async fn test_get_all_multiple_fields() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+
+        store.insert(&session_id, "f1", &TestData { value: "v1".into() }, Some(60), Some(60)).await.unwrap();
+        store.insert(&session_id, "f2", &TestData { value: "v2".into() }, Some(60), Some(60)).await.unwrap();
+
+        let all = store.get_all(&session_id).await.unwrap().unwrap();
+        assert_eq!(all.len(), 2);
     }
 }

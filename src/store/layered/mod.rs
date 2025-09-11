@@ -204,7 +204,7 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-    ) -> Result<Option<i64>, Error>
+    ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize + 'static,
     {
@@ -245,8 +245,9 @@ where
             };
         }
 
-        let (hot_result, cold_result) = tokio::try_join!(
-            self.hot.insert(session_id, field, value, hot_cache_ttl, hot_cache_ttl),
+        let (_, cold_ttl) = tokio::try_join!(
+            self.hot
+                .insert(session_id, field, value, hot_cache_ttl, hot_cache_ttl),
             self.cold.insert_with_meta(
                 session_id,
                 field,
@@ -260,14 +261,7 @@ where
             ),
         )?;
 
-        let max_age = match (hot_result, cold_result) {
-            (Some(hot_cache_max_age), None) => Some(hot_cache_max_age),
-            (None, Some(cold_cache_max_age)) => Some(cold_cache_max_age),
-            (Some(hot_cache_max_age), Some(cold_cache_max_age)) => Some(hot_cache_max_age.max(cold_cache_max_age)),
-            (None, None) => None,
-        };
-
-        Ok(max_age)
+        Ok(cold_ttl)
     }
 
     async fn update<T>(
@@ -277,7 +271,7 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-    ) -> Result<Option<i64>, Error>
+    ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize + 'static,
     {
@@ -318,7 +312,7 @@ where
             };
         }
 
-        let (hot_result, cold_result) = tokio::try_join!(
+        let (_, cold_ttl) = tokio::try_join!(
             self.hot
                 .update(session_id, field, value, hot_cache_ttl, hot_cache_ttl),
             self.cold.update_with_meta(
@@ -334,14 +328,7 @@ where
             ),
         )?;
 
-        let max_age = match (hot_result, cold_result) {
-            (Some(hot_cache_max_age), None) => Some(hot_cache_max_age),
-            (None, Some(cold_cache_max_age)) => Some(cold_cache_max_age),
-            (Some(hot_cache_max_age), Some(cold_cache_max_age)) => Some(hot_cache_max_age.max(cold_cache_max_age)),
-            (None, None) => None,
-        };
-
-        Ok(max_age)
+        Ok(cold_ttl)
     }
 
     async fn insert_with_rename<T>(
@@ -352,7 +339,7 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-    ) -> Result<Option<i64>, Error>
+    ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize + 'static,
     {
@@ -401,7 +388,7 @@ where
             };
         }
 
-        let (hot_result, cold_result) = tokio::try_join!(
+        let (_, cold_ttl) = tokio::try_join!(
             self.hot.insert_with_rename(
                 old_session_id,
                 new_session_id,
@@ -424,14 +411,7 @@ where
             ),
         )?;
 
-        let max_age = match (hot_result, cold_result) {
-            (Some(hot_cache_max_age), None) => Some(hot_cache_max_age),
-            (None, Some(cold_cache_max_age)) => Some(cold_cache_max_age),
-            (Some(hot_cache_max_age), Some(cold_cache_max_age)) => Some(hot_cache_max_age.max(cold_cache_max_age)),
-            (None, None) => None,
-        };
-
-        Ok(max_age)
+        Ok(cold_ttl)
     }
 
     async fn update_with_rename<T>(
@@ -442,7 +422,7 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-    ) -> Result<Option<i64>, Error>
+    ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize + 'static,
     {
@@ -491,7 +471,7 @@ where
             };
         }
 
-        let (hot_result, cold_result) = tokio::try_join!(
+        let (_, cold_ttl) = tokio::try_join!(
             self.hot.update_with_rename(
                 old_session_id,
                 new_session_id,
@@ -514,14 +494,7 @@ where
             ),
         )?;
 
-        let max_age = match (hot_result, cold_result) {
-            (Some(hot_cache_max_age), None) => Some(hot_cache_max_age),
-            (None, Some(cold_cache_max_age)) => Some(cold_cache_max_age),
-            (Some(hot_cache_max_age), Some(cold_cache_max_age)) => Some(hot_cache_max_age.max(cold_cache_max_age)),
-            (None, None) => None,
-        };
-
-        Ok(max_age)
+        Ok(cold_ttl)
     }
 
     async fn rename_session_id(
@@ -530,21 +503,19 @@ where
         new_session_id: &Id,
     ) -> Result<bool, Error> {
         let (hot_result, cold_result) = tokio::try_join!(
-            self.hot
-                .rename_session_id(old_session_id, new_session_id),
-            self.cold
-                .rename_session_id(old_session_id, new_session_id),
+            self.hot.rename_session_id(old_session_id, new_session_id),
+            self.cold.rename_session_id(old_session_id, new_session_id),
         )?;
         Ok(hot_result && cold_result)
     }
 
-    async fn remove(&self, session_id: &Id, field: &str) -> Result<i8, Error> {
-        let (hot_result, cold_result) = tokio::try_join!(
+    async fn remove(&self, session_id: &Id, field: &str) -> Result<i64, Error> {
+        let (_, cold_ttl) = tokio::try_join!(
             self.hot.remove(session_id, field),
             self.cold.remove(session_id, field),
         )?;
 
-        Ok((hot_result != 0 || cold_result != 0) as i8)
+        Ok(cold_ttl)
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {

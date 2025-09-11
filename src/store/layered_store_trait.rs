@@ -11,7 +11,7 @@ pub trait LayeredHotStore: Clone + Send + Sync + 'static {
         &self,
         session_id: &Id,
         pairs: &[(String, Vec<u8>, Option<i64>)],
-    ) -> impl Future<Output = Result<bool, Error>> + Send;
+    ) -> impl Future<Output = Result<i64, Error>> + Send;
 }
 
 /// Defines the caching behavior for a specific session field.
@@ -37,8 +37,8 @@ impl From<i16> for LayeredCacheBehavior {
 
 /// Metadata for caching a single session field.
 pub struct LayeredCacheMeta {
-    pub hot_cache_ttl: Option<i64>,
     pub behavior: LayeredCacheBehavior,
+    pub hot_cache_ttl: Option<i64>,
 }
 
 /// This trait acts as a private API, allowing the `LayeredStore` to save and
@@ -51,7 +51,7 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
         session_id: &Id,
     ) -> impl Future<Output = Result<Option<(SessionMap, HashMap<String, LayeredCacheMeta>)>, Error>>
     + Send;
-    
+
     /// Inserts a session field along with its specific caching metadata.
     fn insert_with_meta<T: Serialize + Send + Sync + 'static>(
         &self,
@@ -61,7 +61,7 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
         meta: LayeredCacheMeta,
-    ) -> impl Future<Output = Result<Option<i64>, Error>> + Send;
+    ) -> impl Future<Output = Result<i64, Error>> + Send;
 
     /// Updates a session field along with its specific caching metadata.
     fn update_with_meta<T: Serialize + Send + Sync + 'static>(
@@ -72,7 +72,7 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
         meta: LayeredCacheMeta,
-    ) -> impl Future<Output = Result<Option<i64>, Error>> + Send;
+    ) -> impl Future<Output = Result<i64, Error>> + Send;
 
     /// Inserts a session field with rename along with its specific caching metadata.
     fn insert_with_rename_with_meta<T: Serialize + Send + Sync + 'static>(
@@ -84,7 +84,7 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
         meta: LayeredCacheMeta,
-    ) -> impl Future<Output = Result<Option<i64>, Error>> + Send;
+    ) -> impl Future<Output = Result<i64, Error>> + Send;
 
     /// Updates a session field with rename along with its specific caching metadata.
     fn update_with_rename_with_meta<T: Serialize + Send + Sync + 'static>(
@@ -96,5 +96,5 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
         meta: LayeredCacheMeta,
-    ) -> impl Future<Output = Result<Option<i64>, Error>> + Send;
+    ) -> impl Future<Output = Result<i64, Error>> + Send;
 }

@@ -3,7 +3,7 @@ mod lua;
 use crate::Id;
 use crate::store::redis::lua::{
     INSERT_SCRIPT, INSERT_SCRIPT_HASH, INSERT_WITH_RENAME_SCRIPT, INSERT_WITH_RENAME_SCRIPT_HASH,
-    UPDATE_MANY_SCRIPT, UPDATE_MANY_SCRIPT_HASH, UPDATE_SCRIPT,
+    REMOVE_SCRIPT, REMOVE_SCRIPT_HASH, UPDATE_MANY_SCRIPT, UPDATE_MANY_SCRIPT_HASH, UPDATE_SCRIPT,
     UPDATE_SCRIPT_HASH, UPDATE_WITH_RENAME_SCRIPT, UPDATE_WITH_RENAME_SCRIPT_HASH,
 };
 use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize_value};
@@ -88,7 +88,7 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-    ) -> Result<Option<i64>, Error>
+    ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
     {
@@ -112,7 +112,7 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-    ) -> Result<Option<i64>, Error>
+    ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
     {
@@ -137,7 +137,7 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-    ) -> Result<Option<i64>, Error>
+    ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
     {
@@ -162,7 +162,7 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-    ) -> Result<Option<i64>, Error>
+    ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
     {
@@ -184,17 +184,25 @@ where
         old_session_id: &Id,
         new_session_id: &Id,
     ) -> Result<bool, Error> {
-        let renamed: bool = self
-            .client
-            .renamenx(old_session_id, new_session_id).await?;
-
-        Ok(renamed)
+        Ok(self.client.renamenx(old_session_id, new_session_id).await?)
     }
 
-    async fn remove(&self, session_id: &Id, field: &str) -> Result<i8, Error> {
-        let removed: i8 = self.client.hdel(session_id, field.as_bytes()).await?;
+    async fn remove(&self, session_id: &Id, field: &str) -> Result<i64, Error> {
+        let client = Arc::new(&self.client);
 
-        Ok(removed)
+        let hash = REMOVE_SCRIPT_HASH
+            .get_or_try_init(|| async {
+                let hash = fred::util::sha1_hash(REMOVE_SCRIPT);
+                if !client.script_exists::<bool, _>(&hash).await? {
+                    let _: () = client.script_load(REMOVE_SCRIPT).await?;
+                }
+                Ok::<String, fred::error::Error>(hash)
+            })
+            .await?;
+
+        let result: i64 = client.evalsha(hash, vec![session_id], field).await?;
+
+        Ok(result)
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
@@ -216,7 +224,7 @@ async fn insert_update<C, T>(
     field_ttl_secs: Option<i64>,
     once_cell: &OnceCell<String>,
     script: &str,
-) -> Result<Option<i64>, Error>
+) -> Result<i64, Error>
 where
     C: LuaInterface + Clone + Send + Sync + 'static,
     T: Send + Sync + Serialize,
@@ -227,7 +235,6 @@ where
             if !client.script_exists::<bool, _>(&hash).await? {
                 let _: () = client.script_load(script).await?;
             }
-
             Ok::<String, fred::error::Error>(hash)
         })
         .await?;
@@ -238,20 +245,16 @@ where
         .evalsha(
             hash,
             session_ids,
-            vec![
-                field.as_bytes(),
-                &serialized_value,
-                key_ttl_secs.unwrap_or(-1).to_string().as_bytes(),
-                field_ttl_secs.unwrap_or(-1).to_string().as_bytes(),
-            ],
+            (
+                field,
+                serialized_value.as_slice(),
+                key_ttl_secs.unwrap_or(-2),
+                field_ttl_secs.unwrap_or(-2),
+            ),
         )
         .await?;
 
-    if result >= 0 {
-        Ok(Some(result))
-    } else {
-        Ok(None)
-    }
+    Ok(result)
 }
 
 #[cfg(feature = "layered-store")]
@@ -263,9 +266,9 @@ where
         &self,
         session_id: &Id,
         pairs: &[(String, Vec<u8>, Option<i64>)],
-    ) -> Result<bool, Error> {
+    ) -> Result<i64, Error> {
         if pairs.is_empty() {
-            return Ok(true);
+            return Ok(-2);
         }
 
         let hash = UPDATE_MANY_SCRIPT_HASH
@@ -280,14 +283,13 @@ where
 
         let mut args: Vec<Value> = Vec::with_capacity(pairs.len() * 3);
 
-        for (field, value, field_expiry) in pairs {
+        for (field, value, ttl) in pairs {
             args.push(field.into());
             args.push(value.as_slice().into());
-            // -1 is interpreted as persistent fields
-            args.push(field_expiry.unwrap_or(-1).into());
+            args.push(ttl.map(|n| Value::Integer(n)).unwrap_or(Value::Null))
         }
 
-        let updated: bool = self.client.evalsha(hash, vec![session_id], args).await?;
+        let updated: i64 = self.client.evalsha(hash, vec![session_id], args).await?;
 
         Ok(updated)
     }

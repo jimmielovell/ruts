@@ -18,18 +18,16 @@ mod tests {
     use sqlx::PgPool;
     use std::{sync::Arc, time::Duration};
 
-    async fn setup_layered_store() -> LayeredStore<RedisStore<Client>, PostgresStore> {
+    async fn setup_store() -> LayeredStore<RedisStore<Client>, PostgresStore> {
         let database_url =
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
         let pool = PgPool::connect(&database_url).await.unwrap();
-        let table_name = format!("sessions_{}", rand::random::<u32>());
-        // Ensure the table is clean for every test run.
-        sqlx::query(&format!("DROP TABLE IF EXISTS {}", table_name))
+
+        sqlx::query("drop table if exists sessions")
             .execute(&pool)
             .await
             .unwrap();
         let cold_store = PostgresStoreBuilder::new(pool.clone())
-            .table_name(table_name)
             .build()
             .await
             .unwrap();
@@ -43,7 +41,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_layered_cache_aside_flow() {
-        let store = setup_layered_store().await;
+        let store = setup_store().await;
         let session_id = Id::default();
         let test_user = create_test_session().user;
 
@@ -78,13 +76,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_layered_write_strategies() {
-        let store = setup_layered_store().await;
+        let store = setup_store().await;
         let session_id = Id::default();
         let test_session = create_test_session();
 
         let hot_only_strategy = LayeredWriteStrategy::HotCache(test_session.user.clone());
         store
-            .update(&session_id, "user_hot", &hot_only_strategy, Some(1), Some(1))
+            .update(
+                &session_id,
+                "user_hot",
+                &hot_only_strategy,
+                Some(1),
+                Some(1),
+            )
             .await
             .unwrap();
 
@@ -107,7 +111,13 @@ mod tests {
 
         let cold_only_strategy = LayeredWriteStrategy::ColdCache(test_session.preferences.clone());
         store
-            .update(&session_id, "prefs_cold", &cold_only_strategy, Some(3600), Some(3600))
+            .update(
+                &session_id,
+                "prefs_cold",
+                &cold_only_strategy,
+                Some(3600),
+                Some(3600),
+            )
             .await
             .unwrap();
 
@@ -134,7 +144,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_layered_delete() {
-        let store = setup_layered_store().await;
+        let store = setup_store().await;
         let session_id = Id::default();
         let test_user = create_test_session().user;
 

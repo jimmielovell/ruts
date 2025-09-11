@@ -5,56 +5,123 @@ pub(crate) static UPDATE_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
 pub(crate) static UPDATE_MANY_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
 pub(crate) static INSERT_WITH_RENAME_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
 pub(crate) static UPDATE_WITH_RENAME_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
+pub(crate) static REMOVE_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
 
 pub(crate) static INSERT_SCRIPT: &str = r#"
     local key = KEYS[1]
     local field = ARGV[1]
     local value = ARGV[2]
-    local key_seconds = tonumber(ARGV[3])
-    local field_seconds_num = tonumber(ARGV[4])
+    local key_ttl_secs = tonumber(ARGV[3])
+    local field_ttl_secs = tonumber(ARGV[4])
 
+    local key_existed = redis.call('EXISTS', key)
     local inserted = redis.call('HSETNX', key, field, value)
+
+    local field_is_persistent = false
+    if field_ttl_secs and field_ttl_secs == -1 then
+        field_is_persistent = true
+    elseif key_ttl_secs and key_ttl_secs == -1 then
+        field_is_persistent = true
+    end
+
     if inserted == 1 then
-        local pttl = redis.call('PTTL', key)
-        if pttl == -1 or (key_seconds * 1000) > pttl then
-            if key_seconds and key_seconds > 0 then
-                redis.call('EXPIRE', key, key_seconds)
-            end
+        if field_is_persistent then
+            redis.call('PERSIST', key)
+            return -1
         end
-        if field_seconds_num and field_seconds_num > 0 then
-            redis.call('HEXPIRE', key, field_seconds_num, 'FIELDS', 1, field)
+
+        if field_ttl_secs and field_ttl_secs > 0 then
+            redis.call('HEXPIRE', key, field_ttl_secs, 'FIELDS', 1, field)
+        end
+
+        if key_existed == 0 then
+            if key_ttl_secs and key_ttl_secs == -2 then
+                return -1
+            end
+
+            redis.call('EXPIRE', key, key_ttl_secs)
+            return key_ttl_secs
+        end
+
+        local ttl = redis.call('TTL', key)
+
+        if key_ttl_secs and key_ttl_secs > 0 then
+            if ttl == -2 then
+                redis.call('EXPIRE', key, key_ttl_secs)
+                return key_ttl_secs
+            elseif ttl == -1 then
+                return -1
+            elseif key_ttl_secs > ttl then
+                redis.call('EXPIRE', key, key_ttl_secs)
+                return key_ttl_secs
+            else
+                return ttl
+            end
+        else
+            return ttl
         end
     end
 
-    return redis.call('TTL', key)
+    return -2
 "#;
 
 pub(crate) static UPDATE_SCRIPT: &str = r#"
     local key = KEYS[1]
     local field = ARGV[1]
     local value = ARGV[2]
-    local key_seconds = tonumber(ARGV[3])
-    local field_seconds_num = tonumber(ARGV[4])
+    local key_ttl_secs = tonumber(ARGV[3])
+    local field_ttl_secs = tonumber(ARGV[4])
 
+    local key_existed = redis.call('EXISTS', key)
     redis.call('HSET', key, field, value)
 
-    local pttl = redis.call('PTTL', key)
-    if pttl == -1 or (key_seconds * 1000) > pttl then
-        if key_seconds and key_seconds > 0 then
-            redis.call('EXPIRE', key, key_seconds)
+    local field_is_persistent = false
+    if field_ttl_secs and field_ttl_secs == -1 then
+        field_is_persistent = true
+    elseif key_ttl_secs and key_ttl_secs == -1 then
+        field_is_persistent = true
+    end
+
+    if field_is_persistent then
+        redis.call('PERSIST', key)
+        return -1
+    end
+
+    if field_ttl_secs and field_ttl_secs > 0 then
+        redis.call('HEXPIRE', key, field_ttl_secs, 'FIELDS', 1, field)
+    end
+
+    if key_existed == 0 then
+        if key_ttl_secs and key_ttl_secs == -2 then
+            return -1
         end
+
+        redis.call('EXPIRE', key, key_ttl_secs)
+        return key_ttl_secs
     end
 
-    if field_seconds_num and field_seconds_num > 0 then
-        redis.call('HEXPIRE', key, field_seconds_num, 'FIELDS', 1, field)
-    end
+    local ttl = redis.call('TTL', key)
 
-    return redis.call('TTL', key)
+    if key_ttl_secs and key_ttl_secs > 0 then
+        if ttl == -2 then
+            redis.call('EXPIRE', key, key_ttl_secs)
+            return key_ttl_secs
+        elseif ttl == -1 then
+            return -1
+        elseif key_ttl_secs > ttl then
+            redis.call('EXPIRE', key, key_ttl_secs)
+            return key_ttl_secs
+        else
+            return ttl
+        end
+    else
+        return ttl
+    end
 "#;
 
 pub(crate) static UPDATE_MANY_SCRIPT: &str = r#"
     -- KEYS[1]: session key
-    -- ARGV[1...N]: A flattened list of field-value-field_expiry_seconds triples.
+    -- ARGV: field, value, expiry, field, value, expiry, ...
 
     local key = KEYS[1]
 
@@ -63,43 +130,67 @@ pub(crate) static UPDATE_MANY_SCRIPT: &str = r#"
     end
 
     local hset_args = {key}
-    local max_field_seconds = 0
+    local max_field_ttl_secs = 0
     local has_persistent_field = false
 
     for i = 1, #ARGV, 3 do
-        table.insert(hset_args, ARGV[i])     -- field
-        table.insert(hset_args, ARGV[i + 1]) -- value
+        local field = ARGV[i]
+        local field_ttl_secs = tonumber(ARGV[i + 2])
+
+        table.insert(hset_args, field)          -- field
+        table.insert(hset_args, ARGV[i + 1])    -- value
 
         if not has_persistent_field then
-            local field_seconds = tonumber(ARGV[i + 2])
-            if field_seconds and field_seconds < 0 then
+            if field_ttl_secs and field_ttl_secs == -1 then
                 has_persistent_field = true
-            elseif field_seconds and field_seconds > max_field_seconds then
-                max_field_seconds = field_seconds
+            elseif field_ttl_secs and field_ttl_secs > max_field_ttl_secs then
+                max_field_ttl_secs = field_ttl_secs
             end
         end
     end
 
-    redis.call('HSET', unpack(hset_args))
-
-    if has_persistent_field then
-        redis.call('PERSIST', key)
-    elseif max_field_seconds > 0 then
-        local pttl = redis.call('PTTL', key)
-        if pttl == -1 or (max_field_seconds * 1000) > pttl then
-            redis.call('EXPIRE', key, max_field_seconds)
-        end
-    end
+    local key_existed = redis.call('EXISTS', key)
+    local updated = redis.call('HSET', unpack(hset_args))
 
     for i = 1, #ARGV, 3 do
         local field = ARGV[i]
-        local field_seconds = tonumber(ARGV[i + 2])
-        if field_seconds and field_seconds > 0 then
-            redis.call('HEXPIRE', key, field_seconds, 'FIELDS', 1, field)
+        local field_ttl_secs = tonumber(ARGV[i + 2])
+        if field_ttl_secs and field_ttl_secs > 0 then
+            redis.call('HEXPIRE', key, field_ttl_secs, 'FIELDS', 1, field)
         end
     end
 
-    return redis.call('TTL', key)
+    if has_persistent_field then
+        redis.call('PERSIST', key)
+        return -1
+    end
+
+    if key_existed == 0 then
+        if key_ttl_secs and key_ttl_secs == -2 then
+            return -1
+        end
+
+        redis.call('EXPIRE', key, key_ttl_secs)
+        return key_ttl_secs
+    end
+
+    local ttl = redis.call('TTL', key)
+
+    if max_field_ttl_secs and max_field_ttl_secs > 0 then
+        if ttl == -2 then
+            redis.call('EXPIRE', key, max_field_ttl_secs)
+            return max_field_ttl_secs
+        elseif ttl == -1 then
+            return -1
+        elseif max_field_ttl_secs > ttl then
+            redis.call('EXPIRE', key, max_field_ttl_secs)
+            return max_field_ttl_secs
+        else
+            return ttl
+        end
+    else
+        return ttl
+    end
 "#;
 
 pub(crate) static INSERT_WITH_RENAME_SCRIPT: &str = r#"
@@ -107,30 +198,63 @@ pub(crate) static INSERT_WITH_RENAME_SCRIPT: &str = r#"
     local new_key = KEYS[2]
     local field = ARGV[1]
     local value = ARGV[2]
-    local key_seconds = tonumber(ARGV[3])
-    local field_seconds_num = tonumber(ARGV[4])
+    local key_ttl_secs = tonumber(ARGV[3])
+    local field_ttl_secs = tonumber(ARGV[4])
 
-    -- Only rename if old key exists
+    local key_existed = false
     if redis.call('EXISTS', old_key) == 1 then
-        if redis.call('RENAMENX', old_key, new_key) == 0 then
-            return 0  -- Rename failed (new_key exists)
-        end
+        key_existed = true
+        redis.call('RENAMENX', old_key, new_key)
     end
 
     local inserted = redis.call('HSETNX', new_key, field, value)
+
+    local field_is_persistent = false
+    if field_ttl_secs and field_ttl_secs == -1 then
+        field_is_persistent = true
+    elseif key_ttl_secs and key_ttl_secs == -1 then
+        field_is_persistent = true
+    end
+
     if inserted == 1 then
-        local pttl = redis.call('PTTL', new_key)
-        if pttl == -1 or (key_seconds * 1000) > pttl then
-            if key_seconds and key_seconds > 0 then
-                redis.call('EXPIRE', new_key, key_seconds)
-            end
+        if field_is_persistent then
+            redis.call('PERSIST', new_key)
+            return -1
         end
-        if field_seconds_num and field_seconds_num > 0 then
-            redis.call('HEXPIRE', new_key, field_seconds_num, 'FIELDS', 1, field)
+
+        if field_ttl_secs and field_ttl_secs > 0 then
+            redis.call('HEXPIRE', new_key, field_ttl_secs, 'FIELDS', 1, field)
+        end
+
+        if key_existed == 0 then
+            if key_ttl_secs and key_ttl_secs == -2 then
+                return -1
+            end
+
+            redis.call('EXPIRE', key, key_ttl_secs)
+            return key_ttl_secs
+        end
+
+        local ttl = redis.call('TTL', new_key)
+
+        if key_ttl_secs and key_ttl_secs > 0 then
+            if ttl == -2 then
+                redis.call('EXPIRE', new_key, key_ttl_secs)
+                return key_ttl_secs
+            elseif ttl == -1 then
+                return -1
+            elseif key_ttl_secs > ttl then
+                redis.call('EXPIRE', new_key, key_ttl_secs)
+                return key_ttl_secs
+            else
+                return ttl
+            end
+        else
+            return ttl
         end
     end
 
-    return redis.call('TTL', new_key)
+    return -2
 "#;
 
 pub(crate) static UPDATE_WITH_RENAME_SCRIPT: &str = r#"
@@ -138,27 +262,68 @@ pub(crate) static UPDATE_WITH_RENAME_SCRIPT: &str = r#"
     local new_key = KEYS[2]
     local field = ARGV[1]
     local value = ARGV[2]
-    local key_seconds = tonumber(ARGV[3])
-    local field_seconds_num = tonumber(ARGV[4])
+    local key_ttl_secs = tonumber(ARGV[3])
+    local field_ttl_secs = tonumber(ARGV[4])
 
+    local key_existed = false
     if redis.call('EXISTS', old_key) == 1 then
-        if redis.call('RENAMENX', old_key, new_key) == 0 then
-            return 0
-        end
+        key_existed = true
+        redis.call('RENAMENX', old_key, new_key)
     end
 
+    local key_existed = redis.call('EXISTS', key)
     redis.call('HSET', new_key, field, value)
 
-    local pttl = redis.call('PTTL', new_key)
-    if pttl == -1 or (key_seconds * 1000) > pttl then
-        if key_seconds and key_seconds > 0 then
-            redis.call('EXPIRE', new_key, key_seconds)
+    local field_is_persistent = false
+    if field_ttl_secs and field_ttl_secs == -1 then
+        field_is_persistent = true
+    elseif key_ttl_secs and key_ttl_secs == -1 then
+        field_is_persistent = true
+    end
+
+    if field_is_persistent then
+        redis.call('PERSIST', new_key)
+        return -1
+    end
+
+    if field_ttl_secs and field_ttl_secs > 0 then
+        redis.call('HEXPIRE', new_key, field_ttl_secs, 'FIELDS', 1, field)
+    end
+
+    if key_existed == 0 then
+        if key_ttl_secs and key_ttl_secs == -2 then
+            return -1
         end
+
+        redis.call('EXPIRE', key, key_ttl_secs)
+        return key_ttl_secs
     end
 
-    if field_seconds_num and field_seconds_num > 0 then
-        redis.call('HEXPIRE', new_key, field_seconds_num, 'FIELDS', 1, field)
+    local ttl = redis.call('TTL', new_key)
+
+    if key_ttl_secs and key_ttl_secs > 0 then
+        if ttl == -2 then
+            redis.call('EXPIRE', new_key, key_ttl_secs)
+            return key_ttl_secs
+        elseif ttl == -1 then
+            return -1
+        elseif key_ttl_secs > ttl then
+            redis.call('EXPIRE', new_key, key_ttl_secs)
+            return key_ttl_secs
+        else
+            return ttl
+        end
+    else
+        return ttl
+    end
+"#;
+
+pub(crate) static REMOVE_SCRIPT: &str = r#"
+    local removed = redis.call("HDEL", KEYS[1], ARGV[1])
+
+    if removed > 0 then
+        return redis.call("TTL", KEYS[1])
     end
 
-    return redis.call('TTL', new_key)
+    return -2
 "#;

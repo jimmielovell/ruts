@@ -58,20 +58,8 @@ where
     ///     name: String,
     /// }
     ///
-    /// #[derive(Clone, Deserialize)]
-    /// enum Theme {
-    ///     Light,
-    ///     Dark,
-    /// }
-    ///
-    /// #[derive(Clone, Deserialize)]
-    /// struct AppSession {
-    ///     user: User,
-    ///     theme: Option<Theme>,
-    /// }
-    ///
     /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
-    ///     session.get::<AppSession>("app").await.unwrap();
+    ///     session.get::<User>("user").await.unwrap();
     /// }
     /// ```
     #[tracing::instrument(name = "session-store: getting value for field", skip(self, field))]
@@ -112,11 +100,25 @@ where
         }
     }
 
-    /// Inserts a value into the session store.
+    /// Inserts a value into the session store under the given field.
     ///
-    /// Returns `true` if the value was successfully inserted.
+    /// The behavior of `field_ttl_secs` determines how this field affects session persistence:
     ///
-    /// ## Example
+    /// - **-1**: Marks this field as persistent. The session key itself will also be persisted,
+    ///   making the associated cookie persistent. This does **not** alter the TTL of other fields
+    ///   in the session.
+    /// - **0**: Removes this field from the store. The session behaves as if `remove` was called
+    ///   on this field.
+    /// - **> 0**: Sets a TTL (in seconds) for this field. The session TTL is updated according to:
+    ///   - If the session key is already persistent, its TTL remains unchanged.
+    ///   - If the field TTL is less than the current session TTL, the session TTL remains unchanged.
+    ///   - If the field TTL is greater than the current session TTL, the session TTL is updated
+    ///     to match the field TTL.
+    ///
+    /// Returns `true` if the field-value pair was successfully inserted or updated, and `false` if
+    /// the operation resulted in deletion (e.g., TTL = 0 for a non-existent session).
+    ///
+    /// # Example
     ///
     /// ```rust,no_run
     /// use ruts::{Session};
@@ -130,28 +132,10 @@ where
     ///     name: String,
     /// }
     ///
-    /// #[derive(Serialize)]
-    /// enum Theme {
-    ///     Light,
-    ///     Dark,
-    /// }
-    ///
-    /// #[derive(Serialize)]
-    /// struct AppSession {
-    ///     user: User,
-    ///     theme: Option<Theme>,
-    /// }
-    ///
-    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
-    ///     let app = AppSession {
-    ///             user: User {
-    ///             id: 34895634,
-    ///             name: String::from("John Doe"),
-    ///         },
-    ///         theme: Some(Theme::Dark),
-    ///     };
-    ///
-    ///     session.insert("app", &app, Some(5)).await.unwrap();
+    /// async fn example_handler(session: Session<MemoryStore>) {
+    ///     let user = User { id: 34895634, name: "John Doe".to_string() };
+    ///     // Insert the field with a TTL of 5 seconds
+    ///     session.insert("app", &user, Some(5)).await.unwrap();
     /// }
     /// ```
     #[tracing::instrument(
@@ -171,9 +155,9 @@ where
         let pending_id = self.inner.take_pending_id();
 
         let key_ttl_secs = self.max_age();
-        let key_ttl_secs = if key_ttl_secs == -1 {
-            None
-        } else if let Some(ttl) = field_ttl_secs && ttl > key_ttl_secs {
+        if let Some(ttl) = field_ttl_secs
+            && ttl > key_ttl_secs
+        {
             Some(ttl)
         } else {
             Some(key_ttl_secs)
@@ -183,13 +167,13 @@ where
             Some(new_id) => {
                 let max_age = self.inner
                     .store
-                    .insert_with_rename(&current_id, &new_id, field, value, key_ttl_secs, field_ttl_secs)
+                    .insert_with_rename(&current_id, &new_id, field, value, Some(key_ttl_secs), field_ttl_secs)
                     .await
                     .map_err(|err| {
                         tracing::error!(err = %err, "failed to insert field-value with rename to session store");
                         err
                     })?;
-                if max_age.is_some() {
+                if max_age > -2 {
                     *self.inner.id.write() = Some(new_id);
                 }
                 max_age
@@ -197,7 +181,13 @@ where
             None => self
                 .inner
                 .store
-                .insert(&current_id, field, value, key_ttl_secs, field_ttl_secs)
+                .insert(
+                    &current_id,
+                    field,
+                    value,
+                    Some(key_ttl_secs),
+                    field_ttl_secs,
+                )
                 .await
                 .map_err(|err| {
                     tracing::error!(err = %err, "failed to insert field-value to session store");
@@ -205,19 +195,31 @@ where
                 })?,
         };
 
-        if let Some(max_age) = max_age {
+        if max_age > -2 {
             self.inner.set_changed();
             self.set_expiration(max_age);
         }
 
-        Ok(max_age.is_some())
+        Ok(max_age > -2)
     }
 
     /// Updates a value in the session store.
     ///
     /// If the key doesn't exist, it will be inserted.
     ///
-    /// Returns `true` if the value was successfully updated or inserted.
+    /// - **-1**: Marks this field as persistent. The session key itself will also be persisted,
+    ///   making the associated cookie persistent. This does **not** alter the TTL of other fields
+    ///   in the session.
+    /// - **0**: Removes this field from the store. The session behaves as if `remove` was called
+    ///   on this field.
+    /// - **> 0**: Sets a TTL (in seconds) for this field. The session TTL is updated according to:
+    ///   - If the session key is already persistent, its TTL remains unchanged.
+    ///   - If the field TTL is less than the current session TTL, the session TTL remains unchanged.
+    ///   - If the field TTL is greater than the current session TTL, the session TTL is updated
+    ///     to match the field TTL.
+    ///
+    /// Returns `true` if the field-value pair was successfully inserted or updated, and `false` if
+    /// the operation resulted in deletion (e.g., TTL = 0 for a non-existent session).
     ///
     /// ## Example
     ///
@@ -233,28 +235,10 @@ where
     ///     name: String,
     /// }
     ///
-    /// #[derive(Serialize)]
-    /// enum Theme {
-    ///     Light,
-    ///     Dark,
-    /// }
-    ///
-    /// #[derive(Serialize)]
-    /// struct AppSession {
-    ///     user: User,
-    ///     theme: Option<Theme>,
-    /// }
-    ///
     /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
-    ///     let app = AppSession {
-    ///         user: User {
-    ///             id: 21342365,
-    ///             name: String::from("Jane Doe"),
-    ///         },
-    ///         theme: Some(Theme::Light),
-    ///     };
+    ///     let user = User {id: 21342365, name: String::from("Jane Doe")};
     ///
-    ///     let updated = session.update("app", &app, Some(5)).await.unwrap();
+    ///     let updated = session.update("app", &user, Some(5)).await.unwrap();
     /// }
     /// ```
     #[tracing::instrument(
@@ -274,9 +258,9 @@ where
         let pending_id = self.inner.take_pending_id();
 
         let key_ttl_secs = self.max_age();
-        let key_ttl_secs = if key_ttl_secs == -1 {
-            None
-        } else if let Some(ttl) = field_ttl_secs && ttl > key_ttl_secs {
+        if let Some(ttl) = field_ttl_secs
+            && ttl > key_ttl_secs
+        {
             Some(ttl)
         } else {
             Some(key_ttl_secs)
@@ -286,23 +270,28 @@ where
             Some(new_id) => {
                 let max_age = self.inner
                     .store
-                    .update_with_rename(&current_id, &new_id, field, value, key_ttl_secs, field_ttl_secs)
+                    .update_with_rename(&current_id, &new_id, field, value, Some(key_ttl_secs), field_ttl_secs)
                     .await
                     .map_err(|err| {
                         tracing::error!(err = %err, "failed to update field-value with rename in session store");
                         err
                     })?;
 
-                if max_age.is_some() {
+                if max_age > -2 {
                     *self.inner.id.write() = Some(new_id);
                 }
-
                 max_age
             }
             None => self
                 .inner
                 .store
-                .update(&current_id, field, value, key_ttl_secs, field_ttl_secs)
+                .update(
+                    &current_id,
+                    field,
+                    value,
+                    Some(key_ttl_secs),
+                    field_ttl_secs,
+                )
                 .await
                 .map_err(|err| {
                     tracing::error!(err = %err, "failed to update field in session store");
@@ -310,12 +299,11 @@ where
                 })?,
         };
 
-        if let Some(max_age) = max_age {
+        if max_age > -2 {
             self.inner.set_changed();
             self.set_expiration(max_age);
         }
-
-        Ok(max_age.is_some())
+        Ok(max_age > -2)
     }
 
     /// Removes a field along with its value from the session store.
@@ -330,18 +318,18 @@ where
     /// use ruts::store::memory::MemoryStore;
     ///
     /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
-    ///     let removed = session.remove("app").await.unwrap();
+    ///     let removed = session.remove("user").await.unwrap();
     /// }
     /// ```
     #[tracing::instrument(name = "session-store: removing field", skip(self, field))]
-    pub async fn remove(&self, field: &str) -> Result<i8> {
+    pub async fn remove(&self, field: &str) -> Result<bool> {
         let id = self.id();
         if id.is_none() {
             tracing::error!("session not initialized");
             return Err(Error::UnInitialized);
         }
 
-        let removed = self
+        let max_age = self
             .inner
             .store
             .remove(&id.unwrap(), field)
@@ -351,7 +339,14 @@ where
                 err
             })?;
 
-        Ok(removed)
+        if max_age == -2 {
+            self.inner.set_deleted();
+        } else if max_age > -2 {
+            self.inner.set_changed();
+            self.set_expiration(max_age);
+        }
+
+        Ok(max_age > -2)
     }
 
     /// Deletes the entire session from the store.
@@ -385,13 +380,13 @@ where
         if deleted {
             self.inner.set_deleted();
         }
-
         Ok(deleted)
     }
 
     /// Updates the cookie's max-age and session expiry time in the store.
     ///
-    /// A value of -1 or 0 immediately expires the session and deletes it.
+    /// - A value of -1 persists the session.
+    /// - A value of 0 immediately expires the session and deletes it.
     ///
     /// Returns `true` if the expiry was successfully updated.
     ///
@@ -406,9 +401,9 @@ where
     ///     session.expire(30).await.unwrap();
     /// }
     /// ```
-    #[tracing::instrument(name = "updating session expiry", skip(self, seconds))]
-    pub async fn expire(&self, seconds: i64) -> Result<bool> {
-        if seconds == -1 || seconds == 0 {
+    #[tracing::instrument(name = "updating session expiry", skip(self, ttl_secs))]
+    pub async fn expire(&self, ttl_secs: i64) -> Result<bool> {
+        if ttl_secs == -1 || ttl_secs == 0 {
             return self.delete().await;
         }
 
@@ -418,15 +413,16 @@ where
             return Err(Error::UnInitialized);
         }
 
-        self.set_expiration(seconds);
+        self.set_expiration(ttl_secs);
         let expired = self
-            .regenerate()
+            .inner
+            .store
+            .expire(&id.unwrap(), ttl_secs)
             .await
             .map_err(|err| {
                 tracing::error!(err = %err, "failed to update session expiry");
                 err
-            })?
-            .is_some();
+            })?;
 
         if expired {
             self.inner.set_changed();
