@@ -265,7 +265,7 @@ where
     async fn update_many(
         &self,
         session_id: &Id,
-        pairs: &[(String, Vec<u8>, Option<i64>)],
+        pairs: &[(&str, &[u8], Option<i64>)],
     ) -> Result<i64, Error> {
         if pairs.is_empty() {
             return Ok(-2);
@@ -284,8 +284,8 @@ where
         let mut args: Vec<Value> = Vec::with_capacity(pairs.len() * 3);
 
         for (field, value, ttl) in pairs {
-            args.push(field.into());
-            args.push(value.as_slice().into());
+            args.push((*field).into());
+            args.push((*value).into());
             args.push(ttl.map(|n| Value::Integer(n)).unwrap_or(Value::Null))
         }
 
@@ -294,3 +294,164 @@ where
         Ok(updated)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use fred::clients::Client;
+    use fred::prelude::ClientLike;
+    use super::*;
+    use std::sync::Arc;
+    use tokio::time::{Duration, sleep};
+
+    async fn setup_store() -> RedisStore<Client> {
+        let client = Client::default();
+        client.connect();
+        client.wait_for_connect().await.unwrap();
+        RedisStore::new(Arc::new(client))
+    }
+
+    #[tokio::test]
+    async fn test_insert_and_get() {
+        let store = setup_store().await;
+        let sid = Id::default();
+
+        let ttl = store
+            .insert(&sid, "field1", &"value1", Some(10), None)
+            .await
+            .unwrap();
+        assert_eq!(ttl, 10);
+
+        let v: Option<String> = store.get(&sid, "field1").await.unwrap();
+        assert_eq!(v.unwrap(), "value1");
+    }
+
+    #[tokio::test]
+    async fn test_insert_with_field_ttl() {
+        let store = setup_store().await;
+        let sid = Id::default();
+
+        store
+            .insert(&sid, "f", &"temp", None, Some(1))
+            .await
+            .unwrap();
+
+        // Initially exists
+        let v: Option<String> = store.get(&sid, "f").await.unwrap();
+        assert_eq!(v.unwrap(), "temp");
+
+        // Should expire after 1s
+        sleep(Duration::from_secs(2)).await;
+        let v: Option<String> = store.get(&sid, "f").await.unwrap();
+        assert!(v.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_update_with_persistent_field() {
+        let store = setup_store().await;
+        let sid = Id::default();
+
+        let ttl = store
+            .insert(&sid, "f", &"x", Some(5), Some(5))
+            .await
+            .unwrap();
+        assert_eq!(ttl, 5);
+
+        let ttl = store.update(&sid, "f", &"y", None, Some(-1)).await.unwrap();
+        assert_eq!(ttl, -1);
+    }
+
+    #[tokio::test]
+    async fn test_insert_with_rename_success() {
+        let store = setup_store().await;
+        let old_sid = Id::default();
+        let new_sid = Id::default();
+
+        store
+            .insert(&old_sid, "f", &"foo", None, None)
+            .await
+            .unwrap();
+        store
+            .insert_with_rename(&old_sid, &new_sid, "g", &"bar", None, None)
+            .await
+            .unwrap();
+
+        let v: Option<String> = store.get(&new_sid, "f").await.unwrap();
+        assert_eq!(v.unwrap(), "foo");
+
+        let v: Option<String> = store.get(&new_sid, "g").await.unwrap();
+        assert_eq!(v.unwrap(), "bar");
+    }
+
+    #[tokio::test]
+    async fn test_insert_with_rename_conflict() {
+        let store = setup_store().await;
+        let old_sid = Id::default();
+        let new_sid = Id::default();
+
+        store
+            .insert(&old_sid, "f", &"foo", None, None)
+            .await
+            .unwrap();
+        store
+            .insert(&new_sid, "existing", &"bar", None, None)
+            .await
+            .unwrap();
+
+        // RENAMENX should fail, but we still insert into new_sid
+        store
+            .insert_with_rename(&old_sid, &new_sid, "g", &"baz", None, None)
+            .await
+            .unwrap();
+
+        let v: Option<String> = store.get(&new_sid, "g").await.unwrap();
+        assert_eq!(v.unwrap(), "baz");
+    }
+
+    #[tokio::test]
+    async fn test_remove_and_delete() {
+        let store = setup_store().await;
+        let sid = Id::default();
+
+        store
+            .insert(&sid, "f1", &"v1", Some(10), None)
+            .await
+            .unwrap();
+        store
+            .insert(&sid, "f2", &"v2", Some(10), None)
+            .await
+            .unwrap();
+
+        let ttl = store.remove(&sid, "f1").await.unwrap();
+        assert_eq!(ttl, 10); // still has key
+
+        let ttl = store.remove(&sid, "f2").await.unwrap();
+        assert_eq!(ttl, -2);
+    }
+
+    #[cfg(feature = "layered-store")]
+    #[tokio::test]
+    async fn test_update_many() {
+        use crate::store::{LayeredHotStore, serialize_value};
+        
+        let store = setup_store().await;
+        let sid = Id::default();
+
+        let a_val = serialize_value(&"1").unwrap();
+        let b_val = serialize_value(&"2").unwrap();
+
+        let pairs = vec![
+            ("a", a_val.as_slice(), Some(3)),
+            ("b", b_val.as_slice(), Some(-1)), // persistent
+        ];
+
+        let ttl = store.update_many(&sid, pairs.as_slice()).await.unwrap();
+        assert_eq!(ttl, -1); // persistent because of "b"
+
+        let v: Option<String> = store.get(&sid, "a").await.unwrap();
+        assert_eq!(v.unwrap(), "1");
+
+        let v: Option<String> = store.get(&sid, "b").await.unwrap();
+        assert_eq!(v.unwrap(), "2");
+    }
+}
+

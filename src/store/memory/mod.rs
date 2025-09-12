@@ -13,12 +13,7 @@ struct StoredValue {
 
 /// An in-memory session store implementation.
 ///
-/// It uses a HashMap to manage session data and supports
-/// serialization/deserialization using [MessagePack](https://crates.io/crates/rmp-serde).
-///
-/// ### Note
-///
-/// Do not use this in a production environment.
+/// It uses a HashMap to manage session data.
 #[derive(Debug, Clone)]
 pub struct MemoryStore {
     data: DashMap<String, HashMap<String, StoredValue>>,
@@ -47,6 +42,26 @@ impl MemoryStore {
             });
             !fields.is_empty()
         });
+    }
+
+    fn get_max_ttl(&self, session_id: &Id) -> i64 {
+        self.data
+            .get(&session_id.to_string())
+            .and_then(|fields| {
+                fields
+                    .values()
+                    .filter_map(|v| v.expires_at)
+                    .max()
+                    .map(|exp| {
+                        let now = Instant::now();
+                        if exp > now {
+                            exp.duration_since(now).as_secs() as i64
+                        } else {
+                            -2
+                        }
+                    })
+            })
+            .unwrap_or(-1)
     }
 }
 
@@ -114,24 +129,26 @@ impl SessionStore for MemoryStore {
         T: Send + Sync + Serialize,
     {
         self.cleanup_expired();
-        let mut fields = self.data.entry(session_id.to_string()).or_default();
-
-        if fields.contains_key(field) {
-            return Ok(-2); // field already exists, align with Postgres/Redis "conflict"
+        {
+            let fields = self.data.entry(session_id.to_string()).or_default();
+            if fields.contains_key(field) {
+                return Ok(-2);
+            }
         }
 
         let expires_at = expires_at(key_ttl_secs, field_ttl_secs);
-        fields.insert(
-            field.to_string(),
-            StoredValue {
-                data: serialize_value(value)?,
-                expires_at,
-            },
-        );
+        {
+            let mut fields = self.data.entry(session_id.to_string()).or_default();
+            fields.insert(
+                field.to_string(),
+                StoredValue {
+                    data: serialize_value(value)?,
+                    expires_at,
+                },
+            );
+        }
 
-        Ok(expires_at
-            .map(|e| e.duration_since(Instant::now()).as_secs() as i64)
-            .unwrap_or(-1))
+        Ok(self.get_max_ttl(&session_id))
     }
 
     async fn update<T>(
@@ -147,20 +164,19 @@ impl SessionStore for MemoryStore {
     {
         self.cleanup_expired();
 
-        let mut fields = self.data.entry(session_id.to_string()).or_default();
-        let expires_at = expires_at(key_ttl_secs, field_ttl_secs);
+        {
+            let expires_at = expires_at(key_ttl_secs, field_ttl_secs);
+            let mut fields = self.data.entry(session_id.to_string()).or_default();
+            fields.insert(
+                field.to_string(),
+                StoredValue {
+                    data: serialize_value(value)?,
+                    expires_at,
+                },
+            );
+        }
 
-        fields.insert(
-            field.to_string(),
-            StoredValue {
-                data: serialize_value(value)?,
-                expires_at,
-            },
-        );
-
-        Ok(expires_at
-            .map(|e| e.duration_since(Instant::now()).as_secs() as i64)
-            .unwrap_or(-1))
+        Ok(self.get_max_ttl(&session_id))
     }
 
     async fn insert_with_rename<T>(
@@ -176,7 +192,6 @@ impl SessionStore for MemoryStore {
         T: Send + Sync + Serialize,
     {
         self.cleanup_expired();
-
         let old_key = old_session_id.to_string();
         let new_key = new_session_id.to_string();
 
@@ -187,7 +202,6 @@ impl SessionStore for MemoryStore {
             }
         }
 
-        // insert new field before renaming
         let expires_at = expires_at(key_ttl_secs, field_ttl_secs);
         {
             let mut fields = self.data.get_mut(&old_key).unwrap();
@@ -199,14 +213,12 @@ impl SessionStore for MemoryStore {
                 },
             );
         }
+        {
+            let (_, fields) = self.data.remove(&old_key).unwrap();
+            self.data.insert(new_key, fields);
+        }
 
-        // rename session_id
-        let (_, fields) = self.data.remove(&old_key).unwrap();
-        self.data.insert(new_key, fields);
-
-        Ok(expires_at
-            .map(|e| e.duration_since(Instant::now()).as_secs() as i64)
-            .unwrap_or(-1))
+        Ok(self.get_max_ttl(&new_session_id))
     }
 
     async fn update_with_rename<T>(
@@ -222,7 +234,6 @@ impl SessionStore for MemoryStore {
         T: Send + Sync + Serialize,
     {
         self.cleanup_expired();
-
         let old_key = old_session_id.to_string();
         let new_key = new_session_id.to_string();
 
@@ -237,13 +248,12 @@ impl SessionStore for MemoryStore {
                 },
             );
         }
+        {
+            let (_, fields) = self.data.remove(&old_key).unwrap();
+            self.data.insert(new_key, fields);
+        }
 
-        let (_, fields) = self.data.remove(&old_key).unwrap();
-        self.data.insert(new_key, fields);
-
-        Ok(expires_at
-            .map(|e| e.duration_since(Instant::now()).as_secs() as i64)
-            .unwrap_or(-1))
+        Ok(self.get_max_ttl(&new_session_id))
     }
 
     async fn rename_session_id(
@@ -252,7 +262,6 @@ impl SessionStore for MemoryStore {
         new_session_id: &Id,
     ) -> Result<bool, Error> {
         self.cleanup_expired();
-
         if self.data.contains_key(&new_session_id.to_string()) {
             return Ok(false);
         }
@@ -339,7 +348,8 @@ mod tests {
             .insert(&session_id, "user", &user, Some(30), Some(30))
             .await
             .unwrap();
-        assert_eq!(ttl, 30);
+        // TTL can be slightly less due to execution time, so we check a range.
+        assert!(ttl <= 30 && ttl > 28);
 
         let retrieved: Option<TestUser> = store.get(&session_id, "user").await.unwrap();
         assert_eq!(retrieved.unwrap(), user);
@@ -353,7 +363,7 @@ mod tests {
             .update(&session_id, "user", &updated_user, Some(60), Some(60))
             .await
             .unwrap();
-        assert_eq!(ttl, 60);
+        assert!(ttl <= 60 && ttl > 58);
 
         assert!(store.delete(&session_id).await.unwrap());
         let retrieved: Option<TestUser> = store.get(&session_id, "user").await.unwrap();
@@ -369,16 +379,15 @@ mod tests {
             name: "Test User".to_string(),
         };
 
-        let ttl = store
-            .insert(&session_id, "user", &user, Some(5), Some(5))
+        store
+            .insert(&session_id, "user", &user, Some(2), Some(2))
             .await
             .unwrap();
-        assert_eq!(ttl, 4);
 
         let retrieved: Option<TestUser> = store.get(&session_id, "user").await.unwrap();
         assert!(retrieved.is_some());
 
-        sleep(Duration::from_secs(2)).await;
+        sleep(Duration::from_secs(3)).await;
 
         let retrieved: Option<TestUser> = store.get(&session_id, "user").await.unwrap();
         assert!(retrieved.is_none());

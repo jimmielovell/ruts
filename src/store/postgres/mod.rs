@@ -214,8 +214,8 @@ impl PostgresStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-        #[cfg(feature = "layered-store")] _meta: Option<crate::store::LayeredCacheMeta>,
-        #[cfg(not(feature = "layered-store"))] _meta: Option<std::marker::PhantomData<T>>,
+        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] hot_cache_ttl: Option<std::marker::PhantomData<T>>,
         query: String,
     ) -> Result<i64, Error>
     where
@@ -258,8 +258,8 @@ impl PostgresStore {
             .bind(expires);
 
         #[cfg(feature = "layered-store")]
-        if let Some(meta) = _meta {
-            qb = qb.bind(meta.behavior as i16).bind(meta.hot_cache_ttl);
+        if let Some(hot_cache_ttl) = hot_cache_ttl {
+            qb = qb.bind(hot_cache_ttl);
         }
 
         let row = qb.fetch_one(&self.pool).await?;
@@ -274,8 +274,10 @@ impl PostgresStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-        #[cfg(feature = "layered-store")] meta: Option<crate::store::LayeredCacheMeta>,
-        #[cfg(not(feature = "layered-store"))] meta: Option<std::marker::PhantomData<T>>,
+        #[cfg(feature = "layered-store")] hot_cache_ttl_secs: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] hot_cache_ttl_secs: Option<
+            std::marker::PhantomData<T>,
+        >,
         query: String,
     ) -> Result<i64, Error>
     where
@@ -293,10 +295,10 @@ impl PostgresStore {
                 r"delete from {table} where session_id = $1 and field = $2",
                 table = self.qualified_table_name
             ))
-                .bind(old_session_id.to_string())
-                . bind(field)
-                .execute(&mut *tx)
-                .await?;
+            .bind(old_session_id.to_string())
+            .bind(field)
+            .execute(&mut *tx)
+            .await?;
 
             let row = sqlx::query(&format!(
                 r"
@@ -334,10 +336,10 @@ impl PostgresStore {
             r"update {table} set session_id = $1 where session_id = $2",
             table = self.qualified_table_name
         ))
-            .bind(new_session_id.to_string())
-            .bind(old_session_id.to_string())
-            .execute(&mut *tx)
-            .await?;
+        .bind(new_session_id.to_string())
+        .bind(old_session_id.to_string())
+        .execute(&mut *tx)
+        .await?;
 
         let query = format!(
             r"
@@ -363,8 +365,8 @@ impl PostgresStore {
             .bind(expires);
 
         #[cfg(feature = "layered-store")]
-        if let Some(meta) = meta {
-            qb = qb.bind(meta.behavior as i16).bind(meta.hot_cache_ttl);
+        if let Some(hot_cache_ttl) = hot_cache_ttl_secs {
+            qb = qb.bind(hot_cache_ttl);
         }
 
         let row = qb.fetch_one(&mut *tx).await?;
@@ -475,7 +477,9 @@ impl SessionStore for PostgresStore {
             insert into {table} (session_id, field, value, expires_at)
             values ($1, $2, $3, $4)
             on conflict (session_id, field)
-            do update set value = excluded.value, expires_at = excluded.expires_at
+            do update set
+                value = excluded.value,
+                expires_at = excluded.expires_at
             ",
             table = self.qualified_table_name,
         );
@@ -541,7 +545,9 @@ impl SessionStore for PostgresStore {
             insert into {table} (session_id, field, value, expires_at)
             values ($1, $2, $3, $4)
             on conflict (session_id, field)
-            do update set value = excluded.value, expires_at = excluded.expires_at
+            do update set
+                value = excluded.value,
+                expires_at = excluded.expires_at
             ",
             table = self.qualified_table_name,
         );
@@ -611,18 +617,12 @@ impl crate::store::LayeredColdStore for PostgresStore {
     async fn get_all_with_meta(
         &self,
         session_id: &Id,
-    ) -> Result<
-        Option<(
-            SessionMap,
-            std::collections::HashMap<String, crate::store::LayeredCacheMeta>,
-        )>,
-        Error,
-    > {
+    ) -> Result<Option<(SessionMap, std::collections::HashMap<String, Option<i64>>)>, Error> {
         let query = format!(
-            "select field, value, expires_at, cache_behavior, hot_cache_ttl from {} where session_id = $1",
-            self.qualified_table_name
+            "select field, value, expires_at, hot_cache_ttl from {table} where session_id = $1",
+            table = self.qualified_table_name
         );
-        let rows: Vec<(String, Vec<u8>, Option<OffsetDateTime>, i16, Option<i64>)> =
+        let rows: Vec<(String, Vec<u8>, Option<OffsetDateTime>, Option<i64>)> =
             sqlx::query_as(&query)
                 .bind(session_id.to_string())
                 .fetch_all(&self.pool)
@@ -634,16 +634,10 @@ impl crate::store::LayeredColdStore for PostgresStore {
 
         let mut session_map = HashMap::with_capacity(rows.len());
         let mut meta_map = std::collections::HashMap::new();
-        for (field, value, expires_at, cache_behaviour, hot_cache_ttl) in rows {
+        for (field, value, expires_at, hot_cache_ttl) in rows {
             if !expires_at.is_some_and(|err| err < OffsetDateTime::now_utc()) {
                 session_map.insert(field.clone(), value);
-                meta_map.insert(
-                    field,
-                    crate::store::LayeredCacheMeta {
-                        hot_cache_ttl,
-                        behavior: cache_behaviour.into(),
-                    },
-                );
+                meta_map.insert(field, hot_cache_ttl);
             }
         }
 
@@ -661,12 +655,12 @@ impl crate::store::LayeredColdStore for PostgresStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>, // Not used in Postgres
-        meta: crate::store::LayeredCacheMeta,
+        hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error> {
         let query = format!(
             r"
-            insert into {table} (session_id, field, value, expires_at, cache_behavior, hot_cache_ttl)
-            values ($1, $2, $3, $4, $5, $6)
+            insert into {table} (session_id, field, value, expires_at, hot_cache_ttl)
+            values ($1, $2, $3, $4, $5)
             on conflict do nothing
             ",
             table = self.qualified_table_name,
@@ -677,7 +671,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
             value,
             key_ttl_secs,
             field_ttl_secs,
-            Some(meta),
+            hot_cache_ttl_secs,
             query,
         )
         .await
@@ -690,17 +684,16 @@ impl crate::store::LayeredColdStore for PostgresStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-        meta: crate::store::LayeredCacheMeta,
+        hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error> {
         let query = format!(
             r"
-            insert into {table} (session_id, field, value, expires_at, cache_behavior, hot_cache_ttl)
-            values ($1, $2, $3, $4, $5, $6)
+            insert into {table} (session_id, field, value, expires_at, hot_cache_ttl)
+            values ($1, $2, $3, $4, $5)
             on conflict (session_id, field)
             do update set
                 value = excluded.value,
                 expires_at = excluded.expires_at,
-                cache_behavior = excluded.cache_behavior,
                 hot_cache_ttl = excluded.hot_cache_ttl
             ",
             table = self.qualified_table_name,
@@ -711,7 +704,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
             value,
             key_ttl_secs,
             field_ttl_secs,
-            Some(meta),
+            hot_cache_ttl_secs,
             query,
         )
         .await
@@ -725,12 +718,12 @@ impl crate::store::LayeredColdStore for PostgresStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-        meta: crate::store::LayeredCacheMeta,
+        hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error> {
         let query = format!(
             r"
-            insert into {table} (session_id, field, value, expires_at, cache_behavior, hot_cache_ttl)
-            values ($1, $2, $3, $4, $5, $6)
+            insert into {table} (session_id, field, value, expires_at, hot_cache_ttl)
+            values ($1, $2, $3, $4, $5)
             on conflict do nothing
             returning session_id
             ",
@@ -743,7 +736,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
             value,
             key_ttl_secs,
             field_ttl_secs,
-            Some(meta),
+            hot_cache_ttl_secs,
             query,
         )
         .await
@@ -757,17 +750,16 @@ impl crate::store::LayeredColdStore for PostgresStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
-        meta: crate::store::LayeredCacheMeta,
+        hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error> {
         let query = format!(
             r"
-            insert into {table} (session_id, field, value, expires_at, cache_behavior, hot_cache_ttl)
-            values ($1, $2, $3, $4, $5, $6)
+            insert into {table} (session_id, field, value, expires_at, hot_cache_ttl)
+            values ($1, $2, $3, $4, $5)
             on conflict (session_id, field)
             do update set
                 value = excluded.value,
                 expires_at = excluded.expires_at,
-                cache_behavior = excluded.cache_behavior,
                 hot_cache_ttl = excluded.hot_cache_ttl
             ",
             table = self.qualified_table_name,
@@ -779,9 +771,308 @@ impl crate::store::LayeredColdStore for PostgresStore {
             value,
             key_ttl_secs,
             field_ttl_secs,
-            Some(meta),
+            hot_cache_ttl_secs,
             query,
         )
         .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+    use sqlx::PgPool;
+    use std::sync::Arc;
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+    struct TestData {
+        value: String,
+    }
+
+    async fn setup_store() -> Arc<PostgresStore> {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
+        let pool = PgPool::connect(&database_url).await.unwrap();
+
+        // Clean up table before each test run
+        sqlx::query("drop table if exists sessions")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let store = PostgresStoreBuilder::new(pool.clone())
+            .build()
+            .await
+            .unwrap();
+        Arc::new(store)
+    }
+    
+    #[tokio::test]
+    async fn test_insert_and_get() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "field1";
+        let value = TestData {
+            value: "hello".into(),
+        };
+
+        let ttl = store
+            .insert(&session_id, field, &value, Some(60), Some(60))
+            .await
+            .unwrap();
+        assert!(ttl > 55);
+
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert_eq!(fetched, Some(value.clone()));
+
+        // Insert again shouldn't overwrite
+        store
+            .insert(
+                &session_id,
+                field,
+                &TestData { value: "x".into() },
+                Some(60),
+                Some(60),
+            )
+            .await
+            .unwrap();
+        let fetched2: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert_eq!(fetched2, Some(value));
+    }
+
+    #[tokio::test]
+    async fn test_update_overwrites() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "field_update";
+        let value = TestData {
+            value: "initial".into(),
+        };
+        let updated_value = TestData {
+            value: "updated".into(),
+        };
+
+        store
+            .insert(&session_id, field, &value, Some(60), Some(60))
+            .await
+            .unwrap();
+        store
+            .update(&session_id, field, &updated_value, Some(60), Some(60))
+            .await
+            .unwrap();
+
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert_eq!(fetched, Some(updated_value));
+    }
+    
+    #[tokio::test]
+    async fn test_ttl_zero_removes() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "ttl_zero";
+
+        // Field TTL = 0 triggers removal
+        let ttl = store
+            .insert(
+                &session_id,
+                field,
+                &TestData { value: "x".into() },
+                Some(60),
+                Some(0),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ttl, -2);
+
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert!(fetched.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_ttl_negative_persists() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "ttl_neg";
+
+        let ttl = store
+            .insert(
+                &session_id,
+                field,
+                &TestData { value: "y".into() },
+                Some(60),
+                Some(-1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ttl, -1);
+
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert!(fetched.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_expire_method() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "expire_field";
+        store
+            .insert(
+                &session_id,
+                field,
+                &TestData {
+                    value: "temp".into(),
+                },
+                Some(2),
+                Some(2),
+            )
+            .await
+            .unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert!(fetched.is_none());
+    }
+    
+    #[tokio::test]
+    async fn test_remove_and_delete() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "to_remove";
+
+        store
+            .insert(
+                &session_id,
+                field,
+                &TestData {
+                    value: "bye".into(),
+                },
+                Some(60),
+                Some(60),
+            )
+            .await
+            .unwrap();
+        let ttl = store.remove(&session_id, field).await.unwrap();
+        assert_eq!(ttl, -2);
+
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert!(fetched.is_none());
+
+        store.delete(&session_id).await.unwrap();
+        let all = store.get_all(&session_id).await.unwrap();
+        assert!(all.is_none());
+    }
+    
+    #[tokio::test]
+    async fn test_insert_with_rename() {
+        let store = setup_store().await;
+        let old_id = Id::default();
+        let new_id = Id::default();
+        let field = "rename_field";
+        let value = TestData {
+            value: "rename".into(),
+        };
+
+        store
+            .insert_with_rename(&old_id, &new_id, field, &value, Some(60), Some(60))
+            .await
+            .unwrap();
+
+        assert!(
+            store
+                .get::<TestData>(&old_id, field)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store.get::<TestData>(&new_id, field).await.unwrap(),
+            Some(value)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rename_to_existing_session() {
+        let store = setup_store().await;
+        let old_id = Id::default();
+        let new_id = Id::default();
+        let field_old = "f1";
+        let field_new = "f2";
+
+        store
+            .insert(
+                &old_id,
+                field_old,
+                &TestData { value: "v1".into() },
+                Some(60),
+                Some(60),
+            )
+            .await
+            .unwrap();
+        store
+            .insert(
+                &new_id,
+                field_new,
+                &TestData { value: "v2".into() },
+                Some(60),
+                Some(60),
+            )
+            .await
+            .unwrap();
+
+        store
+            .update_with_rename(
+                &old_id,
+                &new_id,
+                field_old,
+                &TestData {
+                    value: "v1_upd".into(),
+                },
+                Some(60),
+                Some(60),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            store
+                .get::<TestData>(&old_id, field_old)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let fetched_new: Option<TestData> = store.get(&new_id, field_old).await.unwrap();
+        assert_eq!(fetched_new.unwrap().value, "v1_upd");
+    }
+    
+    #[tokio::test]
+    async fn test_get_all_multiple_fields() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+
+        store
+            .insert(
+                &session_id,
+                "f1",
+                &TestData { value: "v1".into() },
+                Some(60),
+                Some(60),
+            )
+            .await
+            .unwrap();
+        store
+            .insert(
+                &session_id,
+                "f2",
+                &TestData { value: "v2".into() },
+                Some(60),
+                Some(60),
+            )
+            .await
+            .unwrap();
+
+        let all = store.get_all(&session_id).await.unwrap().unwrap();
+        assert_eq!(all.len(), 2);
+    }
+}
+

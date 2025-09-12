@@ -162,24 +162,9 @@ let store = PostgresStoreBuilder::new(pool)
 
 A composite store that layers a fast, ephemeral "hot" cache (like Redis) on top of a slower, persistent "cold" store (like Postgres). It is designed for scenarios where sessions can have long lifespans but should only occupy expensive cache memory when actively being used thus balancing performance and durability.
 
-
-#### Core Strategies
-
-- **Cache-Aside Reads**: On a read operation (`get`, `get_all`), the store first checks the hot cache. If the data is present, it is returned immediately. If not, the store queries the cold store, and if the data is found, it "warms" the hot cache by populating it with the data before returning it if during `insert`/`update` `LayeredWriteStrategy::WriteThrough`(default) was the strategy used.
-
-- **Write-Through (Default)**: By default, write operations (`insert`, `update`)
-  are written to both the hot and cold stores simultaneously. This guarantees
-  data consistency.
-
 #### Fine-Grained Write Control
 
-The default write-through behavior can be overridden on a per-call basis
-using the `LayeredWriteStrategy`. This gives you precise control over
-where your session data is stored, This allows you to:
-
-- Write to the hot cache only.
-- Write to the cold store only.
-- Write through to both, but with a specific, shorter TTL for the hot cache.
+The default write-through behavior can be overridden on a per-call basis using the `LayeredWriteStrategy`. This gives you precise control over how your data is store.
 
 ```rust
 use ruts::store::layered::LayeredWriteStrategy;
@@ -224,7 +209,7 @@ To use [`MessagePack`](https://crates.io/crates/rmp-serde) instead of the defaul
 
 ```toml
 [dependencies]
-ruts = { version = "0.6.4", default-features = false, features = ["axum", "redis-store", "messagepack"] }
+ruts = { version = "0.6.4", default-features = false, features = ["axum", "messagepack"] }
 ```
 
 ### Cookie Configuration

@@ -3,7 +3,6 @@
 //! To run this example, you need Redis and Postgres running, and the following
 //! environment variables set:
 //! `DATABASE_URL=postgres://user:password@localhost:5432/database`
-//! `REDIS_URL=redis://127.0.0.1/`
 
 use axum::routing::get;
 use axum::{Json, Router};
@@ -15,7 +14,6 @@ use ruts::store::redis::RedisStore;
 use ruts::{CookieOptions, Session, SessionLayer};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use tower_cookies::CookieManagerLayer;
 
@@ -27,35 +25,17 @@ struct User {
     name: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-enum Theme {
-    Light,
-    #[default]
-    Dark,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-struct AppSession {
-    user: Option<User>,
-    ip: Option<IpAddr>,
-    theme: Option<Theme>,
-}
-
 fn routes() -> Router<()> {
     Router::new()
-        // default write-through strategy.
         .route(
             "/insert_default",
             get(|session: LayeredSession| async move {
-                let app_session = AppSession {
-                    user: Some(User {
-                        id: 1,
-                        name: "Default User".into(),
-                    }),
-                    ..Default::default()
+                let user = User {
+                    id: 1,
+                    name: "Default User".into(),
                 };
                 // This will be written to both Redis and Postgres.
-                session.insert("app", &app_session, None).await.unwrap();
+                session.insert("app", &user, None).await.unwrap();
             }),
         )
         // cap the TTL on the hot cache.
@@ -69,8 +49,7 @@ fn routes() -> Router<()> {
                 let long_term_expiry = 60 * 60 * 24 * 30; // 1 month in Postgres
                 let short_term_hot_cache_expiry = 60; // 1 minute in Redis
 
-                let strategy =
-                    LayeredWriteStrategy::WriteThrough(user, short_term_hot_cache_expiry);
+                let strategy = LayeredWriteStrategy(user, short_term_hot_cache_expiry);
 
                 session
                     .update("user", &strategy, Some(long_term_expiry))
@@ -86,17 +65,15 @@ fn routes() -> Router<()> {
                     id: 3,
                     name: "Cold Only User".into(),
                 };
-                let strategy = LayeredWriteStrategy::ColdCache(user);
-
+                let strategy = LayeredWriteStrategy(user, 0);
                 // This will be written to Postgres, but NOT to Redis.
                 session.update("user", &strategy, None).await.unwrap();
             }),
         )
-        // test cache-aside behavior.
         .route(
             "/get",
             get(|session: LayeredSession| async move {
-                let app_session: Option<AppSession> = session
+                let app_session: Option<User> = session
                     .get("app")
                     .await
                     .expect("Failed to get session data");
@@ -111,7 +88,6 @@ fn routes() -> Router<()> {
 #[tokio::main]
 async fn main() {
     // 1. Set up Redis client (Hot Cache)
-    let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
     let redis_client = Client::default();
     redis_client
         .init()
@@ -137,7 +113,7 @@ async fn main() {
     let cookie_options = CookieOptions::build()
         .name("session")
         .http_only(true)
-        .same_site(ruts::cookie::SameSite::Lax)
+        .same_site(cookie::SameSite::Lax)
         .secure(false) // Use `true` in production
         .max_age(60 * 60) // 1 hour
         .path("/");
@@ -148,7 +124,7 @@ async fn main() {
         .layer(session_layer)
         .layer(CookieManagerLayer::new());
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:9002").await.unwrap();
-    println!("Listening on http://0.0.0.0:9002");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:9000").await.unwrap();
+    println!("Listening on http://0.0.0.0:9000");
     axum::serve(listener, app).await.unwrap();
 }

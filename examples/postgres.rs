@@ -1,7 +1,5 @@
 //! This example requires the `postgres-store` feature.
 //!
-//! It demonstrates how to set up and use the `PostgresStore`.
-//!
 //! To run this example, you need a Postgres database running and a `DATABASE_URL`
 //! environment variable set, for example:
 //! `DATABASE_URL=postgres://user:password@localhost:5432/database`

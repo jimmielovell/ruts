@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.4] - 2025-09-12
+
+### Fixed
+
+- Corrected session TTL handling.
+
 ## [0.6.1] - 2025-09-06
 
 ### Fixed
