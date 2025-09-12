@@ -10,11 +10,13 @@ use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize
 use fred::clients::Pool;
 use fred::interfaces::{HashesInterface, KeysInterface};
 use fred::prelude::LuaInterface;
-use fred::types::Value;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::{fmt::Debug, sync::Arc};
 use tokio::sync::OnceCell;
+
+#[cfg(feature = "layered-store")]
+use fred::types::Value;
 
 /// A redis session store implementation.
 ///
@@ -371,7 +373,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .insert_with_rename(&old_sid, &new_sid, "g", &"bar", None, None)
+            .insert_with_rename(&old_sid, &new_sid, "g", &"bar", Some(5), None)
             .await
             .unwrap();
 

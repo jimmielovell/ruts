@@ -64,14 +64,14 @@
 //! ## Basic Operations
 //!
 //! ```rust,no_run
-//! # use ruts::Session;
-//! # use ruts::store::SessionMap;
-//! # use ruts::store::memory::MemoryStore;
+//! use ruts::Session;
+//! use ruts::store::SessionMap;
+//! use ruts::store::memory::MemoryStore;
 //!
-//! # #[derive(serde::Deserialize)]
-//! # struct User;
+//! #[derive(serde::Deserialize)]
+//! struct User;
 //!
-//! # async fn handler(session: Session<MemoryStore>) {
+//! async fn handler(session: Session<MemoryStore>) {
 //! // Get a single field's data
 //! let value: Option<User> = session.get("key").await.unwrap();
 //!
@@ -121,12 +121,12 @@
 //! - Redis 7.4 or later (required for field-level expiration using `HEXPIRE`).
 //!
 //! ```rust,no_run
-//! # use std::sync::Arc;
-//! # use fred::clients::Client;
-//! # use ruts::store::redis::RedisStore;
+//! use std::sync::Arc;
+//! use fred::clients::Client;
+//! use ruts::store::redis::RedisStore;
 //!
-//! # let fred_client_or_pool = Client::default();
-//! # let store = RedisStore::new(Arc::new(fred_client_or_pool));
+//! let fred_client_or_pool = Client::default();
+//! let store = RedisStore::new(Arc::new(fred_client_or_pool));
 //! ```
 //!
 //! ## Postgres
@@ -137,12 +137,12 @@
 //! - The `postgres-store` feature.
 //!
 //! ```rust,no_run
-//! # use std::sync::Arc;
-//! # use sqlx::PgPool;
-//! # use ruts::store::postgres::PostgresStoreBuilder;
+//! use std::sync::Arc;
+//! use sqlx::PgPool;
+//! use ruts::store::postgres::PostgresStoreBuilder;
 //!
 //! #[tokio::main]
-//! # async fn main() {
+//! async fn main() {
 //!      // 1. Set up your database connection pool.
 //!      let database_url = std::env::var("DATABASE_URL")
 //!          .expect("DATABASE_URL must be set");
@@ -176,12 +176,12 @@
 //! how long your session stays in the hot cache.
 //!
 //! ```rust,no_run
-//! # use ruts::store::redis::RedisStore;
-//! # use ruts::store::postgres::PostgresStore;
-//! # use fred::clients::Client;
-//! # use sqlx::PgPool;
-//! # use ruts::store::layered::{LayeredStore, LayeredWriteStrategy};
-//! # use ruts::Session;
+//! use ruts::store::redis::RedisStore;
+//! use ruts::store::postgres::PostgresStore;
+//! use fred::clients::Client;
+//! use sqlx::PgPool;
+//! use ruts::store::layered::{LayeredStore, LayeredWriteStrategy};
+//! use ruts::Session;
 //!
 //! // Define a type alias for your specific layered store setup
 //! type MyLayeredStore = LayeredStore<RedisStore<Client>, PostgresStore>;
@@ -226,8 +226,8 @@
 //! ## Cookie Configuration
 //!
 //! ```rust
-//! # use ruts::CookieOptions;
-//! # use ruts::cookie::SameSite;
+//! use ruts::CookieOptions;
+//! use ruts::cookie::SameSite;
 //! let cookie_options = CookieOptions::build()
 //!     .name("my_session_cookie")
 //!     .http_only(true)
@@ -244,13 +244,13 @@
 //! The `SessionLayer` must be applied **before** the `CookieManagerLayer`:
 //!
 //! ```rust,no_run
-//! # use axum::Router;
-//! # use ruts::{SessionLayer, store::memory::MemoryStore};
-//! # use tower_cookies::CookieManagerLayer;
-//! # use std::sync::Arc;
+//! use axum::Router;
+//! use ruts::{SessionLayer, store::memory::MemoryStore};
+//! use tower_cookies::CookieManagerLayer;
+//! use std::sync::Arc;
 //!
-//! # let app: Router<()> = Router::new();
-//! # let session_layer = SessionLayer::new(Arc::new(MemoryStore::new()));
+//! let app: Router<()> = Router::new();
+//! let session_layer = SessionLayer::new(Arc::new(MemoryStore::new()));
 //!
 //! // Correct order
 //! let router = app

@@ -54,7 +54,7 @@ impl PostgresStoreBuilder {
     pub async fn build(self) -> Result<PostgresStore, sqlx::Error> {
         let qualified_table_name = if let Some(schema) = &self.schema_name {
             // Quoted to handle special characters.
-            sqlx::query(&format!("create schema if not exists \"{}\"", schema))
+            sqlx::query(&format!("create schema if not exists \"{schema}\"",))
                 .execute(&self.pool)
                 .await?;
             format!("\"{}\".\"{}\"", schema, self.table_name)
@@ -69,7 +69,6 @@ impl PostgresStoreBuilder {
                 field text not null,
                 value bytea not null,
                 expires_at timestamptz,
-                cache_behavior smallint,
                 hot_cache_ttl bigint,
                 primary key (session_id, field)
             );
@@ -92,8 +91,7 @@ impl PostgresStoreBuilder {
 
         let pool_clone = self.pool.clone();
         let delete_query = format!(
-            "delete from {} where expires_at is not null and expires_at < now()",
-            qualified_table_name
+            "delete from {qualified_table_name} where expires_at is not null and expires_at < now()",
         );
 
         let cleanup_interval = self
