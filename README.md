@@ -6,6 +6,8 @@
 [![Rust](https://img.shields.io/badge/rust-1.85.0%2B-blue.svg?maxAge=3600)](
 https://github.com/jimmielovell/ruts)
 
+## Quick Start
+
 Here's a basic example with [Axum](https://docs.rs/axum/latest/axum/) and the `RedisStore`. This requires the features `axum`(enabled by default) and `redis-store` to be enabled.
 
 ```rust
