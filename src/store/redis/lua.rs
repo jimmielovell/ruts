@@ -120,9 +120,6 @@ pub(crate) static UPDATE_SCRIPT: &str = r#"
 "#;
 
 pub(crate) static UPDATE_MANY_SCRIPT: &str = r#"
-    -- KEYS[1]: session key
-    -- ARGV: field, value, expiry, field, value, expiry, ...
-
     local key = KEYS[1]
 
     if (#ARGV % 3) ~= 0 then
@@ -231,7 +228,7 @@ pub(crate) static INSERT_WITH_RENAME_SCRIPT: &str = r#"
                 return -1
             end
 
-            redis.call('EXPIRE', key, key_ttl_secs)
+            redis.call('EXPIRE', new_key, key_ttl_secs)
             return key_ttl_secs
         end
 
@@ -271,7 +268,6 @@ pub(crate) static UPDATE_WITH_RENAME_SCRIPT: &str = r#"
         redis.call('RENAMENX', old_key, new_key)
     end
 
-    local key_existed = redis.call('EXISTS', key)
     redis.call('HSET', new_key, field, value)
 
     local field_is_persistent = false
@@ -295,7 +291,7 @@ pub(crate) static UPDATE_WITH_RENAME_SCRIPT: &str = r#"
             return -1
         end
 
-        redis.call('EXPIRE', key, key_ttl_secs)
+        redis.call('EXPIRE', new_key, key_ttl_secs)
         return key_ttl_secs
     end
 

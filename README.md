@@ -12,7 +12,7 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruts = "0.6.4"
+ruts = "0.6.5"
 ```
 
 ## Quick Start
@@ -75,6 +75,10 @@ async fn handler(session: Session<RedisStore<Client>>) -> String {
 ### Basic Operations
 
 ```rust
+use ruts::Session;
+use ruts::store::SessionMap;
+use ruts::store::memory::MemoryStore;
+
 [derive(serde::Deserialize)]
 struct User;
 
@@ -209,7 +213,7 @@ To use [`MessagePack`](https://crates.io/crates/rmp-serde) instead of the defaul
 
 ```toml
 [dependencies]
-ruts = { version = "0.6.4", default-features = false, features = ["axum", "messagepack"] }
+ruts = { version = "0.6.5", default-features = false, features = ["axum", "messagepack"] }
 ```
 
 ### Cookie Configuration
