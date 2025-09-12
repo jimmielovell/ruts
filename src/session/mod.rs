@@ -167,7 +167,7 @@ where
             Some(new_id) => {
                 let max_age = self.inner
                     .store
-                    .insert_with_rename(&current_id, &new_id, field, value, Some(key_ttl_secs), field_ttl_secs)
+                    .insert_with_rename(&current_id, &new_id, field, value, Some(key_ttl_secs), field_ttl_secs.or(Some(key_ttl_secs)))
                     .await
                     .map_err(|err| {
                         tracing::error!(err = %err, "failed to insert field-value with rename to session store");
@@ -186,7 +186,7 @@ where
                     field,
                     value,
                     Some(key_ttl_secs),
-                    field_ttl_secs,
+                    field_ttl_secs.or(Some(key_ttl_secs)),
                 )
                 .await
                 .map_err(|err| {
@@ -270,7 +270,7 @@ where
             Some(new_id) => {
                 let max_age = self.inner
                     .store
-                    .update_with_rename(&current_id, &new_id, field, value, Some(key_ttl_secs), field_ttl_secs)
+                    .update_with_rename(&current_id, &new_id, field, value, Some(key_ttl_secs), field_ttl_secs.or(Some(key_ttl_secs)))
                     .await
                     .map_err(|err| {
                         tracing::error!(err = %err, "failed to update field-value with rename in session store");
@@ -290,7 +290,7 @@ where
                     field,
                     value,
                     Some(key_ttl_secs),
-                    field_ttl_secs,
+                    field_ttl_secs.or(Some(key_ttl_secs)),
                 )
                 .await
                 .map_err(|err| {
@@ -595,9 +595,9 @@ impl<T: SessionStore> Inner<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use serde::Deserialize;
     use crate::store::memory::MemoryStore;
+    use serde::Deserialize;
+    use std::sync::Arc;
 
     #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
     struct TestUser {
