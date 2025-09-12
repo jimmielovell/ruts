@@ -805,7 +805,7 @@ mod tests {
             .unwrap();
         Arc::new(store)
     }
-    
+
     #[tokio::test]
     async fn test_insert_and_get() {
         let store = setup_store().await;
@@ -863,7 +863,7 @@ mod tests {
         let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
         assert_eq!(fetched, Some(updated_value));
     }
-    
+
     #[tokio::test]
     async fn test_ttl_zero_removes() {
         let store = setup_store().await;
@@ -931,7 +931,7 @@ mod tests {
         let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
         assert!(fetched.is_none());
     }
-    
+
     #[tokio::test]
     async fn test_remove_and_delete() {
         let store = setup_store().await;
@@ -960,7 +960,7 @@ mod tests {
         let all = store.get_all(&session_id).await.unwrap();
         assert!(all.is_none());
     }
-    
+
     #[tokio::test]
     async fn test_insert_with_rename() {
         let store = setup_store().await;
@@ -1042,7 +1042,7 @@ mod tests {
         let fetched_new: Option<TestData> = store.get(&new_id, field_old).await.unwrap();
         assert_eq!(fetched_new.unwrap().value, "v1_upd");
     }
-    
+
     #[tokio::test]
     async fn test_get_all_multiple_fields() {
         let store = setup_store().await;
@@ -1073,4 +1073,3 @@ mod tests {
         assert_eq!(all.len(), 2);
     }
 }
-

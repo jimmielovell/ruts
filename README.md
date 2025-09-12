@@ -6,14 +6,6 @@
 [![Rust](https://img.shields.io/badge/rust-1.85.0%2B-blue.svg?maxAge=3600)](
 https://github.com/jimmielovell/ruts)
 
-## Installation
-
-Add the following to your `Cargo.toml`:
-
-```toml
-ruts = "0.6.6"
-```
-
 ## Quick Start
 
 Here's a basic example with [Axum](https://docs.rs/axum/latest/axum/) and the `RedisStore`. This requires the features `axum`(enabled by default) and `redis-store` to be enabled.
@@ -212,7 +204,7 @@ To use [`MessagePack`](https://crates.io/crates/rmp-serde) instead of the defaul
 
 ```toml
 [dependencies]
-ruts = { version = "0.6.6", default-features = false, features = ["axum", "messagepack"] }
+ruts = { version = "0.6.7", default-features = false, features = ["axum", "messagepack"] }
 ```
 
 ### Cookie Configuration

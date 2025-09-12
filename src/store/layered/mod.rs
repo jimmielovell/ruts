@@ -370,18 +370,17 @@ where
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     #![cfg(all(feature = "redis-store", feature = "postgres-store"))]
 
-    use fred::{clients::Client, interfaces::*};
     use super::*;
-    use sqlx::PgPool;
-    use std::{sync::Arc, time::Duration};
-    use serde::Deserialize;
     use crate::store::postgres::{PostgresStore, PostgresStoreBuilder};
     use crate::store::redis::RedisStore;
+    use fred::{clients::Client, interfaces::*};
+    use serde::Deserialize;
+    use sqlx::PgPool;
+    use std::{sync::Arc, time::Duration};
 
     #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
     struct TestUser {

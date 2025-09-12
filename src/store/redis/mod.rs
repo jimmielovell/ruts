@@ -299,9 +299,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use fred::clients::Client;
     use fred::prelude::ClientLike;
-    use super::*;
     use std::sync::Arc;
     use tokio::time::{Duration, sleep};
 
@@ -434,7 +434,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_many() {
         use crate::store::{LayeredHotStore, serialize_value};
-        
+
         let store = setup_store().await;
         let sid = Id::default();
 
@@ -456,4 +456,3 @@ mod tests {
         assert_eq!(v.unwrap(), "2");
     }
 }
-
