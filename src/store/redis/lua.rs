@@ -146,7 +146,6 @@ pub(crate) static UPDATE_MANY_SCRIPT: &str = r#"
         end
     end
 
-    local key_existed = redis.call('EXISTS', key)
     local updated = redis.call('HSET', unpack(hset_args))
 
     for i = 1, #ARGV, 3 do
@@ -160,15 +159,6 @@ pub(crate) static UPDATE_MANY_SCRIPT: &str = r#"
     if has_persistent_field then
         redis.call('PERSIST', key)
         return -1
-    end
-
-    if key_existed == 0 then
-        if key_ttl_secs and key_ttl_secs == -2 then
-            return -1
-        end
-
-        redis.call('EXPIRE', key, key_ttl_secs)
-        return key_ttl_secs
     end
 
     local ttl = redis.call('TTL', key)
