@@ -1,3 +1,7 @@
+//! This example requires the `redis-store` feature.
+//!
+//! To run this example, you need a Redis server running.
+
 use axum::routing::get;
 use axum::{Json, Router};
 use fred::clients::Client;
@@ -5,7 +9,6 @@ use fred::interfaces::ClientLike;
 use ruts::store::redis::RedisStore;
 use ruts::{CookieOptions, Session, SessionLayer};
 use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use tower_cookies::CookieManagerLayer;
 
@@ -27,7 +30,6 @@ enum Theme {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct AppSession {
     user: Option<User>,
-    ip: Option<IpAddr>,
     theme: Option<Theme>,
 }
 
@@ -41,7 +43,6 @@ fn routes() -> Router {
                         id: 34895634,
                         name: String::from("John Doe"),
                     }),
-                    ip: Some(IpAddr::from(Ipv4Addr::new(192, 168, 0, 1))),
                     theme: Some(Theme::Dark),
                 };
 
@@ -61,7 +62,6 @@ fn routes() -> Router {
                         id: 34895634,
                         name: String::from("John Doe"),
                     }),
-                    ip: Some(IpAddr::from(Ipv4Addr::new(192, 168, 0, 1))),
                     theme: Some(Theme::Dark),
                 };
 

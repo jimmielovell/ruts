@@ -8,7 +8,7 @@
 //! Here's a basic example with [Axum](https://docs.rs/axum/latest/axum/) and the `RedisStore`.
 //! This requires the `axum` (enabled by default) and `redis-store` features.
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use axum::{Router, routing::get};
 //! use ruts::{Session, SessionLayer, CookieOptions};
 //! use ruts::store::redis::RedisStore;
@@ -31,7 +31,7 @@
 //!     let cookie_options = CookieOptions::build()
 //!         .name("session")
 //!         .http_only(true)
-//!         .same_site(ruts::cookie::SameSite::Lax)
+//!         .same_site(cookie::SameSite::Lax)
 //!         .secure(true)
 //!         .max_age(3600) // 1 hour
 //!         .path("/");
@@ -120,13 +120,13 @@
 //! - The `redis-store` feature.
 //! - Redis 7.4 or later (required for field-level expiration using `HEXPIRE`).
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! # use std::sync::Arc;
 //! # use fred::clients::Client;
-//! use ruts::store::redis::RedisStore;
+//! # use ruts::store::redis::RedisStore;
 //!
 //! # let fred_client_or_pool = Client::default();
-//! let store = RedisStore::new(Arc::new(fred_client_or_pool));
+//! # let store = RedisStore::new(Arc::new(fred_client_or_pool));
 //! ```
 //!
 //! ## Postgres
@@ -136,69 +136,52 @@
 //!
 //! - The `postgres-store` feature.
 //!
-//! ```rust,ignore
-//! use std::sync::Arc;
-//! use sqlx::PgPool;
-//! use ruts::store::postgres::PostgresStoreBuilder;
+//! ```rust,no_run
+//! # use std::sync::Arc;
+//! # use sqlx::PgPool;
+//! # use ruts::store::postgres::PostgresStoreBuilder;
 //!
-//! # async {
-//! // 1. Set up your database connection pool.
-//! let database_url = std::env::var("DATABASE_URL")
-//!     .expect("DATABASE_URL must be set");
-//! let pool = PgPool::connect(&database_url).await.unwrap();
+//! #[tokio::main]
+//! # async fn main() {
+//!      // 1. Set up your database connection pool.
+//!      let database_url = std::env::var("DATABASE_URL")
+//!          .expect("DATABASE_URL must be set");
+//!      let pool = PgPool::connect(&database_url).await.unwrap();
 //!
-//! // 2. Create the session store using the builder.
-//! // This will also run a migration to create the `sessions` table.
-//! let store = PostgresStoreBuilder::new(pool)
-//!     // Optionally, you can customize the schema and table name
-//!     // .schema_name("my_app")
-//!     // .table_name("user_sessions")
-//!     .build()
-//!     .await
-//!     .unwrap();
-//! # };
+//!      // 2. Create the session store using the builder.
+//!      // This will also run a migration to create the `sessions` table.
+//!      let store = PostgresStoreBuilder::new(pool)
+//!          // Optionally, you can customize the schema and table name
+//!          // .schema_name("my_app")
+//!          // .table_name("user_sessions")
+//!          .build()
+//!          .await
+//!          .unwrap();
+//! # }
 //! ```
 //!
 //! ## LayeredStore
 //!
-//! (Requires the `layered-store`, `redis-store`, and `postgres-store` features)
+//! **Note**: Requires the `layered-store`, `redis-store`, and `postgres-store` features
 //!
 //! A composite store that layers a fast, ephemeral "hot" cache (like Redis) on top of a
 //! slower, persistent "cold" store (like Postgres). It is designed for scenarios where
 //! sessions can have long lifespans but should only occupy expensive cache memory when
 //! actively being used, thus balancing performance and durability.
 //!
-//!
-//! ### Core Strategies
-//!
-//! - **Cache-Aside Reads**: On a read operation (`get`, `get_all`), the store first
-//!   checks the hot cache. If the data is present, it is returned immediately. If not,
-//!   the store queries the cold store, and if the data is found, it "warms" the hot
-//!   cache by populating it with the data before returning it (unless the write
-//!   strategy was `ColdCacheOnly`).
-//!
-//! - **Write-Through (Default)**: By default, write operations (`insert`, `update`)
-//!   are written to both the hot and cold stores simultaneously to guarantee data
-//!   consistency.
-//!
 //! ### Fine-Grained Write Control
 //!
 //! The default write-through behavior can be overridden on a per-call basis
 //! using the `LayeredWriteStrategy`. This gives you precise control over
-//! where your session data is stored, allowing you to:
+//! how long your session stays in the hot cache.
 //!
-//! - Write to the hot cache only.
-//! - Write to the cold store only.
-//! - Write through to both, but with a specific, shorter TTL for the hot cache.
-//!
-//!
-//! ```rust,ignore
-//! use ruts::store::redis::RedisStore;
-//! use ruts::store::postgres::PostgresStore;
-//! use fred::clients::Client;
-//! use sqlx::PgPool;
-//! use ruts::store::layered::{LayeredStore, LayeredWriteStrategy};
-//! use ruts::Session;
+//! ```rust,no_run
+//! # use ruts::store::redis::RedisStore;
+//! # use ruts::store::postgres::PostgresStore;
+//! # use fred::clients::Client;
+//! # use sqlx::PgPool;
+//! # use ruts::store::layered::{LayeredStore, LayeredWriteStrategy};
+//! # use ruts::Session;
 //!
 //! // Define a type alias for your specific layered store setup
 //! type MyLayeredStore = LayeredStore<RedisStore<Client>, PostgresStore>;
@@ -216,15 +199,14 @@
 //!     // However, we only want it to live in the hot cache (Redis) for 1 hour.
 //!     let short_term_hot_cache_expiry = 60 * 60;
 //!
-//!     // The value is wrapped in the strategy enum to control write behavior.
-//!     let strategy = LayeredWriteStrategy::WriteThrough(
+//!     let strategy = LayeredWriteStrategy(
 //!         user,
-//!         Some(short_term_hot_cache_expiry),
+//!         short_term_hot_cache_expiry,
 //!     );
 //!
 //!     // The cold store (Postgres) will get the long-term expiry,
 //!     // but the hot store (Redis) will be capped at the shorter TTL.
-//!     session.update("user", &strategy, long_term_expiry, None).await.unwrap();
+//!     session.update("user", &strategy, None).await.unwrap();
 //! }
 //! ```
 //!
@@ -238,7 +220,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ruts = { version = "0.6.1", default-features = false, features = ["axum", "redis-store", "messagepack"] }
+//! ruts = { version = "0.6.1", default-features = false, features = ["axum", "messagepack"] }
 //! ```
 //!
 //! ## Cookie Configuration
@@ -261,13 +243,13 @@
 //! ## Middleware Ordering
 //! The `SessionLayer` must be applied **before** the `CookieManagerLayer`:
 //!
-//! ```rust
+//! ```rust,no_run
 //! # use axum::Router;
 //! # use ruts::{SessionLayer, store::memory::MemoryStore};
 //! # use tower_cookies::CookieManagerLayer;
 //! # use std::sync::Arc;
 //!
-//! # let app = Router::new();
+//! # let app: Router<()> = Router::new();
 //! # let session_layer = SessionLayer::new(Arc::new(MemoryStore::new()));
 //!
 //! // Correct order
