@@ -11,7 +11,6 @@ https://github.com/jimmielovell/ruts)
 Add the following to your `Cargo.toml`:
 
 ```toml
-[dependencies]
 ruts = "0.6.6"
 ```
 
