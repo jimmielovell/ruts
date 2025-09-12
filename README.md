@@ -12,7 +12,7 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruts = "0.6.5"
+ruts = "0.6.6"
 ```
 
 ## Quick Start
@@ -213,7 +213,7 @@ To use [`MessagePack`](https://crates.io/crates/rmp-serde) instead of the defaul
 
 ```toml
 [dependencies]
-ruts = { version = "0.6.5", default-features = false, features = ["axum", "messagepack"] }
+ruts = { version = "0.6.6", default-features = false, features = ["axum", "messagepack"] }
 ```
 
 ### Cookie Configuration
