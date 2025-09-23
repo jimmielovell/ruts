@@ -55,16 +55,19 @@ impl PostgresStoreBuilder {
     /// Builds the `PostgresStore`, creating the schema and table if they don't exist.
     pub async fn build(self) -> Result<PostgresStore, sqlx::Error> {
         let qualified_table_name = if let Some(schema) = &self.schema_name {
-            // Quoted to handle special characters.
-            sqlx::query(&format!("create schema if not exists \"{schema}\"",))
-                .execute(&self.pool)
-                .await?;
             format!("\"{}\".\"{}\"", schema, self.table_name)
         } else {
             format!("\"{}\"", self.table_name)
         };
 
         if self.create_table {
+            if let Some(schema) = &self.schema_name {
+                // Quoted to handle special characters.
+                sqlx::query(&format!("create schema if not exists \"{schema}\"",))
+                    .execute(&self.pool)
+                    .await?;
+            }
+            
             let create_table_and_indexes = format!(
                 r#"
                 create table if not exists {table} (

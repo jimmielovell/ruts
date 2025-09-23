@@ -194,7 +194,7 @@ To use [`MessagePack`](https://crates.io/crates/rmp-serde) instead of the defaul
 
 ```toml
 [dependencies]
-ruts = { version = "0.7.0", default-features = false, features = ["axum", "messagepack"] }
+ruts = { version = "0.7.1", default-features = false, features = ["axum", "messagepack"] }
 ```
 
 ### Cookie Configuration

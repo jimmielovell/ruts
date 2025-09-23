@@ -6,6 +6,11 @@
       <sourceFolder url="file://$MODULE_DIR$/ruse-core/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/ruts/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/ruts/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/ruts/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/ruts_derive/src" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/ruts_derive/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />
