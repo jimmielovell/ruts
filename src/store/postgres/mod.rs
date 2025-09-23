@@ -217,7 +217,7 @@ impl PostgresStore {
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
         #[cfg(feature = "layered-store")] hot_cache_ttl: Option<i64>,
-        #[cfg(not(feature = "layered-store"))] hot_cache_ttl: Option<std::marker::PhantomData<T>>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
         query: String,
     ) -> Result<i64, Error>
     where
@@ -277,9 +277,7 @@ impl PostgresStore {
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
         #[cfg(feature = "layered-store")] hot_cache_ttl_secs: Option<i64>,
-        #[cfg(not(feature = "layered-store"))] hot_cache_ttl_secs: Option<
-            std::marker::PhantomData<T>,
-        >,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
         query: String,
     ) -> Result<i64, Error>
     where
@@ -439,6 +437,8 @@ impl SessionStore for PostgresStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -470,6 +470,8 @@ impl SessionStore for PostgresStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -505,6 +507,8 @@ impl SessionStore for PostgresStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -538,6 +542,8 @@ impl SessionStore for PostgresStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -820,7 +826,7 @@ mod tests {
         };
 
         let ttl = store
-            .insert(&session_id, field, &value, Some(60), Some(60))
+            .insert(&session_id, field, &value, Some(60), Some(60), None)
             .await
             .unwrap();
         assert!(ttl > 55);
@@ -836,6 +842,7 @@ mod tests {
                 &TestData { value: "x".into() },
                 Some(60),
                 Some(60),
+                None,
             )
             .await
             .unwrap();
@@ -856,11 +863,11 @@ mod tests {
         };
 
         store
-            .insert(&session_id, field, &value, Some(60), Some(60))
+            .insert(&session_id, field, &value, Some(60), Some(60), None)
             .await
             .unwrap();
         store
-            .update(&session_id, field, &updated_value, Some(60), Some(60))
+            .update(&session_id, field, &updated_value, Some(60), Some(60), None)
             .await
             .unwrap();
 
@@ -882,6 +889,7 @@ mod tests {
                 &TestData { value: "x".into() },
                 Some(60),
                 Some(0),
+                None,
             )
             .await
             .unwrap();
@@ -904,6 +912,7 @@ mod tests {
                 &TestData { value: "y".into() },
                 Some(60),
                 Some(-1),
+                None,
             )
             .await
             .unwrap();
@@ -927,6 +936,7 @@ mod tests {
                 },
                 Some(2),
                 Some(2),
+                None,
             )
             .await
             .unwrap();
@@ -951,6 +961,7 @@ mod tests {
                 },
                 Some(60),
                 Some(60),
+                None,
             )
             .await
             .unwrap();
@@ -976,7 +987,7 @@ mod tests {
         };
 
         store
-            .insert_with_rename(&old_id, &new_id, field, &value, Some(60), Some(60))
+            .insert_with_rename(&old_id, &new_id, field, &value, Some(60), Some(60), None)
             .await
             .unwrap();
 
@@ -1008,6 +1019,7 @@ mod tests {
                 &TestData { value: "v1".into() },
                 Some(60),
                 Some(60),
+                None,
             )
             .await
             .unwrap();
@@ -1018,6 +1030,7 @@ mod tests {
                 &TestData { value: "v2".into() },
                 Some(60),
                 Some(60),
+                None,
             )
             .await
             .unwrap();
@@ -1032,6 +1045,7 @@ mod tests {
                 },
                 Some(60),
                 Some(60),
+                None,
             )
             .await
             .unwrap();
@@ -1059,6 +1073,7 @@ mod tests {
                 &TestData { value: "v1".into() },
                 Some(60),
                 Some(60),
+                None,
             )
             .await
             .unwrap();
@@ -1069,6 +1084,7 @@ mod tests {
                 &TestData { value: "v2".into() },
                 Some(60),
                 Some(60),
+                None,
             )
             .await
             .unwrap();

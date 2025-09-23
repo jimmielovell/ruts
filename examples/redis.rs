@@ -48,7 +48,7 @@ fn routes() -> Router {
 
                 session.prepare_regenerate();
                 session
-                    .update("app", &app_session, None)
+                    .update("app", &app_session, None, None)
                     .await
                     .map_err(|e| e.to_string())
                     .unwrap();
@@ -66,7 +66,7 @@ fn routes() -> Router {
                 };
 
                 session
-                    .insert("app", &app_session, None)
+                    .insert("app", &app_session, None, None)
                     .await
                     .map_err(|e| e.to_string())
                     .unwrap();
@@ -76,7 +76,7 @@ fn routes() -> Router {
             "/update",
             get(|session: RedisSession| async move {
                 session
-                    .update("theme", &Theme::Light, None)
+                    .update("theme", &Theme::Light, None, None)
                     .await
                     .map_err(|e| e.to_string())
                     .unwrap();

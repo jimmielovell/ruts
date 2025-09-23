@@ -51,7 +51,7 @@ fn routes() -> Router<()> {
                 };
 
                 session
-                    .insert("app", &app_session, None)
+                    .insert("app", &app_session, None, None)
                     .await
                     .expect("Failed to insert session data");
             }),

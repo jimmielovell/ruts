@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0] - 2025-09-23
+
+### Breaking Changes
+
+- Simplified LayeredStore API: The SessionStore trait has been updated to provide a more direct and ergonomic API for the LayeredStore.
+- The insert, update, insert_with_rename, and update_with_rename methods now include an optional hot_cache_ttl_secs parameter.
+
 ## [0.6.4] - 2025-09-12
 
 ### Fixed
