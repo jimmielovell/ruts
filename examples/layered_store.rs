@@ -8,7 +8,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use fred::clients::Client;
 use fred::interfaces::ClientLike;
-use ruts::store::layered::{LayeredStore, LayeredWriteStrategy};
+use ruts::store::layered::LayeredStore;
 use ruts::store::postgres::{PostgresStore, PostgresStoreBuilder};
 use ruts::store::redis::RedisStore;
 use ruts::{CookieOptions, Session, SessionLayer};
@@ -35,7 +35,7 @@ fn routes() -> Router<()> {
                     name: "Default User".into(),
                 };
                 // This will be written to both Redis and Postgres.
-                session.insert("app", &user, None).await.unwrap();
+                session.insert("app", &user, None, None).await.unwrap();
             }),
         )
         // cap the TTL on the hot cache.
@@ -49,10 +49,13 @@ fn routes() -> Router<()> {
                 let long_term_expiry = 60 * 60 * 24 * 30; // 1 month in Postgres
                 let short_term_hot_cache_expiry = 60; // 1 minute in Redis
 
-                let strategy = LayeredWriteStrategy(user, short_term_hot_cache_expiry);
-
                 session
-                    .update("user", &strategy, Some(long_term_expiry))
+                    .update(
+                        "user",
+                        &user,
+                        Some(long_term_expiry),
+                        Some(short_term_hot_cache_expiry),
+                    )
                     .await
                     .unwrap();
             }),
@@ -65,9 +68,8 @@ fn routes() -> Router<()> {
                     id: 3,
                     name: "Cold Only User".into(),
                 };
-                let strategy = LayeredWriteStrategy(user, 0);
                 // This will be written to Postgres, but NOT to Redis.
-                session.update("user", &strategy, None).await.unwrap();
+                session.update("user", &user, None, Some(0)).await.unwrap();
             }),
         )
         .route(
@@ -101,7 +103,7 @@ async fn main() {
     let pool = PgPool::connect(&database_url)
         .await
         .expect("Failed to connect to database");
-    let cold_store = PostgresStoreBuilder::new(pool)
+    let cold_store = PostgresStoreBuilder::new(pool, true)
         .build()
         .await
         .expect("Failed to build PostgresStore");

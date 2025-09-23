@@ -25,7 +25,7 @@ mod tests {
             name: "Test".to_string(),
         };
         session
-            .insert("user", &user, Some(20))
+            .insert("user", &user, Some(20), None)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         Ok("Success".to_string())

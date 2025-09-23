@@ -54,7 +54,7 @@
 //! async fn handler(session: Session<RedisStore<Client>>) -> String {
 //!     let count: Option<i32> = session.get("count").await.unwrap();
 //!     let new_count = count.unwrap_or(0) + 1;
-//!     session.insert("count", &new_count, None).await.unwrap();
+//!     session.insert("count", &new_count, None, None).await.unwrap();
 //!     format!("You've visited this page {} times", new_count)
 //! }
 //! ```
@@ -82,14 +82,14 @@
 //! }
 //!
 //! // Insert new data with an optional field-level expiration (in seconds)
-//! session.insert("key", &"some_value", Some(3600)).await.unwrap();
+//! session.insert("key", &"some_value", Some(3600), None).await.unwrap();
 //!
 //! // Update existing data
-//! session.update("key", &"new_value", None).await.unwrap();
+//! session.update("key", &"new_value", None, None).await.unwrap();
 //!
 //! // Prepare a new session ID before an insert/update to prevent session fixation
 //! let new_id = session.prepare_regenerate();
-//! session.update("key", &"value_with_new_id", None).await.unwrap();
+//! session.update("key", &"value_with_new_id", None, None).await.unwrap();
 //!
 //! // Remove a single field
 //! session.remove("key").await.unwrap();
@@ -150,7 +150,7 @@
 //!
 //!      // 2. Create the session store using the builder.
 //!      // This will also run a migration to create the `sessions` table.
-//!      let store = PostgresStoreBuilder::new(pool)
+//!      let store = PostgresStoreBuilder::new(pool, true)
 //!          // Optionally, you can customize the schema and table name
 //!          // .schema_name("my_app")
 //!          // .table_name("user_sessions")
@@ -169,18 +169,12 @@
 //! sessions can have long lifespans but should only occupy expensive cache memory when
 //! actively being used, thus balancing performance and durability.
 //!
-//! ### Fine-Grained Write Control
-//!
-//! The default write-through behavior can be overridden on a per-call basis
-//! using the `LayeredWriteStrategy`. This gives you precise control over
-//! how long your session stays in the hot cache.
-//!
 //! ```rust,no_run
 //! use ruts::store::redis::RedisStore;
 //! use ruts::store::postgres::PostgresStore;
 //! use fred::clients::Client;
 //! use sqlx::PgPool;
-//! use ruts::store::layered::{LayeredStore, LayeredWriteStrategy};
+//! use ruts::store::layered::LayeredStore;
 //! use ruts::Session;
 //!
 //! // Define a type alias for your specific layered store setup
@@ -199,14 +193,9 @@
 //!     // However, we only want it to live in the hot cache (Redis) for 1 hour.
 //!     let short_term_hot_cache_expiry = 60 * 60;
 //!
-//!     let strategy = LayeredWriteStrategy(
-//!         user,
-//!         short_term_hot_cache_expiry,
-//!     );
-//!
 //!     // The cold store (Postgres) will get the long-term expiry,
 //!     // but the hot store (Redis) will be capped at the shorter TTL.
-//!     session.update("user", &strategy, None).await.unwrap();
+//!     session.update("user", &user, None, Some(short_term_hot_cache_expiry)).await.unwrap();
 //! }
 //! ```
 //!

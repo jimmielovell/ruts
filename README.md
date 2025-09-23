@@ -56,7 +56,7 @@ async fn main() {
 async fn handler(session: Session<RedisStore<Client>>) -> String {
     let count: Option<i32> = session.get("count").await.unwrap();
     let new_count = count.unwrap_or(0) + 1;
-    session.insert("count", &new_count).await.unwrap();
+    session.insert("count", &new_count, None).await.unwrap();
     format!("You've visited this page {} times", new_count)
 }
 ```
@@ -84,14 +84,14 @@ async fn handler(session: Session<MemoryStore>) {
   }
 
   // Insert new data with an optional field-level expiration (in seconds)
-  session.insert("key", &"some_value", Some(3600)).await.unwrap();
+  session.insert("key", &"some_value", Some(3600), None).await.unwrap();
   
   // Update existing data
-  session.update("key", &"new_value", None).await.unwrap();
+  session.update("key", &"new_value", None, None).await.unwrap();
   
   // Prepare a new session ID before an insert/update to prevent session fixation
   let new_id = session.prepare_regenerate();
-  session.update("key", &"value_with_new_id", None).await.unwrap();
+  session.update("key", &"value_with_new_id", None, None).await.unwrap();
   
   // Remove a single field
   session.remove("key").await.unwrap();
@@ -144,7 +144,7 @@ let pool = PgPool::connect(&database_url).await.unwrap();
 
 // 2. Create the session store using the builder.
 // This will also run a migration to create the `sessions` table.
-let store = PostgresStoreBuilder::new(pool)
+let store = PostgresStoreBuilder::new(pool, true)
     // Optionally, you can customize the schema and table name
     // .schema_name("my_app")
     // .table_name("user_sessions")
@@ -156,10 +156,6 @@ let store = PostgresStoreBuilder::new(pool)
 ### LayeredStore
 
 A composite store that layers a fast, ephemeral "hot" cache (like Redis) on top of a slower, persistent "cold" store (like Postgres). It is designed for scenarios where sessions can have long lifespans but should only occupy expensive cache memory when actively being used thus balancing performance and durability.
-
-#### Fine-Grained Write Control
-
-The default write-through behavior can be overridden on a per-call basis using the `LayeredWriteStrategy`. This gives you precise control over how your data is store.
 
 ```rust
 use ruts::store::layered::LayeredWriteStrategy;
@@ -182,15 +178,9 @@ async fn handler(session: MySession) {
     // However, we only want it to live in the hot cache (Redis) for 1 hour.
     let short_term_hot_cache_expiry = 60 * 60;
     
-    // The value is wrapped in the strategy enum to control write behavior.
-    let strategy = LayeredWriteStrategy::WriteThrough(
-        user,
-        Some(short_term_hot_cache_expiry),
-    );
-    
     // The cold store (Postgres) will get the long-term expiry,
     // but the hot store (Redis) will be capped at the shorter TTL.
-    session.update("user", &strategy, Some(long_term_expiry)).await.unwrap();
+    session.update("user", &user, Some(long_term_expiry), Some(short_term_hot_cache_expiry)).await.unwrap();
 }
 ```
 
@@ -204,7 +194,7 @@ To use [`MessagePack`](https://crates.io/crates/rmp-serde) instead of the defaul
 
 ```toml
 [dependencies]
-ruts = { version = "0.6.7", default-features = false, features = ["axum", "messagepack"] }
+ruts = { version = "0.7.0", default-features = false, features = ["axum", "messagepack"] }
 ```
 
 ### Cookie Configuration

@@ -15,16 +15,18 @@ pub use tokio::time::Duration;
 pub struct PostgresStoreBuilder {
     pool: PgPool,
     table_name: String,
+    create_table: bool,
     schema_name: Option<String>,
     cleanup_interval: Option<Duration>,
 }
 
 impl PostgresStoreBuilder {
     /// Creates a new builder with a database pool and default settings.
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: PgPool, create_table: bool) -> Self {
         Self {
             pool,
             table_name: "sessions".to_string(),
+            create_table,
             schema_name: None,
             cleanup_interval: None,
         }
@@ -62,32 +64,34 @@ impl PostgresStoreBuilder {
             format!("\"{}\"", self.table_name)
         };
 
-        let create_table_and_indexes = format!(
-            r#"
-            create table if not exists {table} (
-                session_id text not null,
-                field text not null,
-                value bytea not null,
-                expires_at timestamptz,
-                hot_cache_ttl bigint,
-                primary key (session_id, field)
+        if self.create_table {
+            let create_table_and_indexes = format!(
+                r#"
+                create table if not exists {table} (
+                    session_id text not null,
+                    field text not null,
+                    value bytea not null,
+                    expires_at timestamptz,
+                    hot_cache_ttl bigint,
+                    primary key (session_id, field)
+                );
+
+                -- Index to speed up session lookups
+                create index if not exists ruts_session_idx on {table}(session_id);
+
+                -- Index to speed up TTL cleanup
+                create index if not exists ruts_expires_idx on {table}(expires_at);
+
+                -- Composite index for selective cleanups by session and expiry
+                create index if not exists ruts_session_expires_idx on {table}(session_id, expires_at);
+                "#,
+                table = qualified_table_name
             );
 
-            -- Index to speed up session lookups
-            create index if not exists ruts_session_idx on {table}(session_id);
-
-            -- Index to speed up TTL cleanup
-            create index if not exists ruts_expires_idx on {table}(expires_at);
-
-            -- Composite index for selective cleanups by session and expiry
-            create index if not exists ruts_session_expires_idx on {table}(session_id, expires_at);
-            "#,
-            table = qualified_table_name
-        );
-
-        sqlx::raw_sql(&create_table_and_indexes)
-            .execute(&self.pool)
-            .await?;
+            sqlx::raw_sql(&create_table_and_indexes)
+                .execute(&self.pool)
+                .await?;
+        }
 
         let pool_clone = self.pool.clone();
         let delete_query = format!(
@@ -101,10 +105,10 @@ impl PostgresStoreBuilder {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(cleanup_interval);
             loop {
-                interval.tick().await;
                 if let Err(err) = sqlx::query(&delete_query).execute(&pool_clone).await {
                     tracing::error!("Failed to clean up expired sessions: {err:?}");
                 }
+                interval.tick().await;
             }
         });
 
@@ -213,7 +217,7 @@ impl PostgresStore {
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
         #[cfg(feature = "layered-store")] hot_cache_ttl: Option<i64>,
-        #[cfg(not(feature = "layered-store"))] hot_cache_ttl: Option<std::marker::PhantomData<T>>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
         query: String,
     ) -> Result<i64, Error>
     where
@@ -273,9 +277,7 @@ impl PostgresStore {
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
         #[cfg(feature = "layered-store")] hot_cache_ttl_secs: Option<i64>,
-        #[cfg(not(feature = "layered-store"))] hot_cache_ttl_secs: Option<
-            std::marker::PhantomData<T>,
-        >,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
         query: String,
     ) -> Result<i64, Error>
     where
@@ -435,6 +437,8 @@ impl SessionStore for PostgresStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -466,6 +470,8 @@ impl SessionStore for PostgresStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -501,6 +507,8 @@ impl SessionStore for PostgresStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -534,6 +542,8 @@ impl SessionStore for PostgresStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -799,7 +809,7 @@ mod tests {
             .await
             .unwrap();
 
-        let store = PostgresStoreBuilder::new(pool.clone())
+        let store = PostgresStoreBuilder::new(pool.clone(), true)
             .build()
             .await
             .unwrap();
@@ -816,7 +826,7 @@ mod tests {
         };
 
         let ttl = store
-            .insert(&session_id, field, &value, Some(60), Some(60))
+            .insert(&session_id, field, &value, Some(60), Some(60), None)
             .await
             .unwrap();
         assert!(ttl > 55);
@@ -832,6 +842,7 @@ mod tests {
                 &TestData { value: "x".into() },
                 Some(60),
                 Some(60),
+                None,
             )
             .await
             .unwrap();
@@ -852,11 +863,11 @@ mod tests {
         };
 
         store
-            .insert(&session_id, field, &value, Some(60), Some(60))
+            .insert(&session_id, field, &value, Some(60), Some(60), None)
             .await
             .unwrap();
         store
-            .update(&session_id, field, &updated_value, Some(60), Some(60))
+            .update(&session_id, field, &updated_value, Some(60), Some(60), None)
             .await
             .unwrap();
 
@@ -878,6 +889,7 @@ mod tests {
                 &TestData { value: "x".into() },
                 Some(60),
                 Some(0),
+                None,
             )
             .await
             .unwrap();
@@ -900,6 +912,7 @@ mod tests {
                 &TestData { value: "y".into() },
                 Some(60),
                 Some(-1),
+                None,
             )
             .await
             .unwrap();
@@ -923,6 +936,7 @@ mod tests {
                 },
                 Some(2),
                 Some(2),
+                None,
             )
             .await
             .unwrap();
@@ -947,6 +961,7 @@ mod tests {
                 },
                 Some(60),
                 Some(60),
+                None,
             )
             .await
             .unwrap();
@@ -972,7 +987,7 @@ mod tests {
         };
 
         store
-            .insert_with_rename(&old_id, &new_id, field, &value, Some(60), Some(60))
+            .insert_with_rename(&old_id, &new_id, field, &value, Some(60), Some(60), None)
             .await
             .unwrap();
 
@@ -1004,6 +1019,7 @@ mod tests {
                 &TestData { value: "v1".into() },
                 Some(60),
                 Some(60),
+                None,
             )
             .await
             .unwrap();
@@ -1014,6 +1030,7 @@ mod tests {
                 &TestData { value: "v2".into() },
                 Some(60),
                 Some(60),
+                None,
             )
             .await
             .unwrap();
@@ -1028,6 +1045,7 @@ mod tests {
                 },
                 Some(60),
                 Some(60),
+                None,
             )
             .await
             .unwrap();
@@ -1055,6 +1073,7 @@ mod tests {
                 &TestData { value: "v1".into() },
                 Some(60),
                 Some(60),
+                None,
             )
             .await
             .unwrap();
@@ -1065,6 +1084,7 @@ mod tests {
                 &TestData { value: "v2".into() },
                 Some(60),
                 Some(60),
+                None,
             )
             .await
             .unwrap();

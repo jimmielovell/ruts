@@ -90,6 +90,8 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -114,6 +116,8 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -139,6 +143,8 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -164,6 +170,8 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -318,7 +326,7 @@ mod tests {
         let sid = Id::default();
 
         let ttl = store
-            .insert(&sid, "field1", &"value1", Some(10), None)
+            .insert(&sid, "field1", &"value1", Some(10), None, None)
             .await
             .unwrap();
         assert_eq!(ttl, 10);
@@ -333,7 +341,7 @@ mod tests {
         let sid = Id::default();
 
         store
-            .insert(&sid, "f", &"temp", None, Some(1))
+            .insert(&sid, "f", &"temp", None, Some(1), None)
             .await
             .unwrap();
 
@@ -353,12 +361,15 @@ mod tests {
         let sid = Id::default();
 
         let ttl = store
-            .insert(&sid, "f", &"x", Some(5), Some(5))
+            .insert(&sid, "f", &"x", Some(5), Some(5), None)
             .await
             .unwrap();
         assert_eq!(ttl, 5);
 
-        let ttl = store.update(&sid, "f", &"y", None, Some(-1)).await.unwrap();
+        let ttl = store
+            .update(&sid, "f", &"y", None, Some(-1), None)
+            .await
+            .unwrap();
         assert_eq!(ttl, -1);
     }
 
@@ -369,11 +380,11 @@ mod tests {
         let new_sid = Id::default();
 
         store
-            .insert(&old_sid, "f", &"foo", None, None)
+            .insert(&old_sid, "f", &"foo", None, None, None)
             .await
             .unwrap();
         store
-            .insert_with_rename(&old_sid, &new_sid, "g", &"bar", Some(5), None)
+            .insert_with_rename(&old_sid, &new_sid, "g", &"bar", Some(5), None, None)
             .await
             .unwrap();
 
@@ -391,17 +402,17 @@ mod tests {
         let new_sid = Id::default();
 
         store
-            .insert(&old_sid, "f", &"foo", None, None)
+            .insert(&old_sid, "f", &"foo", None, None, None)
             .await
             .unwrap();
         store
-            .insert(&new_sid, "existing", &"bar", None, None)
+            .insert(&new_sid, "existing", &"bar", None, None, None)
             .await
             .unwrap();
 
         // RENAMENX should fail, but we still insert into new_sid
         store
-            .insert_with_rename(&old_sid, &new_sid, "g", &"baz", None, None)
+            .insert_with_rename(&old_sid, &new_sid, "g", &"baz", None, None, None)
             .await
             .unwrap();
 
@@ -415,11 +426,11 @@ mod tests {
         let sid = Id::default();
 
         store
-            .insert(&sid, "f1", &"v1", Some(10), None)
+            .insert(&sid, "f1", &"v1", Some(10), None, None)
             .await
             .unwrap();
         store
-            .insert(&sid, "f2", &"v2", Some(10), None)
+            .insert(&sid, "f2", &"v2", Some(10), None, None)
             .await
             .unwrap();
 

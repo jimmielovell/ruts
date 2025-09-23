@@ -1,24 +1,6 @@
 use crate::Id;
 use crate::store::{Error, LayeredColdStore, LayeredHotStore, SessionMap, SessionStore};
-use serde::{Serialize, Serializer, de::DeserializeOwned};
-
-/// An enum for explicit control over the write strategy for a
-/// specific `insert` or `update` operation.
-///
-/// It is passed as the `value` parameter to the session methods and will be `downcast_ref`ed
-/// to unwrap the inner value `T`.
-/// The `i64` allows you to specify a separate, often shorter, time-to-live (TTL)
-/// in seconds exclusively for the hot cache.
-pub struct LayeredWriteStrategy<T: Send + Sync + Serialize + 'static>(pub T, pub i64);
-
-impl<T: Send + Sync + Serialize + 'static> Serialize for LayeredWriteStrategy<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.0.serialize(serializer)
-    }
-}
+use serde::{Serialize, de::DeserializeOwned};
 
 /// [`LayeredStore`], a composite store that layers a fast,
 /// ephemeral "hot" cache (like Redis) on top of a slower, persistent "cold"
@@ -26,36 +8,10 @@ impl<T: Send + Sync + Serialize + 'static> Serialize for LayeredWriteStrategy<T>
 /// long lifespans but should only occupy expensive cache memory when actively
 /// being used thus balancing performance and durability.
 ///
-/// ## Core Strategies
-///
-/// - **Cache-Aside Reads**: On a read operation (`get`, `get_all`), the store
-///   first checks the hot cache. If the data is present, it is
-///   returned immediately. If not, the store queries the cold
-///   store, and if the data is found, it "warms" the hot cache by populating it
-///   with the data before returning it if during `insert`/`update`
-///   `LayeredWriteStrategy::WriteThrough`(default) was the strategy used.
-///
-/// - **Write-Through (Default)**: By default, write operations (`insert`, `update`)
-///   are written to both the hot and cold stores simultaneously. This guarantees
-///   data consistency.
-///
-/// ## Fine-Grained Write Control
-///
-/// The default write-through behavior can be overridden on a per-call basis
-/// using the [`LayeredWriteStrategy`] enum. This gives you precise control over
-/// where your session data is stored, which is especially useful for managing
-/// cache resources.
-///
-/// The enum allows you to:
-/// 1.  Write to the hot cache only.
-/// 2.  Write to the cold store only.
-/// 3.  Write through to both, but with a specific, shorter TTL for the hot cache.
-///
 /// ## Example
 ///
 /// ```rust,no_run
-/// use ruts::store::layered::LayeredWriteStrategy;
-/// use ruts::Session;
+/// # use ruts::Session;
 /// # use ruts::store::redis::RedisStore;
 /// # use ruts::store::postgres::PostgresStore;
 /// # use ruts::store::layered::LayeredStore;
@@ -70,14 +26,11 @@ impl<T: Send + Sync + Serialize + 'static> Serialize for LayeredWriteStrategy<T>
 /// // However, we only want it to live in the hot cache (Redis) for 1 hour.
 /// let short_term_hot_cache_expiry = 60 * 60;
 ///
-/// let strategy = LayeredWriteStrategy(
-///     user,
-///     short_term_hot_cache_expiry,
-/// );
-///
 /// // The cold store (Postgres) will get the long-term expiry,
 /// // but the hot store (Redis) will be capped at the shorter TTL.
-/// session.update("user", &strategy, Some(long_term_expiry)).await.unwrap();
+/// session.update("user", &user, Some(long_term_expiry), Some(short_term_hot_cache_expiry))
+///     .await
+///     .unwrap();
 /// # }
 /// ```
 #[derive(Clone, Debug)]
@@ -177,23 +130,15 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize + 'static,
     {
-        let mut value = value;
-        let mut hot_cache_ttl = field_ttl_secs;
-
-        if let Some(strategy) =
-            (value as &dyn std::any::Any).downcast_ref::<LayeredWriteStrategy<T>>()
-        {
-            value = &strategy.0;
-            hot_cache_ttl = Some(strategy.1);
-        }
-
+        let hot_cache_ttl = hot_cache_ttl_secs.or(field_ttl_secs);
         let (_, cold_ttl) = tokio::try_join!(
             self.hot
-                .insert(session_id, field, value, hot_cache_ttl, hot_cache_ttl),
+                .insert(session_id, field, value, hot_cache_ttl, hot_cache_ttl, None),
             self.cold.insert_with_meta(
                 session_id,
                 field,
@@ -214,23 +159,15 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize + 'static,
     {
-        let mut value = value;
-        let mut hot_cache_ttl = field_ttl_secs;
-
-        if let Some(strategy) =
-            (value as &dyn std::any::Any).downcast_ref::<LayeredWriteStrategy<T>>()
-        {
-            value = &strategy.0;
-            hot_cache_ttl = Some(strategy.1);
-        }
-
+        let hot_cache_ttl = hot_cache_ttl_secs.or(field_ttl_secs);
         let (_, cold_ttl) = tokio::try_join!(
             self.hot
-                .update(session_id, field, value, hot_cache_ttl, hot_cache_ttl),
+                .update(session_id, field, value, hot_cache_ttl, hot_cache_ttl, None),
             self.cold.update_with_meta(
                 session_id,
                 field,
@@ -252,20 +189,12 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize + 'static,
     {
-        let mut value = value;
-        let mut hot_cache_ttl = field_ttl_secs;
-
-        if let Some(strategy) =
-            (value as &dyn std::any::Any).downcast_ref::<LayeredWriteStrategy<T>>()
-        {
-            value = &strategy.0;
-            hot_cache_ttl = Some(strategy.1);
-        }
-
+        let hot_cache_ttl = hot_cache_ttl_secs.or(field_ttl_secs);
         let (_, cold_ttl) = tokio::try_join!(
             self.hot.insert_with_rename(
                 old_session_id,
@@ -274,6 +203,7 @@ where
                 value,
                 hot_cache_ttl,
                 hot_cache_ttl,
+                None
             ),
             self.cold.insert_with_rename_with_meta(
                 old_session_id,
@@ -297,20 +227,12 @@ where
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize + 'static,
     {
-        let mut value = value;
-        let mut hot_cache_ttl = field_ttl_secs;
-
-        if let Some(strategy) =
-            (value as &dyn std::any::Any).downcast_ref::<LayeredWriteStrategy<T>>()
-        {
-            value = &strategy.0;
-            hot_cache_ttl = Some(strategy.1);
-        }
-
+        let hot_cache_ttl = hot_cache_ttl_secs.or(field_ttl_secs);
         let (_, cold_ttl) = tokio::try_join!(
             self.hot.update_with_rename(
                 old_session_id,
@@ -319,6 +241,7 @@ where
                 value,
                 hot_cache_ttl,
                 hot_cache_ttl,
+                None
             ),
             self.cold.update_with_rename_with_meta(
                 old_session_id,
@@ -404,7 +327,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let cold_store = PostgresStoreBuilder::new(pool.clone())
+        let cold_store = PostgresStoreBuilder::new(pool.clone(), true)
             .build()
             .await
             .unwrap();
@@ -424,9 +347,15 @@ mod tests {
 
         // 1. Write a value with a long TTL for the cold store, but a very short TTL
         //    for the hot cache. This simulates a cache entry that will expire quickly.
-        let strategy = LayeredWriteStrategy(test_user.clone(), 1);
         store
-            .update(&session_id, "user", &strategy, Some(3600), Some(3600))
+            .update(
+                &session_id,
+                "user",
+                &test_user,
+                Some(3600),
+                Some(3600),
+                Some(1),
+            )
             .await
             .unwrap();
 
@@ -458,7 +387,14 @@ mod tests {
         let test_user = create_test_user();
 
         store
-            .update(&session_id, "user", &test_user, Some(3600), Some(3600))
+            .update(
+                &session_id,
+                "user",
+                &test_user,
+                Some(3600),
+                Some(3600),
+                None,
+            )
             .await
             .unwrap();
         assert!(

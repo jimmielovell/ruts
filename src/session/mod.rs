@@ -135,7 +135,7 @@ where
     /// async fn example_handler(session: Session<MemoryStore>) {
     ///     let user = User { id: 34895634, name: "John Doe".to_string() };
     ///     // Insert the field with a TTL of 5 seconds
-    ///     session.insert("app", &user, Some(5)).await.unwrap();
+    ///     session.insert("app", &user, Some(5), None).await.unwrap();
     /// }
     /// ```
     #[tracing::instrument(
@@ -147,6 +147,10 @@ where
         field: &str,
         value: &T,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] hot_cache_ttl_secs: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] hot_cache_ttl_secs: Option<
+            std::marker::PhantomData<()>,
+        >,
     ) -> Result<bool>
     where
         T: Send + Sync + Serialize + 'static,
@@ -167,7 +171,7 @@ where
             Some(new_id) => {
                 let max_age = self.inner
                     .store
-                    .insert_with_rename(&current_id, &new_id, field, value, Some(key_ttl_secs), field_ttl_secs.or(Some(key_ttl_secs)))
+                    .insert_with_rename(&current_id, &new_id, field, value, Some(key_ttl_secs), field_ttl_secs.or(Some(key_ttl_secs)), hot_cache_ttl_secs)
                     .await
                     .map_err(|err| {
                         tracing::error!(err = %err, "failed to insert field-value with rename to session store");
@@ -187,6 +191,7 @@ where
                     value,
                     Some(key_ttl_secs),
                     field_ttl_secs.or(Some(key_ttl_secs)),
+                    hot_cache_ttl_secs,
                 )
                 .await
                 .map_err(|err| {
@@ -238,7 +243,7 @@ where
     /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
     ///     let user = User {id: 21342365, name: String::from("Jane Doe")};
     ///
-    ///     let updated = session.update("app", &user, Some(5)).await.unwrap();
+    ///     let updated = session.update("app", &user, Some(5), None).await.unwrap();
     /// }
     /// ```
     #[tracing::instrument(
@@ -250,6 +255,10 @@ where
         field: &str,
         value: &T,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] hot_cache_ttl_secs: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] hot_cache_ttl_secs: Option<
+            std::marker::PhantomData<()>,
+        >,
     ) -> Result<bool>
     where
         T: Send + Sync + Serialize + 'static,
@@ -270,7 +279,7 @@ where
             Some(new_id) => {
                 let max_age = self.inner
                     .store
-                    .update_with_rename(&current_id, &new_id, field, value, Some(key_ttl_secs), field_ttl_secs.or(Some(key_ttl_secs)))
+                    .update_with_rename(&current_id, &new_id, field, value, Some(key_ttl_secs), field_ttl_secs.or(Some(key_ttl_secs)), hot_cache_ttl_secs)
                     .await
                     .map_err(|err| {
                         tracing::error!(err = %err, "failed to update field-value with rename in session store");
@@ -291,6 +300,7 @@ where
                     value,
                     Some(key_ttl_secs),
                     field_ttl_secs.or(Some(key_ttl_secs)),
+                    hot_cache_ttl_secs,
                 )
                 .await
                 .map_err(|err| {
@@ -493,7 +503,7 @@ where
     /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
     ///     let new_id = session.prepare_regenerate();
     ///     // The next update/insert operation will use this new ID
-    ///     session.update("field", &"value", None).await.unwrap();
+    ///     session.update("field", &"value", None, None).await.unwrap();
     /// }
     /// ```
     pub fn prepare_regenerate(&self) -> Id {
@@ -632,7 +642,10 @@ mod tests {
         assert!(initial_get.is_none());
 
         // Test insert
-        let inserted = session.insert("test", &test_data, None).await.unwrap();
+        let inserted = session
+            .insert("test", &test_data, None, None)
+            .await
+            .unwrap();
         assert!(inserted);
 
         // Test get after insert
@@ -642,7 +655,10 @@ mod tests {
         // Test update
         let mut updated_data = test_data.clone();
         updated_data.name = "Updated User".to_string();
-        let updated = session.update("test", &updated_data, None).await.unwrap();
+        let updated = session
+            .update("test", &updated_data, None, None)
+            .await
+            .unwrap();
         assert!(updated);
 
         // Verify update
@@ -666,14 +682,20 @@ mod tests {
         let test_data = create_test_user();
 
         // Insert initial data
-        session.insert("test", &test_data, None).await.unwrap();
+        session
+            .insert("test", &test_data, None, None)
+            .await
+            .unwrap();
         let original_id = session.id().unwrap();
 
         // Prepare new ID and update
         let prepared_id = session.prepare_regenerate();
         let mut updated_data = test_data.clone();
         updated_data.name = "Updated User".to_string();
-        let updated = session.update("test", &updated_data, None).await.unwrap();
+        let updated = session
+            .update("test", &updated_data, None, None)
+            .await
+            .unwrap();
         assert!(updated);
 
         // Verify ID changed and data updated
@@ -697,14 +719,20 @@ mod tests {
         let test_data = create_test_user();
 
         // Insert initial data
-        session.insert("test1", &test_data, None).await.unwrap();
+        session
+            .insert("test1", &test_data, None, None)
+            .await
+            .unwrap();
         let original_id = session.id().unwrap();
 
         // Prepare new ID and insert new field
         let prepared_id = session.prepare_regenerate();
         let mut new_data = test_data.clone();
         new_data.name = "New User".to_string();
-        let inserted = session.insert("test2", &new_data, None).await.unwrap();
+        let inserted = session
+            .insert("test2", &new_data, None, None)
+            .await
+            .unwrap();
         assert!(inserted);
 
         // Verify ID changed and both fields exist
@@ -730,7 +758,10 @@ mod tests {
         let test_data = create_test_user();
 
         // Insert initial data
-        session.insert("test", &test_data, None).await.unwrap();
+        session
+            .insert("test", &test_data, None, None)
+            .await
+            .unwrap();
         let original_id = session.id().unwrap();
 
         // First prepare_regenerate
@@ -743,7 +774,10 @@ mod tests {
         // Update - should use the last prepared ID
         let mut updated_data = test_data.clone();
         updated_data.name = "Updated User".to_string();
-        session.update("test", &updated_data, None).await.unwrap();
+        session
+            .update("test", &updated_data, None, None)
+            .await
+            .unwrap();
 
         // Verify the last prepared ID was used
         let current_id = session.id().unwrap();
@@ -764,7 +798,10 @@ mod tests {
         let test_data = create_test_user();
 
         // Insert initial data
-        session.insert("test", &test_data, None).await.unwrap();
+        session
+            .insert("test", &test_data, None, None)
+            .await
+            .unwrap();
         let original_id = session.id().unwrap();
 
         // Regenerate session

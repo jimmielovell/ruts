@@ -124,6 +124,8 @@ impl SessionStore for MemoryStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -148,7 +150,7 @@ impl SessionStore for MemoryStore {
             );
         }
 
-        Ok(self.get_max_ttl(&session_id))
+        Ok(self.get_max_ttl(session_id))
     }
 
     async fn update<T>(
@@ -158,6 +160,8 @@ impl SessionStore for MemoryStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -176,7 +180,7 @@ impl SessionStore for MemoryStore {
             );
         }
 
-        Ok(self.get_max_ttl(&session_id))
+        Ok(self.get_max_ttl(session_id))
     }
 
     async fn insert_with_rename<T>(
@@ -187,6 +191,8 @@ impl SessionStore for MemoryStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -218,7 +224,7 @@ impl SessionStore for MemoryStore {
             self.data.insert(new_key, fields);
         }
 
-        Ok(self.get_max_ttl(&new_session_id))
+        Ok(self.get_max_ttl(new_session_id))
     }
 
     async fn update_with_rename<T>(
@@ -229,6 +235,8 @@ impl SessionStore for MemoryStore {
         value: &T,
         key_ttl_secs: Option<i64>,
         field_ttl_secs: Option<i64>,
+        #[cfg(feature = "layered-store")] _: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -253,7 +261,7 @@ impl SessionStore for MemoryStore {
             self.data.insert(new_key, fields);
         }
 
-        Ok(self.get_max_ttl(&new_session_id))
+        Ok(self.get_max_ttl(new_session_id))
     }
 
     async fn rename_session_id(
@@ -345,7 +353,7 @@ mod tests {
         };
 
         let ttl = store
-            .insert(&session_id, "user", &user, Some(30), Some(30))
+            .insert(&session_id, "user", &user, Some(30), Some(30), None)
             .await
             .unwrap();
         // TTL can be slightly less due to execution time, so we check a range.
@@ -360,7 +368,7 @@ mod tests {
         };
 
         let ttl = store
-            .update(&session_id, "user", &updated_user, Some(60), Some(60))
+            .update(&session_id, "user", &updated_user, Some(60), Some(60), None)
             .await
             .unwrap();
         assert!(ttl <= 60 && ttl > 58);
@@ -380,7 +388,7 @@ mod tests {
         };
 
         store
-            .insert(&session_id, "user", &user, Some(2), Some(2))
+            .insert(&session_id, "user", &user, Some(2), Some(2), None)
             .await
             .unwrap();
 
