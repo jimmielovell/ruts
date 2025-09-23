@@ -67,7 +67,7 @@ impl PostgresStoreBuilder {
                     .execute(&self.pool)
                     .await?;
             }
-            
+
             let create_table_and_indexes = format!(
                 r#"
                 create table if not exists {table} (
