@@ -140,7 +140,7 @@ where
     /// ```
     #[tracing::instrument(
         name = "session-store: inserting field-value",
-        skip(self, field, value, field_ttl_secs)
+        skip(self, field, value, field_ttl_secs, hot_cache_ttl_secs)
     )]
     pub async fn insert<T>(
         &self,
@@ -248,7 +248,7 @@ where
     /// ```
     #[tracing::instrument(
         name = "session-store: updating field",
-        skip(self, field, value, field_ttl_secs)
+        skip(self, field, value, field_ttl_secs, hot_cache_ttl_secs)
     )]
     pub async fn update<T>(
         &self,
