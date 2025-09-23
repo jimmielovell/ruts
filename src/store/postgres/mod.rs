@@ -15,16 +15,18 @@ pub use tokio::time::Duration;
 pub struct PostgresStoreBuilder {
     pool: PgPool,
     table_name: String,
+    create_table: bool,
     schema_name: Option<String>,
     cleanup_interval: Option<Duration>,
 }
 
 impl PostgresStoreBuilder {
     /// Creates a new builder with a database pool and default settings.
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: PgPool, create_table: bool) -> Self {
         Self {
             pool,
             table_name: "sessions".to_string(),
+            create_table,
             schema_name: None,
             cleanup_interval: None,
         }
@@ -62,32 +64,34 @@ impl PostgresStoreBuilder {
             format!("\"{}\"", self.table_name)
         };
 
-        let create_table_and_indexes = format!(
-            r#"
-            create table if not exists {table} (
-                session_id text not null,
-                field text not null,
-                value bytea not null,
-                expires_at timestamptz,
-                hot_cache_ttl bigint,
-                primary key (session_id, field)
+        if self.create_table {
+            let create_table_and_indexes = format!(
+                r#"
+                create table if not exists {table} (
+                    session_id text not null,
+                    field text not null,
+                    value bytea not null,
+                    expires_at timestamptz,
+                    hot_cache_ttl bigint,
+                    primary key (session_id, field)
+                );
+
+                -- Index to speed up session lookups
+                create index if not exists ruts_session_idx on {table}(session_id);
+
+                -- Index to speed up TTL cleanup
+                create index if not exists ruts_expires_idx on {table}(expires_at);
+
+                -- Composite index for selective cleanups by session and expiry
+                create index if not exists ruts_session_expires_idx on {table}(session_id, expires_at);
+                "#,
+                table = qualified_table_name
             );
 
-            -- Index to speed up session lookups
-            create index if not exists ruts_session_idx on {table}(session_id);
-
-            -- Index to speed up TTL cleanup
-            create index if not exists ruts_expires_idx on {table}(expires_at);
-
-            -- Composite index for selective cleanups by session and expiry
-            create index if not exists ruts_session_expires_idx on {table}(session_id, expires_at);
-            "#,
-            table = qualified_table_name
-        );
-
-        sqlx::raw_sql(&create_table_and_indexes)
-            .execute(&self.pool)
-            .await?;
+            sqlx::raw_sql(&create_table_and_indexes)
+                .execute(&self.pool)
+                .await?;
+        }
 
         let pool_clone = self.pool.clone();
         let delete_query = format!(
@@ -101,10 +105,10 @@ impl PostgresStoreBuilder {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(cleanup_interval);
             loop {
-                interval.tick().await;
                 if let Err(err) = sqlx::query(&delete_query).execute(&pool_clone).await {
                     tracing::error!("Failed to clean up expired sessions: {err:?}");
                 }
+                interval.tick().await;
             }
         });
 
@@ -799,7 +803,7 @@ mod tests {
             .await
             .unwrap();
 
-        let store = PostgresStoreBuilder::new(pool.clone())
+        let store = PostgresStoreBuilder::new(pool.clone(), true)
             .build()
             .await
             .unwrap();

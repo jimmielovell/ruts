@@ -150,7 +150,7 @@
 //!
 //!      // 2. Create the session store using the builder.
 //!      // This will also run a migration to create the `sessions` table.
-//!      let store = PostgresStoreBuilder::new(pool)
+//!      let store = PostgresStoreBuilder::new(pool, true)
 //!          // Optionally, you can customize the schema and table name
 //!          // .schema_name("my_app")
 //!          // .table_name("user_sessions")
