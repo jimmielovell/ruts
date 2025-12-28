@@ -54,7 +54,7 @@
 //! async fn handler(session: Session<RedisStore<Client>>) -> String {
 //!     let count: Option<i32> = session.get("count").await.unwrap();
 //!     let new_count = count.unwrap_or(0) + 1;
-//!     session.insert("count", &new_count, None, None).await.unwrap();
+//!     session.set("count", &new_count, None, None).await.unwrap();
 //!     format!("You've visited this page {} times", new_count)
 //! }
 //! ```
@@ -81,15 +81,12 @@
 //!     let user: Option<User> = map.get("user").unwrap();
 //! }
 //!
-//! // Insert new data with an optional field-level expiration (in seconds)
-//! session.insert("key", &"some_value", Some(3600), None).await.unwrap();
-//!
 //! // Update existing data
-//! session.update("key", &"new_value", None, None).await.unwrap();
+//! session.set("key", &"new_value", None, None).await.unwrap();
 //!
 //! // Prepare a new session ID before an insert/update to prevent session fixation
 //! let new_id = session.prepare_regenerate();
-//! session.update("key", &"value_with_new_id", None, None).await.unwrap();
+//! session.set("key", &"value_with_new_id", None, None).await.unwrap();
 //!
 //! // Remove a single field
 //! session.remove("key").await.unwrap();
@@ -195,7 +192,7 @@
 //!
 //!     // The cold store (Postgres) will get the long-term expiry,
 //!     // but the hot store (Redis) will be capped at the shorter TTL.
-//!     session.update("user", &user, None, Some(short_term_hot_cache_expiry)).await.unwrap();
+//!     session.set("user", &user, None, Some(short_term_hot_cache_expiry)).await.unwrap();
 //! }
 //! ```
 //!
@@ -209,7 +206,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ruts = { version = "0.6.1", default-features = false, features = ["axum", "messagepack"] }
+//! ruts = { version = "0.7.2", default-features = false, features = ["axum", "messagepack"] }
 //! ```
 //!
 //! ## Cookie Configuration

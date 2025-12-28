@@ -1,10 +1,9 @@
 use crate::Id;
 use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize_value};
-use cookie::time::OffsetDateTime;
 use serde::{Serialize, de::DeserializeOwned};
-use sqlx::postgres::PgRow;
-use sqlx::{Executor, PgPool, Postgres, Row};
+use sqlx::{Executor, PgPool, Postgres};
 use std::collections::HashMap;
+
 // Re-export Duration
 pub use tokio::time::Duration;
 
@@ -25,14 +24,14 @@ impl PostgresStoreBuilder {
     pub fn new(pool: PgPool, create_table: bool) -> Self {
         Self {
             pool,
-            table_name: "sessions".to_string(),
+            table_name: "t_sessions".to_string(),
             create_table,
             schema_name: None,
             cleanup_interval: None,
         }
     }
 
-    /// Sets a custom table name for the session store. Defaults to "sessions".
+    /// Sets a custom table name for the session store. Defaults to "t_sessions".
     pub fn table_name(mut self, table_name: impl Into<String>) -> Self {
         self.table_name = table_name.into();
         self
@@ -54,70 +53,85 @@ impl PostgresStoreBuilder {
 
     /// Builds the `PostgresStore`, creating the schema and table if they don't exist.
     pub async fn build(self) -> Result<PostgresStore, sqlx::Error> {
-        let qualified_table_name = if let Some(schema) = &self.schema_name {
-            format!("\"{}\".\"{}\"", schema, self.table_name)
+        let (expiry_table_name, fields_table_name) = if let Some(schema) = &self.schema_name {
+            (
+                format!("\"{}\".\"{}\"", schema, self.table_name),
+                format!("\"{}\".\"{}_kv\"", schema, self.table_name),
+            )
         } else {
-            format!("\"{}\"", self.table_name)
+            (
+                format!("\"{}\"", self.table_name),
+                format!("\"{}_kv\"", self.table_name),
+            )
         };
 
         if self.create_table {
             if let Some(schema) = &self.schema_name {
-                // Quoted to handle special characters.
-                sqlx::query(&format!("create schema if not exists \"{schema}\"",))
+                sqlx::query(&format!("create schema if not exists \"{schema}\""))
                     .execute(&self.pool)
                     .await?;
             }
 
-            let create_table_and_indexes = format!(
+            sqlx::raw_sql(&format!(
                 r#"
-                create table if not exists {table} (
-                    session_id text not null,
+                create table if not exists {expiry_table_name} (
+                    session_id text primary key,
+                    expires_at timestamptz
+                );
+                create index if not exists idx_sessions_expires_at on {expiry_table_name}(expires_at);
+                "#
+            ))
+                .execute(&self.pool)
+                .await?;
+
+            sqlx::raw_sql(&format!(
+                r#"
+                create table if not exists {fields_table_name} (
+                    fk_session_id text not null references {expiry_table_name}(session_id) on delete cascade on update cascade,
                     field text not null,
                     value bytea not null,
                     expires_at timestamptz,
                     hot_cache_ttl bigint,
-                    primary key (session_id, field)
+                    primary key (fk_session_id, field)
                 );
-
-                -- Index to speed up session lookups
-                create index if not exists ruts_session_idx on {table}(session_id);
-
-                -- Index to speed up TTL cleanup
-                create index if not exists ruts_expires_idx on {table}(expires_at);
-
-                -- Composite index for selective cleanups by session and expiry
-                create index if not exists ruts_session_expires_idx on {table}(session_id, expires_at);
-                "#,
-                table = qualified_table_name
-            );
-
-            sqlx::raw_sql(&create_table_and_indexes)
+                -- for looking up fields by session
+                create index if not exists idx_fields_session_id on {fields_table_name}(fk_session_id);
+                -- for field-level cleanup
+                create index if not exists idx_fields_expires_at on {fields_table_name}(expires_at);
+                "#
+            ))
                 .execute(&self.pool)
                 .await?;
         }
 
-        let pool_clone = self.pool.clone();
-        let delete_query = format!(
-            "delete from {qualified_table_name} where expires_at is not null and expires_at < now()",
-        );
-
-        let cleanup_interval = self
-            .cleanup_interval
-            .unwrap_or_else(|| Duration::from_secs(300));
+        let pool = self.pool.clone();
+        let e_table = expiry_table_name.clone();
+        let f_table = fields_table_name.clone();
+        let interval = self.cleanup_interval.unwrap_or(Duration::from_secs(300));
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(cleanup_interval);
+            let mut ticker = tokio::time::interval(interval);
             loop {
-                if let Err(err) = sqlx::query(&delete_query).execute(&pool_clone).await {
-                    tracing::error!("Failed to clean up expired sessions: {err:?}");
-                }
-                interval.tick().await;
+                ticker.tick().await;
+                // Expired sessions (cascades to fields)
+                let _ = sqlx::query(&format!(
+                    "delete from {e_table} where expires_at is not null and expires_at < now()"
+                ))
+                .execute(&pool)
+                .await;
+
+                let _ = sqlx::query(&format!(
+                    "delete from {f_table} where expires_at is not null and expires_at < now()"
+                ))
+                .execute(&pool)
+                .await;
             }
         });
 
         Ok(PostgresStore {
             pool: self.pool,
-            qualified_table_name,
+            expiry_table_name,
+            fields_table_name,
         })
     }
 }
@@ -126,44 +140,36 @@ impl PostgresStoreBuilder {
 #[derive(Clone, Debug)]
 pub struct PostgresStore {
     pool: PgPool,
-    qualified_table_name: String,
+    expiry_table_name: String,
+    fields_table_name: String,
 }
 
-fn expires_at(key_ttl_secs: Option<i64>, field_ttl_secs: Option<i64>) -> Option<OffsetDateTime> {
-    let ttl = match (key_ttl_secs, field_ttl_secs) {
-        (Some(_), Some(fts)) | (None, Some(fts)) => Some(fts),
-        (Some(kts), None) => Some(kts),
-        (None, None) => None,
+fn determine_ttls(
+    key_ttl_secs: Option<i64>,
+    field_ttl_secs: Option<i64>,
+) -> (Option<f64>, Option<f64>) {
+    if field_ttl_secs == Some(-1) {
+        return (None, None);
+    }
+
+    if key_ttl_secs == Some(-1) {
+        let f_ttl = field_ttl_secs.and_then(|t| if t <= 0 { None } else { Some(t as f64) });
+        return (None, f_ttl);
+    }
+
+    let k_ttl = key_ttl_secs.and_then(|t| if t <= 0 { None } else { Some(t as f64) });
+    let f_ttl = match field_ttl_secs {
+        Some(fts) => {
+            if fts <= 0 {
+                None
+            } else {
+                Some(fts as f64)
+            }
+        }
+        None => k_ttl,
     };
 
-    if let Some(ttl) = ttl
-        && ttl >= 0
-    {
-        Some(OffsetDateTime::now_utc() + cookie::time::Duration::seconds(ttl))
-    } else {
-        None
-    }
-}
-
-fn resolve_ttl_from_stats(row: PgRow) -> Result<i64, sqlx::Error> {
-    let affected_rows = row.try_get::<i64, _>("affected_rows")?;
-    let has_persistent_ttl = row.try_get::<Option<bool>, _>("has_persistent_ttl")?;
-    let max_expires = row.try_get::<Option<OffsetDateTime>, _>("max_expires")?;
-
-    if affected_rows == 0 {
-        return Ok(-2);
-    }
-    if has_persistent_ttl == Some(true) {
-        return Ok(-1);
-    }
-    if let Some(exp) = max_expires {
-        let now = OffsetDateTime::now_utc();
-        let dur = exp - now;
-        let secs = dur.whole_seconds();
-        if secs <= 0 { Ok(0) } else { Ok(secs) }
-    } else {
-        Ok(-1)
-    }
+    (k_ttl, f_ttl)
 }
 
 impl PostgresStore {
@@ -178,7 +184,7 @@ impl PostgresStore {
     {
         let query = format!(
             "update {} set session_id = $1 where session_id = $2",
-            self.qualified_table_name
+            self.expiry_table_name
         );
         let result = sqlx::query(&query)
             .bind(new_session_id.to_string())
@@ -191,25 +197,74 @@ impl PostgresStore {
     async fn _remove(&self, session_id: &Id, field: &str) -> Result<i64, Error> {
         let query = format!(
             r#"
-            with removed as (
-                delete from {table}
-                where session_id = $1 and field = $2
+            with
+            field_delete as (
+                delete from {fields}
+                where fk_session_id = $1 and field = $2
+                returning expires_at
+            ),
+            current_session as (
+                select expires_at
+                from {expiry}
+                where session_id = $1
+                for update
+            ),
+            session_status as (
+                select count(*) as cnt
+                from (select 1 from {fields} where fk_session_id = $1 limit 2) sub
+            ),
+            session_delete as (
+                delete from {expiry} e
+                using session_status ss
+                where e.session_id = $1
+                and ss.cnt <= 1
+                returning -2::bigint as ttl
+            ),
+            session_update as (
+                update {expiry} e
+                set expires_at = (
+                    select case
+                        when bool_or(f.expires_at is null) then null
+                        else max(f.expires_at)
+                    end
+                    from {fields} f
+                    where f.fk_session_id = e.session_id
+                    and f.field != $2
+                )
+                from field_delete fd, current_session cs, session_status ss
+                where e.session_id = $1
+                and ss.cnt > 1
+                and (
+                    fd.expires_at is null
+                    or (cs.expires_at is not null and fd.expires_at >= cs.expires_at)
+                )
+                returning
+                    case when e.expires_at is null then -1
+                    else extract(epoch from (e.expires_at - now()))::bigint
+                    end as ttl
             )
-            select
-                count(*) as affected_rows,
-                bool_or(expires_at is null) as has_persistent_ttl,
-                max(expires_at) as max_expires
-            from {table}
-            where session_id = $1 and field != $2
+            select coalesce(
+                (select ttl from session_delete),
+                (select ttl from session_update),
+                (select
+                    case when expires_at is null then -1
+                    else extract(epoch from (expires_at - now()))::bigint
+                    end
+                 from current_session),
+                -2
+            )
             "#,
-            table = self.qualified_table_name,
+            fields = self.fields_table_name,
+            expiry = self.expiry_table_name
         );
-        let row = sqlx::query(&query)
+
+        let ttl: i64 = sqlx::query_scalar(&query)
             .bind(session_id.to_string())
             .bind(field)
             .fetch_one(&self.pool)
             .await?;
-        Ok(resolve_ttl_from_stats(row)?)
+
+        Ok(ttl)
     }
 
     async fn _upsert<T>(
@@ -221,161 +276,105 @@ impl PostgresStore {
         field_ttl_secs: Option<i64>,
         #[cfg(feature = "layered-store")] hot_cache_ttl: Option<i64>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-        query: String,
+        old_session_id: Option<&Id>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
     {
         if key_ttl_secs == Some(0) {
-            self.delete(session_id).await?;
+            let target_id = old_session_id.unwrap_or(session_id);
+            self.delete(target_id).await?;
             return Ok(-2);
         }
 
         if field_ttl_secs == Some(0) {
-            let ttl_after = self._remove(session_id, field).await?;
-            return Ok(ttl_after);
+            let ttl = self._remove(session_id, field).await?;
+            if let Some(old_id) = old_session_id {
+                let _ = self
+                    ._rename_session_id(&self.pool, old_id, session_id)
+                    .await?;
+            }
+            return Ok(ttl);
         }
 
         let value_bytes = serialize_value(value)?;
-        let expires = expires_at(key_ttl_secs, field_ttl_secs);
+        let (session_ttl, field_ttl) = determine_ttls(key_ttl_secs, field_ttl_secs);
+
+        #[cfg(feature = "layered-store")]
+        let hot_cache_ttl = hot_cache_ttl.min(field_ttl.map(|v| v as i64));
+
+        #[cfg(not(feature = "layered-store"))]
+        let hot_cache_ttl: Option<i64> = None;
+
+        let rename_subquery = if old_session_id.is_some() {
+            format!(
+                r#"
+                renamed_session as (
+                    update {e_table}
+                    set session_id = $1
+                    where session_id = $7
+                ),
+                "#,
+                e_table = self.expiry_table_name,
+            )
+        } else {
+            String::from("")
+        };
 
         let query = format!(
             r#"
-            with upsert as ({query} returning expires_at),
-            combined as (
-                select * from upsert
-                union all
-                select expires_at from {table} where session_id = $1
+            with
+            {rename_subquery}
+            exsert as (
+                insert into {e_table} (session_id, expires_at)
+                values (
+                    $1,
+                    now() + make_interval(secs => $5)
+                )
+                on conflict (session_id) do update
+                set expires_at = case
+                    when {e_table}.expires_at is null or excluded.expires_at is null then null
+                    else greatest({e_table}.expires_at, excluded.expires_at)
+                end
+                returning
+                    case when expires_at is null then -1
+                    else extract(epoch from (expires_at - now()))::bigint
+                    end
+                as expires_at
+            ),
+            upsert as (
+                insert into {f_table} (fk_session_id, field, value, hot_cache_ttl, expires_at)
+                values (
+                    $1, $2, $3, $4,
+                    now() + make_interval(secs => $6)
+                )
+                on conflict (fk_session_id, field) do update
+                set
+                    value = excluded.value,
+                    expires_at = excluded.expires_at,
+                    hot_cache_ttl = excluded.hot_cache_ttl
             )
-            select
-                (select count(*) from upsert) as affected_rows,
-                exists (select 1 from combined where expires_at is null) as has_persistent_ttl,
-                max(expires_at) as max_expires
-            from combined;
+            select expires_at from exsert;
             "#,
-            table = self.qualified_table_name
+            e_table = self.expiry_table_name,
+            f_table = self.fields_table_name,
         );
 
-        let mut qb = sqlx::query(&query)
+        let mut qb = sqlx::query_scalar(&query)
             .bind(session_id.to_string())
             .bind(field)
             .bind(value_bytes)
-            .bind(expires);
+            .bind(hot_cache_ttl)
+            .bind(session_ttl)
+            .bind(field_ttl);
 
-        #[cfg(feature = "layered-store")]
-        if let Some(hot_cache_ttl) = hot_cache_ttl {
-            qb = qb.bind(hot_cache_ttl);
+        if let Some(session_id) = old_session_id {
+            qb = qb.bind(session_id.to_string());
         }
 
-        let row = qb.fetch_one(&self.pool).await?;
-        Ok(resolve_ttl_from_stats(row)?)
-    }
+        let ttl: i64 = qb.fetch_one(&self.pool).await?;
 
-    async fn _upsert_with_rename<T>(
-        &self,
-        old_session_id: &Id,
-        new_session_id: &Id,
-        field: &str,
-        value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
-        #[cfg(feature = "layered-store")] hot_cache_ttl_secs: Option<i64>,
-        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-        query: String,
-    ) -> Result<i64, Error>
-    where
-        T: Send + Sync + Serialize,
-    {
-        if key_ttl_secs == Some(0) {
-            self.delete(old_session_id).await?;
-            return Ok(-2);
-        }
-
-        if field_ttl_secs == Some(0) {
-            let mut tx = self.pool.begin().await?;
-
-            sqlx::query(&format!(
-                r"delete from {table} where session_id = $1 and field = $2",
-                table = self.qualified_table_name
-            ))
-            .bind(old_session_id.to_string())
-            .bind(field)
-            .execute(&mut *tx)
-            .await?;
-
-            let row = sqlx::query(&format!(
-                r"
-                with renamed as (
-                    update {table}
-                    set session_id = $2
-                    where session_id = $1 and field != $3
-                    returning expires_at
-                ),
-                select
-                    count(*) as affected_rows,
-                    exists (select 1 from renamed where expires_at is null) as has_persistent_ttl,
-                    max(expires_at) as max_expires
-                from renamed
-                ",
-                table = self.qualified_table_name,
-            ))
-            .bind(old_session_id.to_string())
-            .bind(new_session_id.to_string())
-            .bind(field)
-            .fetch_one(&mut *tx)
-            .await?;
-
-            tx.commit().await?;
-
-            return Ok(resolve_ttl_from_stats(row)?);
-        }
-
-        let value_bytes = serialize_value(value)?;
-        let expires = expires_at(key_ttl_secs, field_ttl_secs);
-
-        let mut tx = self.pool.begin().await?;
-
-        sqlx::query(&format!(
-            r"update {table} set session_id = $1 where session_id = $2",
-            table = self.qualified_table_name
-        ))
-        .bind(new_session_id.to_string())
-        .bind(old_session_id.to_string())
-        .execute(&mut *tx)
-        .await?;
-
-        let query = format!(
-            r"
-            with upsert as ({query} returning expires_at),
-            combined as (
-                select * from upsert
-                union all
-                select expires_at from {table} where session_id = $1
-            )
-            select
-                (select count(*) from upsert) as affected_rows,
-                exists (select 1 from combined where expires_at is null) as has_persistent_ttl,
-                max(expires_at) as max_expires
-            from combined;
-            ",
-            table = self.qualified_table_name
-        );
-
-        let mut qb = sqlx::query(&query)
-            .bind(new_session_id.to_string())
-            .bind(field)
-            .bind(value_bytes)
-            .bind(expires);
-
-        #[cfg(feature = "layered-store")]
-        if let Some(hot_cache_ttl) = hot_cache_ttl_secs {
-            qb = qb.bind(hot_cache_ttl);
-        }
-
-        let row = qb.fetch_one(&mut *tx).await?;
-        tx.commit().await?;
-
-        Ok(resolve_ttl_from_stats(row)?)
+        Ok(ttl)
     }
 }
 
@@ -385,32 +384,46 @@ impl SessionStore for PostgresStore {
         T: Send + Sync + DeserializeOwned,
     {
         let query = format!(
-            "select value, expires_at from {} where session_id = $1 and field = $2",
-            self.qualified_table_name
+            r#"
+            select f.value
+            from {fields} f
+            join {expiry} e on f.fk_session_id = e.session_id
+            where e.session_id = $1
+              and f.field = $2
+              and (e.expires_at is null or e.expires_at > now())
+              and (f.expires_at is null or f.expires_at > now())
+            "#,
+            fields = self.fields_table_name,
+            expiry = self.expiry_table_name
         );
-        let result: Option<(Vec<u8>, Option<OffsetDateTime>)> = sqlx::query_as(&query)
+
+        let result: Option<(Vec<u8>,)> = sqlx::query_as(&query)
             .bind(session_id.to_string())
             .bind(field)
             .fetch_optional(&self.pool)
             .await?;
 
         match result {
-            Some((value, expires_at)) => {
-                if expires_at.is_some_and(|err| err < OffsetDateTime::now_utc()) {
-                    return Ok(None);
-                }
-                Ok(Some(deserialize_value(&value)?))
-            }
+            Some((data,)) => Ok(Some(deserialize_value(&data)?)),
             None => Ok(None),
         }
     }
 
     async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error> {
         let query = format!(
-            "select field, value, expires_at from {} where session_id = $1",
-            self.qualified_table_name
+            r#"
+            select f.field, f.value
+            from {fields} f
+            join {expiry} e on f.fk_session_id = e.session_id
+            where e.session_id = $1
+              and (e.expires_at is null or e.expires_at > now())
+              and (f.expires_at is null or f.expires_at > now())
+            "#,
+            fields = self.fields_table_name,
+            expiry = self.expiry_table_name
         );
-        let rows: Vec<(String, Vec<u8>, Option<OffsetDateTime>)> = sqlx::query_as(&query)
+
+        let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(&query)
             .bind(session_id.to_string())
             .fetch_all(&self.pool)
             .await?;
@@ -420,20 +433,14 @@ impl SessionStore for PostgresStore {
         }
 
         let mut map = HashMap::with_capacity(rows.len());
-        for (field, value, expires_at) in rows {
-            if !expires_at.is_some_and(|exp| exp < OffsetDateTime::now_utc()) {
-                map.insert(field, value);
-            }
-        }
-
-        if map.is_empty() {
-            return Ok(None);
+        for (field, value) in rows {
+            map.insert(field, value);
         }
 
         Ok(Some(SessionMap::new(map)))
     }
 
-    async fn insert<T>(
+    async fn set<T>(
         &self,
         session_id: &Id,
         field: &str,
@@ -446,14 +453,6 @@ impl SessionStore for PostgresStore {
     where
         T: Send + Sync + Serialize,
     {
-        let query = format!(
-            r"
-            insert into {table} (session_id, field, value, expires_at)
-            values ($1, $2, $3, $4)
-            on conflict do nothing
-            ",
-            table = self.qualified_table_name,
-        );
         self._upsert(
             session_id,
             field,
@@ -461,48 +460,12 @@ impl SessionStore for PostgresStore {
             key_ttl_secs,
             field_ttl_secs,
             None,
-            query,
-        )
-        .await
-    }
-
-    async fn update<T>(
-        &self,
-        session_id: &Id,
-        field: &str,
-        value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
-        #[cfg(feature = "layered-store")] _: Option<i64>,
-        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-    ) -> Result<i64, Error>
-    where
-        T: Send + Sync + Serialize,
-    {
-        let query = format!(
-            r"
-            insert into {table} (session_id, field, value, expires_at)
-            values ($1, $2, $3, $4)
-            on conflict (session_id, field)
-            do update set
-                value = excluded.value,
-                expires_at = excluded.expires_at
-            ",
-            table = self.qualified_table_name,
-        );
-        self._upsert(
-            session_id,
-            field,
-            value,
-            key_ttl_secs,
-            field_ttl_secs,
             None,
-            query,
         )
         .await
     }
 
-    async fn insert_with_rename<T>(
+    async fn set_and_rename<T>(
         &self,
         old_session_id: &Id,
         new_session_id: &Id,
@@ -516,61 +479,14 @@ impl SessionStore for PostgresStore {
     where
         T: Send + Sync + Serialize,
     {
-        let query = format!(
-            r"
-            insert into {table} (session_id, field, value, expires_at)
-            values ($1, $2, $3, $4)
-            on conflict do nothing
-            ",
-            table = self.qualified_table_name,
-        );
-        self._upsert_with_rename(
-            old_session_id,
+        self._upsert(
             new_session_id,
             field,
             value,
             key_ttl_secs,
             field_ttl_secs,
             None,
-            query,
-        )
-        .await
-    }
-
-    async fn update_with_rename<T>(
-        &self,
-        old_session_id: &Id,
-        new_session_id: &Id,
-        field: &str,
-        value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
-        #[cfg(feature = "layered-store")] _: Option<i64>,
-        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-    ) -> Result<i64, Error>
-    where
-        T: Send + Sync + Serialize,
-    {
-        let query = format!(
-            r"
-            insert into {table} (session_id, field, value, expires_at)
-            values ($1, $2, $3, $4)
-            on conflict (session_id, field)
-            do update set
-                value = excluded.value,
-                expires_at = excluded.expires_at
-            ",
-            table = self.qualified_table_name,
-        );
-        self._upsert_with_rename(
-            old_session_id,
-            new_session_id,
-            field,
-            value,
-            key_ttl_secs,
-            field_ttl_secs,
-            None,
-            query,
+            Some(old_session_id),
         )
         .await
     }
@@ -593,7 +509,7 @@ impl SessionStore for PostgresStore {
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
         let query = format!(
             "delete from {table} where session_id = $1",
-            table = self.qualified_table_name
+            table = self.expiry_table_name
         );
         let result = sqlx::query(&query)
             .bind(session_id.to_string())
@@ -603,23 +519,50 @@ impl SessionStore for PostgresStore {
         Ok(result.rows_affected() > 0)
     }
 
-    async fn expire(&self, session_id: &Id, key_ttl_secs: i64) -> Result<bool, Error> {
-        if key_ttl_secs <= 0 {
+    async fn expire(&self, session_id: &Id, ttl_secs: i64) -> Result<bool, Error> {
+        if ttl_secs == 0 {
             return self.delete(session_id).await;
         }
 
-        let expires = expires_at(Some(key_ttl_secs), None);
+        let ttl_secs_f64 = ttl_secs as f64;
+
         let query = format!(
-            "update {table} set expires_at = $1 where session_id = $2",
-            table = self.qualified_table_name
+            r#"
+            with
+            target as (
+                select case
+                    when $2 < 0 then null
+                    else (now() + make_interval(secs => $2))
+                end as new_expiry
+            ),
+            session_update as (
+                update {expiry}
+                set expires_at = target.new_expiry
+                from target
+                where session_id = $1
+                and (expires_at is null or expires_at > now())
+                returning 1
+            ),
+            field_update as (
+                update {fields}
+                set expires_at = target.new_expiry
+                from target, session_update
+                where fk_session_id = $1
+                and (expires_at is null or expires_at > target.new_expiry)
+            )
+            select count(*) from session_update
+            "#,
+            expiry = self.expiry_table_name,
+            fields = self.fields_table_name
         );
-        let result = sqlx::query(&query)
-            .bind(expires)
+
+        let rows_affected: i64 = sqlx::query_scalar(&query)
             .bind(session_id.to_string())
-            .execute(&self.pool)
+            .bind(ttl_secs_f64)
+            .fetch_one(&self.pool)
             .await?;
 
-        Ok(result.rows_affected() > 0)
+        Ok(rows_affected > 0)
     }
 }
 
@@ -628,28 +571,34 @@ impl crate::store::LayeredColdStore for PostgresStore {
     async fn get_all_with_meta(
         &self,
         session_id: &Id,
-    ) -> Result<Option<(SessionMap, std::collections::HashMap<String, Option<i64>>)>, Error> {
+    ) -> Result<Option<(SessionMap, HashMap<String, Option<i64>>)>, Error> {
         let query = format!(
-            "select field, value, expires_at, hot_cache_ttl from {table} where session_id = $1",
-            table = self.qualified_table_name
+            r#"
+            select f.field, f.value, f.hot_cache_ttl
+            from {fields} f
+            join {expiry} e on f.fk_session_id = e.session_id
+            where e.session_id = $1
+              and (e.expires_at is null or e.expires_at > now())
+              and (f.expires_at is null or f.expires_at > now())
+            "#,
+            fields = self.fields_table_name,
+            expiry = self.expiry_table_name
         );
-        let rows: Vec<(String, Vec<u8>, Option<OffsetDateTime>, Option<i64>)> =
-            sqlx::query_as(&query)
-                .bind(session_id.to_string())
-                .fetch_all(&self.pool)
-                .await?;
+
+        let rows: Vec<(String, Vec<u8>, Option<i64>)> = sqlx::query_as(&query)
+            .bind(session_id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
 
         if rows.is_empty() {
             return Ok(None);
         }
 
         let mut session_map = HashMap::with_capacity(rows.len());
-        let mut meta_map = std::collections::HashMap::new();
-        for (field, value, expires_at, hot_cache_ttl) in rows {
-            if !expires_at.is_some_and(|err| err < OffsetDateTime::now_utc()) {
-                session_map.insert(field.clone(), value);
-                meta_map.insert(field, hot_cache_ttl);
-            }
+        let mut meta_map = HashMap::new();
+        for (field, value, hot_cache_ttl) in rows {
+            session_map.insert(field.clone(), value);
+            meta_map.insert(field, hot_cache_ttl);
         }
 
         if session_map.is_empty() {
@@ -659,36 +608,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
         Ok(Some((SessionMap::new(session_map), meta_map)))
     }
 
-    async fn insert_with_meta<T: Serialize + Send + Sync + 'static>(
-        &self,
-        session_id: &Id,
-        field: &str,
-        value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>, // Not used in Postgres
-        hot_cache_ttl_secs: Option<i64>,
-    ) -> Result<i64, Error> {
-        let query = format!(
-            r"
-            insert into {table} (session_id, field, value, expires_at, hot_cache_ttl)
-            values ($1, $2, $3, $4, $5)
-            on conflict do nothing
-            ",
-            table = self.qualified_table_name,
-        );
-        self._upsert(
-            session_id,
-            field,
-            value,
-            key_ttl_secs,
-            field_ttl_secs,
-            hot_cache_ttl_secs,
-            query,
-        )
-        .await
-    }
-
-    async fn update_with_meta<T: Serialize + Send + Sync + 'static>(
+    async fn set_with_meta<T: Serialize + Send + Sync + 'static>(
         &self,
         session_id: &Id,
         field: &str,
@@ -697,18 +617,6 @@ impl crate::store::LayeredColdStore for PostgresStore {
         field_ttl_secs: Option<i64>,
         hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error> {
-        let query = format!(
-            r"
-            insert into {table} (session_id, field, value, expires_at, hot_cache_ttl)
-            values ($1, $2, $3, $4, $5)
-            on conflict (session_id, field)
-            do update set
-                value = excluded.value,
-                expires_at = excluded.expires_at,
-                hot_cache_ttl = excluded.hot_cache_ttl
-            ",
-            table = self.qualified_table_name,
-        );
         self._upsert(
             session_id,
             field,
@@ -716,12 +624,12 @@ impl crate::store::LayeredColdStore for PostgresStore {
             key_ttl_secs,
             field_ttl_secs,
             hot_cache_ttl_secs,
-            query,
+            None,
         )
         .await
     }
 
-    async fn insert_with_rename_with_meta<T: Serialize + Send + Sync + 'static>(
+    async fn set_and_rename_with_meta<T: Serialize + Send + Sync + 'static>(
         &self,
         old_session_id: &Id,
         new_session_id: &Id,
@@ -731,59 +639,14 @@ impl crate::store::LayeredColdStore for PostgresStore {
         field_ttl_secs: Option<i64>,
         hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error> {
-        let query = format!(
-            r"
-            insert into {table} (session_id, field, value, expires_at, hot_cache_ttl)
-            values ($1, $2, $3, $4, $5)
-            on conflict do nothing
-            returning session_id
-            ",
-            table = self.qualified_table_name,
-        );
-        self._upsert_with_rename(
-            old_session_id,
+        self._upsert(
             new_session_id,
             field,
             value,
             key_ttl_secs,
             field_ttl_secs,
             hot_cache_ttl_secs,
-            query,
-        )
-        .await
-    }
-
-    async fn update_with_rename_with_meta<T: Serialize + Send + Sync + 'static>(
-        &self,
-        old_session_id: &Id,
-        new_session_id: &Id,
-        field: &str,
-        value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
-        hot_cache_ttl_secs: Option<i64>,
-    ) -> Result<i64, Error> {
-        let query = format!(
-            r"
-            insert into {table} (session_id, field, value, expires_at, hot_cache_ttl)
-            values ($1, $2, $3, $4, $5)
-            on conflict (session_id, field)
-            do update set
-                value = excluded.value,
-                expires_at = excluded.expires_at,
-                hot_cache_ttl = excluded.hot_cache_ttl
-            ",
-            table = self.qualified_table_name,
-        );
-        self._upsert_with_rename(
-            old_session_id,
-            new_session_id,
-            field,
-            value,
-            key_ttl_secs,
-            field_ttl_secs,
-            hot_cache_ttl_secs,
-            query,
+            Some(old_session_id),
         )
         .await
     }
@@ -806,8 +669,7 @@ mod tests {
             std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
         let pool = PgPool::connect(&database_url).await.unwrap();
 
-        // Clean up table before each test run
-        sqlx::query("drop table if exists sessions")
+        sqlx::query("drop table if exists t_sessions cascade")
             .execute(&pool)
             .await
             .unwrap();
@@ -820,7 +682,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_and_get() {
+    async fn test_set_and_get() {
         let store = setup_store().await;
         let session_id = Id::default();
         let field = "field1";
@@ -829,7 +691,7 @@ mod tests {
         };
 
         let ttl = store
-            .insert(&session_id, field, &value, Some(60), Some(60), None)
+            .set(&session_id, field, &value, Some(60), Some(60), None)
             .await
             .unwrap();
         assert!(ttl > 55);
@@ -837,9 +699,8 @@ mod tests {
         let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
         assert_eq!(fetched, Some(value.clone()));
 
-        // Insert again shouldn't overwrite
         store
-            .insert(
+            .set(
                 &session_id,
                 field,
                 &TestData { value: "x".into() },
@@ -850,7 +711,7 @@ mod tests {
             .await
             .unwrap();
         let fetched2: Option<TestData> = store.get(&session_id, field).await.unwrap();
-        assert_eq!(fetched2, Some(value));
+        assert_eq!(fetched2, Some(TestData { value: "x".into() }));
     }
 
     #[tokio::test]
@@ -866,11 +727,11 @@ mod tests {
         };
 
         store
-            .insert(&session_id, field, &value, Some(60), Some(60), None)
+            .set(&session_id, field, &value, Some(60), Some(60), None)
             .await
             .unwrap();
         store
-            .update(&session_id, field, &updated_value, Some(60), Some(60), None)
+            .set(&session_id, field, &updated_value, Some(60), Some(60), None)
             .await
             .unwrap();
 
@@ -884,9 +745,8 @@ mod tests {
         let session_id = Id::default();
         let field = "ttl_zero";
 
-        // Field TTL = 0 triggers removal
         let ttl = store
-            .insert(
+            .set(
                 &session_id,
                 field,
                 &TestData { value: "x".into() },
@@ -896,7 +756,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(ttl, -2);
+        assert_eq!(ttl, -2); // Session empty -> deleted
 
         let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
         assert!(fetched.is_none());
@@ -909,7 +769,7 @@ mod tests {
         let field = "ttl_neg";
 
         let ttl = store
-            .insert(
+            .set(
                 &session_id,
                 field,
                 &TestData { value: "y".into() },
@@ -919,6 +779,7 @@ mod tests {
             )
             .await
             .unwrap();
+
         assert_eq!(ttl, -1);
 
         let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
@@ -931,7 +792,7 @@ mod tests {
         let session_id = Id::default();
         let field = "expire_field";
         store
-            .insert(
+            .set(
                 &session_id,
                 field,
                 &TestData {
@@ -944,9 +805,77 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
         let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
         assert!(fetched.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_expire_caps_long_lived_fields() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+
+        store
+            .set(
+                &session_id,
+                "long",
+                &TestData {
+                    value: "val".into(),
+                },
+                Some(3600),
+                Some(3600),
+                None,
+            )
+            .await
+            .unwrap();
+
+        store.expire(&session_id, 1).await.unwrap();
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let fetched: Option<TestData> = store.get(&session_id, "long").await.unwrap();
+        assert!(
+            fetched.is_none(),
+            "Field should have been capped by session expire"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remove_downgrades_session_expiry() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+
+        store
+            .set(
+                &session_id,
+                "A",
+                &TestData { value: "a".into() },
+                Some(100),
+                Some(100),
+                None,
+            )
+            .await
+            .unwrap();
+
+        store
+            .set(
+                &session_id,
+                "B",
+                &TestData { value: "b".into() },
+                Some(10),
+                Some(10),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let ttl = store.remove(&session_id, "A").await.unwrap();
+
+        assert!(
+            ttl > 0 && ttl <= 10,
+            "TTL should have downgraded to match Field B (approx 10s), got {}",
+            ttl
+        );
     }
 
     #[tokio::test]
@@ -956,7 +885,7 @@ mod tests {
         let field = "to_remove";
 
         store
-            .insert(
+            .set(
                 &session_id,
                 field,
                 &TestData {
@@ -980,7 +909,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_with_rename() {
+    async fn test_set_with_rename() {
         let store = setup_store().await;
         let old_id = Id::default();
         let new_id = Id::default();
@@ -990,7 +919,7 @@ mod tests {
         };
 
         store
-            .insert_with_rename(&old_id, &new_id, field, &value, Some(60), Some(60), None)
+            .set_and_rename(&old_id, &new_id, field, &value, Some(60), Some(60), None)
             .await
             .unwrap();
 
@@ -1008,17 +937,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rename_to_existing_session() {
+    async fn test_rename_collision_fails() {
         let store = setup_store().await;
         let old_id = Id::default();
         let new_id = Id::default();
-        let field_old = "f1";
-        let field_new = "f2";
 
         store
-            .insert(
+            .set(
                 &old_id,
-                field_old,
+                "f1",
                 &TestData { value: "v1".into() },
                 Some(60),
                 Some(60),
@@ -1027,9 +954,9 @@ mod tests {
             .await
             .unwrap();
         store
-            .insert(
+            .set(
                 &new_id,
-                field_new,
+                "f2",
                 &TestData { value: "v2".into() },
                 Some(60),
                 Some(60),
@@ -1038,11 +965,11 @@ mod tests {
             .await
             .unwrap();
 
-        store
-            .update_with_rename(
+        let result = store
+            .set_and_rename(
                 &old_id,
                 &new_id,
-                field_old,
+                "f1",
                 &TestData {
                     value: "v1_upd".into(),
                 },
@@ -1050,18 +977,12 @@ mod tests {
                 Some(60),
                 None,
             )
-            .await
-            .unwrap();
+            .await;
 
         assert!(
-            store
-                .get::<TestData>(&old_id, field_old)
-                .await
-                .unwrap()
-                .is_none()
+            result.is_err(),
+            "Rename to existing session ID should fail to prevent session fixation"
         );
-        let fetched_new: Option<TestData> = store.get(&new_id, field_old).await.unwrap();
-        assert_eq!(fetched_new.unwrap().value, "v1_upd");
     }
 
     #[tokio::test]
@@ -1070,7 +991,7 @@ mod tests {
         let session_id = Id::default();
 
         store
-            .insert(
+            .set(
                 &session_id,
                 "f1",
                 &TestData { value: "v1".into() },
@@ -1081,7 +1002,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .insert(
+            .set(
                 &session_id,
                 "f2",
                 &TestData { value: "v2".into() },

@@ -7,7 +7,7 @@ use std::future::Future;
 /// This trait acts as a private API, allowing the `LayeredStore` to store multiple
 /// (field, value, cache_ttl) triplets in a single round-trip.
 pub trait LayeredHotStore: Clone + Send + Sync + 'static {
-    fn update_many(
+    fn set_multiple(
         &self,
         session_id: &Id,
         pairs: &[(&str, &[u8], Option<i64>)],
@@ -24,19 +24,8 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
         session_id: &Id,
     ) -> impl Future<Output = Result<Option<(SessionMap, HashMap<String, Option<i64>>)>, Error>> + Send;
 
-    /// Inserts a session field along with its specific caching metadata.
-    fn insert_with_meta<T: Serialize + Send + Sync + 'static>(
-        &self,
-        session_id: &Id,
-        field: &str,
-        value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
-        hot_cache_ttl: Option<i64>,
-    ) -> impl Future<Output = Result<i64, Error>> + Send;
-
     /// Updates a session field along with its specific caching metadata.
-    fn update_with_meta<T: Serialize + Send + Sync + 'static>(
+    fn set_with_meta<T: Serialize + Send + Sync + 'static>(
         &self,
         session_id: &Id,
         field: &str,
@@ -47,19 +36,7 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
     ) -> impl Future<Output = Result<i64, Error>> + Send;
 
     /// Inserts a session field with rename along with its specific caching metadata.
-    fn insert_with_rename_with_meta<T: Serialize + Send + Sync + 'static>(
-        &self,
-        old_session_id: &Id,
-        new_session_id: &Id,
-        field: &str,
-        value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
-        hot_cache_ttl: Option<i64>,
-    ) -> impl Future<Output = Result<i64, Error>> + Send;
-
-    /// Updates a session field with rename along with its specific caching metadata.
-    fn update_with_rename_with_meta<T: Serialize + Send + Sync + 'static>(
+    fn set_and_rename_with_meta<T: Serialize + Send + Sync + 'static>(
         &self,
         old_session_id: &Id,
         new_session_id: &Id,

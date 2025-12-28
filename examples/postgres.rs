@@ -39,7 +39,7 @@ struct AppSession {
 fn routes() -> Router<()> {
     Router::new()
         .route(
-            "/insert",
+            "/set",
             get(|session: PostgresSession| async move {
                 let app_session = AppSession {
                     user: Some(User {
@@ -51,7 +51,7 @@ fn routes() -> Router<()> {
                 };
 
                 session
-                    .insert("app", &app_session, None, None)
+                    .set("app", &app_session, None, None)
                     .await
                     .expect("Failed to insert session data");
             }),

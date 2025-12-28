@@ -28,7 +28,7 @@ use serde::{Serialize, de::DeserializeOwned};
 ///
 /// // The cold store (Postgres) will get the long-term expiry,
 /// // but the hot store (Redis) will be capped at the shorter TTL.
-/// session.update("user", &user, Some(long_term_expiry), Some(short_term_hot_cache_expiry))
+/// session.set("user", &user, Some(long_term_expiry), Some(short_term_hot_cache_expiry))
 ///     .await
 ///     .unwrap();
 /// # }
@@ -85,7 +85,7 @@ where
                         .collect();
 
                     if !pairs_to_cache.is_empty() {
-                        self.hot.update_many(session_id, &pairs_to_cache).await?;
+                        self.hot.set_multiple(session_id, &pairs_to_cache).await?;
                     }
 
                     session_map.get(field)
@@ -113,7 +113,7 @@ where
                         .collect();
 
                     if !pairs_to_cache.is_empty() {
-                        self.hot.update_many(session_id, &pairs_to_cache).await?;
+                        self.hot.set_multiple(session_id, &pairs_to_cache).await?;
                     }
 
                     Ok(Some(session_map))
@@ -123,7 +123,7 @@ where
         }
     }
 
-    async fn insert<T>(
+    async fn set<T>(
         &self,
         session_id: &Id,
         field: &str,
@@ -138,8 +138,8 @@ where
         let hot_cache_ttl = hot_cache_ttl_secs.or(field_ttl_secs);
         let (_, cold_ttl) = tokio::try_join!(
             self.hot
-                .insert(session_id, field, value, hot_cache_ttl, hot_cache_ttl, None),
-            self.cold.insert_with_meta(
+                .set(session_id, field, value, hot_cache_ttl, hot_cache_ttl, None),
+            self.cold.set_with_meta(
                 session_id,
                 field,
                 value,
@@ -152,36 +152,7 @@ where
         Ok(cold_ttl)
     }
 
-    async fn update<T>(
-        &self,
-        session_id: &Id,
-        field: &str,
-        value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
-        hot_cache_ttl_secs: Option<i64>,
-    ) -> Result<i64, Error>
-    where
-        T: Send + Sync + Serialize + 'static,
-    {
-        let hot_cache_ttl = hot_cache_ttl_secs.or(field_ttl_secs);
-        let (_, cold_ttl) = tokio::try_join!(
-            self.hot
-                .update(session_id, field, value, hot_cache_ttl, hot_cache_ttl, None),
-            self.cold.update_with_meta(
-                session_id,
-                field,
-                value,
-                key_ttl_secs,
-                field_ttl_secs,
-                hot_cache_ttl
-            ),
-        )?;
-
-        Ok(cold_ttl)
-    }
-
-    async fn insert_with_rename<T>(
+    async fn set_and_rename<T>(
         &self,
         old_session_id: &Id,
         new_session_id: &Id,
@@ -196,7 +167,7 @@ where
     {
         let hot_cache_ttl = hot_cache_ttl_secs.or(field_ttl_secs);
         let (_, cold_ttl) = tokio::try_join!(
-            self.hot.insert_with_rename(
+            self.hot.set_and_rename(
                 old_session_id,
                 new_session_id,
                 field,
@@ -205,45 +176,7 @@ where
                 hot_cache_ttl,
                 None
             ),
-            self.cold.insert_with_rename_with_meta(
-                old_session_id,
-                new_session_id,
-                field,
-                value,
-                key_ttl_secs,
-                field_ttl_secs,
-                hot_cache_ttl
-            ),
-        )?;
-
-        Ok(cold_ttl)
-    }
-
-    async fn update_with_rename<T>(
-        &self,
-        old_session_id: &Id,
-        new_session_id: &Id,
-        field: &str,
-        value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
-        hot_cache_ttl_secs: Option<i64>,
-    ) -> Result<i64, Error>
-    where
-        T: Send + Sync + Serialize + 'static,
-    {
-        let hot_cache_ttl = hot_cache_ttl_secs.or(field_ttl_secs);
-        let (_, cold_ttl) = tokio::try_join!(
-            self.hot.update_with_rename(
-                old_session_id,
-                new_session_id,
-                field,
-                value,
-                hot_cache_ttl,
-                hot_cache_ttl,
-                None
-            ),
-            self.cold.update_with_rename_with_meta(
+            self.cold.set_and_rename_with_meta(
                 old_session_id,
                 new_session_id,
                 field,
@@ -340,15 +273,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_layered_cache_aside_flow() {
+    async fn test_layered_cache() {
         let store = setup_store().await;
         let session_id = Id::default();
         let test_user = create_test_user();
 
-        // 1. Write a value with a long TTL for the cold store, but a very short TTL
-        //    for the hot cache. This simulates a cache entry that will expire quickly.
         store
-            .update(
+            .set(
                 &session_id,
                 "user",
                 &test_user,
@@ -359,7 +290,7 @@ mod tests {
             .await
             .unwrap();
 
-        // 2. Immediately get the value. This should be a cache HIT.
+        // Immediately get the value. This should be a cache HIT.
         let user_from_hit: TestUser = store
             .get(&session_id, "user")
             .await
@@ -367,11 +298,11 @@ mod tests {
             .expect("Should get value from hot cache");
         assert_eq!(user_from_hit, test_user);
 
-        // 3. Wait for the hot cache entry to expire.
+        // Wait for the hot cache entry to expire.
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        // 4. Get the value again. This should be a cache MISS, which triggers a
-        //    read from the cold store and automatically warms the cache.
+        // Get the value again. This should be a cache MISS, which triggers a
+        // read from the cold store and automatically warms the cache.
         let user_from_miss: TestUser = store
             .get(&session_id, "user")
             .await
@@ -387,7 +318,7 @@ mod tests {
         let test_user = create_test_user();
 
         store
-            .update(
+            .set(
                 &session_id,
                 "user",
                 &test_user,

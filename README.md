@@ -83,15 +83,14 @@ async fn handler(session: Session<MemoryStore>) {
       let user: Option<User> = map.get("user").unwrap();
   }
 
-  // Insert new data with an optional field-level expiration (in seconds)
-  session.insert("key", &"some_value", Some(3600), None).await.unwrap();
+  // Set data (upsert) with an optional field-level expiration (in seconds)
+  // If the field exists, it is overwritten.
+  session.set("key", &"some_value", Some(3600), None).await.unwrap();
   
-  // Update existing data
-  session.update("key", &"new_value", None, None).await.unwrap();
-  
-  // Prepare a new session ID before an insert/update to prevent session fixation
+  // Prepare a new session ID before a set operation to prevent session fixation
   let new_id = session.prepare_regenerate();
-  session.update("key", &"value_with_new_id", None, None).await.unwrap();
+  // The next set operation will automatically rename the session to the new ID
+  session.set("key", &"value_with_new_id", None, None).await.unwrap();
   
   // Remove a single field
   session.remove("key").await.unwrap();
@@ -99,7 +98,7 @@ async fn handler(session: Session<MemoryStore>) {
   // Delete the entire session
   session.delete().await.unwrap();
   
-  // Regenerate session ID for security
+  // Regenerate session ID for security (Renames session immediately)
   session.regenerate().await.unwrap();
   
   // Update the session's overall expiry time
@@ -194,7 +193,7 @@ To use [`MessagePack`](https://crates.io/crates/rmp-serde) instead of the defaul
 
 ```toml
 [dependencies]
-ruts = { version = "0.7.1", default-features = false, features = ["axum", "messagepack"] }
+ruts = { version = "0.7.2", default-features = false, features = ["axum", "messagepack"] }
 ```
 
 ### Cookie Configuration
