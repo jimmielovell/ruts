@@ -1,11 +1,7 @@
 mod lua;
 
 use crate::Id;
-use crate::store::redis::lua::{
-    INSERT_SCRIPT, INSERT_SCRIPT_HASH, INSERT_WITH_RENAME_SCRIPT, INSERT_WITH_RENAME_SCRIPT_HASH,
-    REMOVE_SCRIPT, REMOVE_SCRIPT_HASH, UPDATE_MANY_SCRIPT, UPDATE_MANY_SCRIPT_HASH, UPDATE_SCRIPT,
-    UPDATE_SCRIPT_HASH, UPDATE_WITH_RENAME_SCRIPT, UPDATE_WITH_RENAME_SCRIPT_HASH,
-};
+use crate::store::redis::lua::{REMOVE_SCRIPT, REMOVE_SCRIPT_HASH, SET_AND_RENAME_SCRIPT, SET_AND_RENAME_SCRIPT_HASH, SET_MULTIPLE_SCRIPT, SET_MULTIPLE_SCRIPT_HASH, SET_SCRIPT, SET_SCRIPT_HASH};
 use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize_value};
 use fred::clients::Pool;
 use fred::interfaces::{HashesInterface, KeysInterface};
@@ -83,7 +79,7 @@ where
         Ok(Some(SessionMap::new(map)))
     }
 
-    async fn insert<T>(
+    async fn set<T>(
         &self,
         session_id: &Id,
         field: &str,
@@ -103,39 +99,13 @@ where
             value,
             key_ttl_secs,
             field_ttl_secs,
-            &INSERT_SCRIPT_HASH,
-            INSERT_SCRIPT,
+            &SET_SCRIPT_HASH,
+            SET_SCRIPT,
         )
         .await
     }
 
-    async fn update<T>(
-        &self,
-        session_id: &Id,
-        field: &str,
-        value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
-        #[cfg(feature = "layered-store")] _: Option<i64>,
-        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-    ) -> Result<i64, Error>
-    where
-        T: Send + Sync + Serialize,
-    {
-        insert_update(
-            Arc::clone(&self.client),
-            vec![session_id],
-            field,
-            value,
-            key_ttl_secs,
-            field_ttl_secs,
-            &UPDATE_SCRIPT_HASH,
-            UPDATE_SCRIPT,
-        )
-        .await
-    }
-
-    async fn insert_with_rename<T>(
+    async fn set_and_rename<T>(
         &self,
         old_session_id: &Id,
         new_session_id: &Id,
@@ -156,35 +126,8 @@ where
             value,
             key_ttl_secs,
             field_ttl_secs,
-            &INSERT_WITH_RENAME_SCRIPT_HASH,
-            INSERT_WITH_RENAME_SCRIPT,
-        )
-        .await
-    }
-
-    async fn update_with_rename<T>(
-        &self,
-        old_session_id: &Id,
-        new_session_id: &Id,
-        field: &str,
-        value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
-        #[cfg(feature = "layered-store")] _: Option<i64>,
-        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-    ) -> Result<i64, Error>
-    where
-        T: Send + Sync + Serialize,
-    {
-        insert_update(
-            Arc::clone(&self.client),
-            vec![old_session_id, new_session_id],
-            field,
-            value,
-            key_ttl_secs,
-            field_ttl_secs,
-            &UPDATE_WITH_RENAME_SCRIPT_HASH,
-            UPDATE_WITH_RENAME_SCRIPT,
+            &SET_AND_RENAME_SCRIPT_HASH,
+            SET_AND_RENAME_SCRIPT,
         )
         .await
     }
@@ -272,7 +215,7 @@ impl<C> crate::store::LayeredHotStore for RedisStore<C>
 where
     C: HashesInterface + KeysInterface + LuaInterface + Clone + Send + Sync + 'static,
 {
-    async fn update_many(
+    async fn set_multiple(
         &self,
         session_id: &Id,
         pairs: &[(&str, &[u8], Option<i64>)],
@@ -281,11 +224,11 @@ where
             return Ok(-2);
         }
 
-        let hash = UPDATE_MANY_SCRIPT_HASH
+        let hash = SET_MULTIPLE_SCRIPT_HASH
             .get_or_try_init(|| async {
-                let hash = fred::util::sha1_hash(UPDATE_MANY_SCRIPT);
+                let hash = fred::util::sha1_hash(SET_MULTIPLE_SCRIPT);
                 if !self.client.script_exists::<bool, _>(&hash).await? {
-                    let _: () = self.client.script_load(UPDATE_MANY_SCRIPT).await?;
+                    let _: () = self.client.script_load(SET_MULTIPLE_SCRIPT).await?;
                 }
                 Ok::<String, fred::error::Error>(hash)
             })
@@ -315,20 +258,24 @@ mod tests {
 
     async fn setup_store() -> RedisStore<Client> {
         let client = Client::default();
-        client.connect();
+        let _ = client.connect();
         client.wait_for_connect().await.unwrap();
+
+        let _: Result<(), fred::error::Error> = client.flushall(false).await;
+
         RedisStore::new(Arc::new(client))
     }
 
     #[tokio::test]
-    async fn test_insert_and_get() {
+    async fn test_set_and_get() {
         let store = setup_store().await;
         let sid = Id::default();
 
         let ttl = store
-            .insert(&sid, "field1", &"value1", Some(10), None, None)
+            .set(&sid, "field1", &"value1", Some(10), None, None)
             .await
             .unwrap();
+
         assert_eq!(ttl, 10);
 
         let v: Option<String> = store.get(&sid, "field1").await.unwrap();
@@ -336,57 +283,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_with_field_ttl() {
+    async fn test_set_with_field_ttl() {
         let store = setup_store().await;
         let sid = Id::default();
 
         store
-            .insert(&sid, "f", &"temp", None, Some(1), None)
+            .set(&sid, "f", &"temp", None, Some(1), None)
             .await
             .unwrap();
 
-        // Initially exists
         let v: Option<String> = store.get(&sid, "f").await.unwrap();
         assert_eq!(v.unwrap(), "temp");
 
-        // Should expire after 1s
-        sleep(Duration::from_secs(2)).await;
+        sleep(Duration::from_millis(1100)).await;
         let v: Option<String> = store.get(&sid, "f").await.unwrap();
         assert!(v.is_none());
     }
 
     #[tokio::test]
-    async fn test_update_with_persistent_field() {
+    async fn test_set_updates_session_persistence() {
         let store = setup_store().await;
         let sid = Id::default();
 
         let ttl = store
-            .insert(&sid, "f", &"x", Some(5), Some(5), None)
+            .set(&sid, "f", &"x", Some(5), Some(5), None)
             .await
             .unwrap();
         assert_eq!(ttl, 5);
 
         let ttl = store
-            .update(&sid, "f", &"y", None, Some(-1), None)
+            .set(&sid, "f", &"y", None, Some(-1), None)
             .await
             .unwrap();
         assert_eq!(ttl, -1);
     }
 
     #[tokio::test]
-    async fn test_insert_with_rename_success() {
+    async fn test_rename_success() {
         let store = setup_store().await;
         let old_sid = Id::default();
         let new_sid = Id::default();
 
         store
-            .insert(&old_sid, "f", &"foo", None, None, None)
+            .set(&old_sid, "f", &"foo", None, None, None)
             .await
             .unwrap();
+
         store
-            .insert_with_rename(&old_sid, &new_sid, "g", &"bar", Some(5), None, None)
+            .set_and_rename(&old_sid, &new_sid, "g", &"bar", Some(60), None, None)
             .await
             .unwrap();
+
+        let old_v: Option<String> = store.get(&old_sid, "f").await.unwrap();
+        assert!(old_v.is_none());
 
         let v: Option<String> = store.get(&new_sid, "f").await.unwrap();
         assert_eq!(v.unwrap(), "foo");
@@ -396,28 +345,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_with_rename_conflict() {
+    async fn test_rename_conflict_fails() {
         let store = setup_store().await;
         let old_sid = Id::default();
         let new_sid = Id::default();
 
         store
-            .insert(&old_sid, "f", &"foo", None, None, None)
+            .set(&old_sid, "f", &"foo", Some(60), None, None)
             .await
             .unwrap();
         store
-            .insert(&new_sid, "existing", &"bar", None, None, None)
+            .set(&new_sid, "existing", &"bar", Some(60), None, None)
             .await
             .unwrap();
 
-        // RENAMENX should fail, but we still insert into new_sid
-        store
-            .insert_with_rename(&old_sid, &new_sid, "g", &"baz", None, None, None)
-            .await
-            .unwrap();
+        let result = store
+            .set_and_rename(&old_sid, &new_sid, "g", &"baz", Some(60), None, None)
+            .await;
 
-        let v: Option<String> = store.get(&new_sid, "g").await.unwrap();
-        assert_eq!(v.unwrap(), "baz");
+        assert!(result.is_err(), "Rename to an existing session ID should fail");
+
+        let v: Option<String> = store.get(&new_sid, "existing").await.unwrap();
+        assert_eq!(v.unwrap(), "bar");
     }
 
     #[tokio::test]
@@ -426,24 +375,24 @@ mod tests {
         let sid = Id::default();
 
         store
-            .insert(&sid, "f1", &"v1", Some(10), None, None)
+            .set(&sid, "f1", &"v1", Some(10), None, None)
             .await
             .unwrap();
         store
-            .insert(&sid, "f2", &"v2", Some(10), None, None)
+            .set(&sid, "f2", &"v2", Some(10), None, None)
             .await
             .unwrap();
 
         let ttl = store.remove(&sid, "f1").await.unwrap();
-        assert_eq!(ttl, 10); // still has key
+        assert!(ttl > 0); // Session still exists
 
         let ttl = store.remove(&sid, "f2").await.unwrap();
-        assert_eq!(ttl, -2);
+        assert_eq!(ttl, -2); // Last field removed -> Session deleted
     }
 
     #[cfg(feature = "layered-store")]
     #[tokio::test]
-    async fn test_update_many() {
+    async fn test_set_multiple() {
         use crate::store::{LayeredHotStore, serialize_value};
 
         let store = setup_store().await;
@@ -452,13 +401,14 @@ mod tests {
         let a_val = serialize_value(&"1").unwrap();
         let b_val = serialize_value(&"2").unwrap();
 
+        // Test mixed TTLs: One finite, one persistent
         let pairs = vec![
             ("a", a_val.as_slice(), Some(3)),
-            ("b", b_val.as_slice(), Some(-1)), // persistent
+            ("b", b_val.as_slice(), Some(-1)),
         ];
 
-        let ttl = store.update_many(&sid, pairs.as_slice()).await.unwrap();
-        assert_eq!(ttl, -1); // persistent because of "b"
+        let ttl = store.set_multiple(&sid, pairs.as_slice()).await.unwrap();
+        assert_eq!(ttl, -1);
 
         let v: Option<String> = store.get(&sid, "a").await.unwrap();
         assert_eq!(v.unwrap(), "1");

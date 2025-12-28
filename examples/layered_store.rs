@@ -28,14 +28,14 @@ struct User {
 fn routes() -> Router<()> {
     Router::new()
         .route(
-            "/insert_default",
+            "/set",
             get(|session: LayeredSession| async move {
                 let user = User {
                     id: 1,
                     name: "Default User".into(),
                 };
                 // This will be written to both Redis and Postgres.
-                session.insert("app", &user, None, None).await.unwrap();
+                session.set("app", &user, None, None).await.unwrap();
             }),
         )
         // cap the TTL on the hot cache.
@@ -50,7 +50,7 @@ fn routes() -> Router<()> {
                 let short_term_hot_cache_expiry = 60; // 1 minute in Redis
 
                 session
-                    .update(
+                    .set(
                         "user",
                         &user,
                         Some(long_term_expiry),
@@ -69,7 +69,7 @@ fn routes() -> Router<()> {
                     name: "Cold Only User".into(),
                 };
                 // This will be written to Postgres, but NOT to Redis.
-                session.update("user", &user, None, Some(0)).await.unwrap();
+                session.set("user", &user, None, Some(0)).await.unwrap();
             }),
         )
         .route(

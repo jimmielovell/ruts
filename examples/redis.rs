@@ -36,7 +36,7 @@ struct AppSession {
 fn routes() -> Router {
     Router::new()
         .route(
-            "/prepare_and_update",
+            "/set",
             get(|session: RedisSession| async move {
                 let app_session: AppSession = AppSession {
                     user: Some(User {
@@ -48,25 +48,7 @@ fn routes() -> Router {
 
                 session.prepare_regenerate();
                 session
-                    .update("app", &app_session, None, None)
-                    .await
-                    .map_err(|e| e.to_string())
-                    .unwrap();
-            }),
-        )
-        .route(
-            "/insert",
-            get(|session: RedisSession| async move {
-                let app_session: AppSession = AppSession {
-                    user: Some(User {
-                        id: 34895634,
-                        name: String::from("John Doe"),
-                    }),
-                    theme: Some(Theme::Dark),
-                };
-
-                session
-                    .insert("app", &app_session, None, None)
+                    .set("app", &app_session, None, None)
                     .await
                     .map_err(|e| e.to_string())
                     .unwrap();
@@ -76,7 +58,7 @@ fn routes() -> Router {
             "/update",
             get(|session: RedisSession| async move {
                 session
-                    .update("theme", &Theme::Light, None, None)
+                    .set("theme", &Theme::Light, None, None)
                     .await
                     .map_err(|e| e.to_string())
                     .unwrap();

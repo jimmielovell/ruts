@@ -117,51 +117,12 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         session_id: &Id,
     ) -> impl Future<Output = Result<Option<SessionMap>, Error>> + Send;
 
-    /// Sets a `field` stored at `session_id` to its provided `value`,
-    /// only if the `field` does not exist.
+    /// Sets a `field` stored at `session_id` to the new `value`.
     ///
-    /// Returns the new max_age of the session if the `field` was inserted, otherwise, `None`.
-    fn insert<T>(
+    /// Returns the new max_age of the session.
+    fn set<T>(
         &self,
         session_id: &Id,
-        field: &str,
-        value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
-        #[cfg(feature = "layered-store")] hot_cache_ttl_secs: Option<i64>,
-        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-    ) -> impl Future<Output = Result<i64, Error>> + Send
-    where
-        T: Send + Sync + Serialize + 'static;
-
-    /// Updates a `field` stored at `session_id` to the new `value`.
-    ///
-    /// If the `field` does not exist, it is set to the corresponding `value`.
-    ///
-    /// Returns the new max_age of the session if the `field` was updated.
-    fn update<T>(
-        &self,
-        session_id: &Id,
-        field: &str,
-        value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
-        #[cfg(feature = "layered-store")] hot_cache_ttl_secs: Option<i64>,
-        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-    ) -> impl Future<Output = Result<i64, Error>> + Send
-    where
-        T: Send + Sync + Serialize + 'static;
-
-    /// Sets a `field` stored at `session_id` to its provided `value` and renames
-    /// the session ID from `old_session_id` to `new_session_id`,
-    /// only if the `field` does not exist.
-    ///
-    /// Returns the new max_age of the session if the `field` was inserted, otherwise, `None`.
-    #[allow(clippy::too_many_arguments)]
-    fn insert_with_rename<T>(
-        &self,
-        old_session_id: &Id,
-        new_session_id: &Id,
         field: &str,
         value: &T,
         key_ttl_secs: Option<i64>,
@@ -179,7 +140,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
     ///
     /// Returns the new max_age of the session if the `field` was updated.
     #[allow(clippy::too_many_arguments)]
-    fn update_with_rename<T>(
+    fn set_and_rename<T>(
         &self,
         old_session_id: &Id,
         new_session_id: &Id,

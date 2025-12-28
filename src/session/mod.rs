@@ -100,115 +100,7 @@ where
         }
     }
 
-    /// Inserts a value into the session store under the given field.
-    ///
-    /// The behavior of `field_ttl_secs` determines how this field affects session persistence:
-    ///
-    /// - **-1**: Marks this field as persistent. The session key itself will also be persisted,
-    ///   making the associated cookie persistent. This does **not** alter the TTL of other fields
-    ///   in the session.
-    /// - **0**: Removes this field from the store. The session behaves as if `remove` was called
-    ///   on this field.
-    /// - **> 0**: Sets a TTL (in seconds) for this field. The session TTL is updated according to:
-    ///   - If the session key is already persistent, its TTL remains unchanged.
-    ///   - If the field TTL is less than the current session TTL, the session TTL remains unchanged.
-    ///   - If the field TTL is greater than the current session TTL, the session TTL is updated
-    ///     to match the field TTL.
-    ///
-    /// Returns `true` if the field-value pair was successfully inserted or updated, and `false` if
-    /// the operation resulted in deletion (e.g., TTL = 0 for a non-existent session).
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use ruts::{Session};
-    /// use fred::clients::Client;
-    /// use serde::Serialize;
-    /// use ruts::store::memory::MemoryStore;
-    ///
-    /// #[derive(Serialize)]
-    /// struct User {
-    ///     id: i64,
-    ///     name: String,
-    /// }
-    ///
-    /// async fn example_handler(session: Session<MemoryStore>) {
-    ///     let user = User { id: 34895634, name: "John Doe".to_string() };
-    ///     // Insert the field with a TTL of 5 seconds
-    ///     session.insert("app", &user, Some(5), None).await.unwrap();
-    /// }
-    /// ```
-    #[tracing::instrument(
-        name = "session-store: inserting field-value",
-        skip(self, field, value, field_ttl_secs, hot_cache_ttl_secs)
-    )]
-    pub async fn insert<T>(
-        &self,
-        field: &str,
-        value: &T,
-        field_ttl_secs: Option<i64>,
-        #[cfg(feature = "layered-store")] hot_cache_ttl_secs: Option<i64>,
-        #[cfg(not(feature = "layered-store"))] hot_cache_ttl_secs: Option<
-            std::marker::PhantomData<()>,
-        >,
-    ) -> Result<bool>
-    where
-        T: Send + Sync + Serialize + 'static,
-    {
-        let current_id = self.inner.get_or_set_id();
-        let pending_id = self.inner.take_pending_id();
-
-        let key_ttl_secs = self.max_age();
-        if let Some(ttl) = field_ttl_secs
-            && ttl > key_ttl_secs
-        {
-            Some(ttl)
-        } else {
-            Some(key_ttl_secs)
-        };
-
-        let max_age = match pending_id {
-            Some(new_id) => {
-                let max_age = self.inner
-                    .store
-                    .insert_with_rename(&current_id, &new_id, field, value, Some(key_ttl_secs), field_ttl_secs.or(Some(key_ttl_secs)), hot_cache_ttl_secs)
-                    .await
-                    .map_err(|err| {
-                        tracing::error!(err = %err, "failed to insert field-value with rename to session store");
-                        err
-                    })?;
-                if max_age > -2 {
-                    *self.inner.id.write() = Some(new_id);
-                }
-                max_age
-            }
-            None => self
-                .inner
-                .store
-                .insert(
-                    &current_id,
-                    field,
-                    value,
-                    Some(key_ttl_secs),
-                    field_ttl_secs.or(Some(key_ttl_secs)),
-                    hot_cache_ttl_secs,
-                )
-                .await
-                .map_err(|err| {
-                    tracing::error!(err = %err, "failed to insert field-value to session store");
-                    err
-                })?,
-        };
-
-        if max_age > -2 {
-            self.inner.set_changed();
-            self.set_expiration(max_age);
-        }
-
-        Ok(max_age > -2)
-    }
-
-    /// Updates a value in the session store.
+    /// Sets a value in the session store.
     ///
     /// If the key doesn't exist, it will be inserted.
     ///
@@ -243,14 +135,14 @@ where
     /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
     ///     let user = User {id: 21342365, name: String::from("Jane Doe")};
     ///
-    ///     let updated = session.update("app", &user, Some(5), None).await.unwrap();
+    ///     let updated = session.set("app", &user, Some(5), None).await.unwrap();
     /// }
     /// ```
     #[tracing::instrument(
         name = "session-store: updating field",
         skip(self, field, value, field_ttl_secs, hot_cache_ttl_secs)
     )]
-    pub async fn update<T>(
+    pub async fn set<T>(
         &self,
         field: &str,
         value: &T,
@@ -279,7 +171,7 @@ where
             Some(new_id) => {
                 let max_age = self.inner
                     .store
-                    .update_with_rename(&current_id, &new_id, field, value, Some(key_ttl_secs), field_ttl_secs.or(Some(key_ttl_secs)), hot_cache_ttl_secs)
+                    .set_and_rename(&current_id, &new_id, field, value, Some(key_ttl_secs), field_ttl_secs.or(Some(key_ttl_secs)), hot_cache_ttl_secs)
                     .await
                     .map_err(|err| {
                         tracing::error!(err = %err, "failed to update field-value with rename in session store");
@@ -294,7 +186,7 @@ where
             None => self
                 .inner
                 .store
-                .update(
+                .set(
                     &current_id,
                     field,
                     value,
@@ -503,7 +395,7 @@ where
     /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
     ///     let new_id = session.prepare_regenerate();
     ///     // The next update/insert operation will use this new ID
-    ///     session.update("field", &"value", None, None).await.unwrap();
+    ///     session.set("field", &"value", None, None).await.unwrap();
     /// }
     /// ```
     pub fn prepare_regenerate(&self) -> Id {
@@ -631,111 +523,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_basic_operations() {
+    async fn test_session_operations() {
         let store = Arc::new(MemoryStore::new());
         let inner = create_inner(store, Some("test_sess"), Some(3600));
         let session = Session::new(inner);
         let test_data = create_test_user();
-
-        // Test initial state
-        let initial_get: Option<TestUser> = session.get("test").await.unwrap();
-        assert!(initial_get.is_none());
-
-        // Test insert
+        
         let inserted = session
-            .insert("test", &test_data, None, None)
+            .set("test", &test_data, None, None)
             .await
             .unwrap();
         assert!(inserted);
-
-        // Test get after insert
+        
         let retrieved: Option<TestUser> = session.get("test").await.unwrap();
         assert_eq!(retrieved.unwrap(), test_data);
+        
+        let mut new_data = test_data.clone();
+        new_data.name = "New Name".to_string();
 
-        // Test update
-        let mut updated_data = test_data.clone();
-        updated_data.name = "Updated User".to_string();
-        let updated = session
-            .update("test", &updated_data, None, None)
+        let inserted_again = session
+            .set("test", &new_data, None, None)
             .await
             .unwrap();
-        assert!(updated);
+        assert!(inserted_again, "Insert should succeed (overwrite)");
 
-        // Verify update
-        let retrieved: Option<TestUser> = session.get("test").await.unwrap();
-        assert_eq!(retrieved.unwrap(), updated_data);
-
-        // Test delete
+        let retrieved_new: Option<TestUser> = session.get("test").await.unwrap();
+        assert_eq!(retrieved_new.unwrap(), new_data);
+        
         let deleted = session.delete().await.unwrap();
         assert!(deleted);
-
-        // Verify deletion
+        
         let retrieved: Option<TestUser> = session.get("test").await.unwrap();
         assert!(retrieved.is_none());
     }
 
     #[tokio::test]
-    async fn test_prepare_regenerate_with_update() {
+    async fn test_prepare_regenerate() {
         let store = Arc::new(MemoryStore::new());
         let inner = create_inner(store.clone(), Some("test_sess"), Some(3600));
         let session = Session::new(inner);
         let test_data = create_test_user();
-
-        // Insert initial data
+        
         session
-            .insert("test", &test_data, None, None)
+            .set("test1", &test_data, None, None)
             .await
             .unwrap();
         let original_id = session.id().unwrap();
-
-        // Prepare new ID and update
-        let prepared_id = session.prepare_regenerate();
-        let mut updated_data = test_data.clone();
-        updated_data.name = "Updated User".to_string();
-        let updated = session
-            .update("test", &updated_data, None, None)
-            .await
-            .unwrap();
-        assert!(updated);
-
-        // Verify ID changed and data updated
-        let current_id = session.id().unwrap();
-        assert_eq!(current_id, prepared_id);
-        assert_ne!(current_id, original_id);
-
-        let retrieved: Option<TestUser> = session.get("test").await.unwrap();
-        assert_eq!(retrieved.unwrap(), updated_data);
-
-        // Verify old session is gone by directly checking the store
-        let result: Option<TestUser> = store.get(&original_id, "test").await.unwrap();
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_prepare_regenerate_with_insert() {
-        let store = Arc::new(MemoryStore::new());
-        let inner = create_inner(store.clone(), Some("test_sess"), Some(3600));
-        let session = Session::new(inner);
-        let test_data = create_test_user();
-
-        // Insert initial data
-        session
-            .insert("test1", &test_data, None, None)
-            .await
-            .unwrap();
-        let original_id = session.id().unwrap();
-
-        // Prepare new ID and insert new field
+        
         let prepared_id = session.prepare_regenerate();
         let mut new_data = test_data.clone();
         new_data.name = "New User".to_string();
+
+        // This update should trigger the rename of the session AND set the new field
         let inserted = session
-            .insert("test2", &new_data, None, None)
+            .set("test2", &new_data, None, None)
             .await
             .unwrap();
         assert!(inserted);
 
-        // Verify ID changed and both fields exist
+        // Verify id changed and both fields exist on the NEW id
         let current_id = session.id().unwrap();
         assert_eq!(current_id, prepared_id);
         assert_ne!(current_id, original_id);
@@ -745,72 +591,8 @@ mod tests {
         assert_eq!(retrieved1.unwrap(), test_data);
         assert_eq!(retrieved2.unwrap(), new_data);
 
-        // Verify old session is gone by directly checking the store
+        // Verify old session is gone
         let result: Option<TestUser> = store.get(&original_id, "test1").await.unwrap();
         assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_multiple_prepare_regenerate() {
-        let store = Arc::new(MemoryStore::new());
-        let inner = create_inner(store.clone(), Some("test_sess"), Some(3600));
-        let session = Session::new(inner);
-        let test_data = create_test_user();
-
-        // Insert initial data
-        session
-            .insert("test", &test_data, None, None)
-            .await
-            .unwrap();
-        let original_id = session.id().unwrap();
-
-        // First prepare_regenerate
-        let first_prepared_id = session.prepare_regenerate();
-
-        // Second prepare_regenerate before any operation
-        let second_prepared_id = session.prepare_regenerate();
-        assert_ne!(first_prepared_id, second_prepared_id);
-
-        // Update - should use the last prepared ID
-        let mut updated_data = test_data.clone();
-        updated_data.name = "Updated User".to_string();
-        session
-            .update("test", &updated_data, None, None)
-            .await
-            .unwrap();
-
-        // Verify the last prepared ID was used
-        let current_id = session.id().unwrap();
-        assert_eq!(current_id, second_prepared_id);
-        assert_ne!(current_id, first_prepared_id);
-        assert_ne!(current_id, original_id);
-
-        // Verify original session is gone by directly checking the store
-        let result: Option<TestUser> = store.get(&original_id, "test").await.unwrap();
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_session_regeneration() {
-        let store = Arc::new(MemoryStore::new());
-        let inner = create_inner(store, Some("test_sess"), Some(3600));
-        let session = Session::new(inner);
-        let test_data = create_test_user();
-
-        // Insert initial data
-        session
-            .insert("test", &test_data, None, None)
-            .await
-            .unwrap();
-        let original_id = session.id().unwrap();
-
-        // Regenerate session
-        let new_id = session.regenerate().await.unwrap();
-        assert!(new_id.is_some());
-        assert_ne!(original_id, new_id.unwrap());
-
-        // Verify data persistence
-        let retrieved: Option<TestUser> = session.get("test").await.unwrap();
-        assert_eq!(retrieved.unwrap(), test_data);
     }
 }

@@ -1,5 +1,22 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Breaking Changes
+- **API:** Consolidated `insert` and `update` methods into a single `set` method (upsert semantics) in the `SessionStore` trait.
+- **API:** Consolidated `insert_with_rename` and `update_with_rename` into `set_and_rename`.
+- **Postgres:** Changed schema to a normalized two-table design (`sessions` for lifecycle and `*_kv` for data) to accurately handle per-field expiration.
+
+### Changed
+- **Postgres:** Implemented single-round-trip CTEs for all operations to ensure atomicity, handle `ON UPDATE CASCADE` natively, and reduce network overhead.
+- **Redis:** Rewrote Lua scripts to enforce strict session fixation protection (abort on rename collision) and consistent TTL extension logic.
+- **Core:** Session expiry now strictly relies on the database server's time (Postgres `now()`, Redis `TTL`) rather than application time to eliminate clock skew issues.
+
 ## [0.7.0] - 2025-09-23
 
 ### Breaking Changes
