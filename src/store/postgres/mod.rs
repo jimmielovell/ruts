@@ -117,14 +117,14 @@ impl PostgresStoreBuilder {
                 let _ = sqlx::query(&format!(
                     "delete from {e_table} where expires_at is not null and expires_at < now()"
                 ))
-                    .execute(&pool)
-                    .await;
+                .execute(&pool)
+                .await;
 
                 let _ = sqlx::query(&format!(
                     "delete from {f_table} where expires_at is not null and expires_at < now()"
                 ))
-                    .execute(&pool)
-                    .await;
+                .execute(&pool)
+                .await;
             }
         });
 
@@ -144,7 +144,10 @@ pub struct PostgresStore {
     fields_table_name: String,
 }
 
-fn determine_ttls(key_ttl_secs: Option<i64>, field_ttl_secs: Option<i64>) -> (Option<f64>, Option<f64>) {
+fn determine_ttls(
+    key_ttl_secs: Option<i64>,
+    field_ttl_secs: Option<i64>,
+) -> (Option<f64>, Option<f64>) {
     if field_ttl_secs == Some(-1) {
         return (None, None);
     }
@@ -156,7 +159,13 @@ fn determine_ttls(key_ttl_secs: Option<i64>, field_ttl_secs: Option<i64>) -> (Op
 
     let k_ttl = key_ttl_secs.and_then(|t| if t <= 0 { None } else { Some(t as f64) });
     let f_ttl = match field_ttl_secs {
-        Some(fts) => if fts <= 0 { None } else { Some(fts as f64) },
+        Some(fts) => {
+            if fts <= 0 {
+                None
+            } else {
+                Some(fts as f64)
+            }
+        }
         None => k_ttl,
     };
 
@@ -267,7 +276,7 @@ impl PostgresStore {
         field_ttl_secs: Option<i64>,
         #[cfg(feature = "layered-store")] hot_cache_ttl: Option<i64>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-        old_session_id: Option<&Id>
+        old_session_id: Option<&Id>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -281,7 +290,9 @@ impl PostgresStore {
         if field_ttl_secs == Some(0) {
             let ttl = self._remove(session_id, field).await?;
             if let Some(old_id) = old_session_id {
-                let _ = self._rename_session_id(&self.pool, old_id, session_id).await?;
+                let _ = self
+                    ._rename_session_id(&self.pool, old_id, session_id)
+                    .await?;
             }
             return Ok(ttl);
         }
@@ -451,7 +462,7 @@ impl SessionStore for PostgresStore {
             None,
             None,
         )
-            .await
+        .await
     }
 
     async fn set_and_rename<T>(
@@ -475,8 +486,9 @@ impl SessionStore for PostgresStore {
             key_ttl_secs,
             field_ttl_secs,
             None,
-            Some(old_session_id)
-        ).await
+            Some(old_session_id),
+        )
+        .await
     }
 
     async fn rename_session_id(
@@ -614,7 +626,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
             hot_cache_ttl_secs,
             None,
         )
-            .await
+        .await
     }
 
     async fn set_and_rename_with_meta<T: Serialize + Send + Sync + 'static>(
@@ -634,9 +646,9 @@ impl crate::store::LayeredColdStore for PostgresStore {
             key_ttl_secs,
             field_ttl_secs,
             hot_cache_ttl_secs,
-            Some(old_session_id)
+            Some(old_session_id),
         )
-            .await
+        .await
     }
 }
 
@@ -686,7 +698,7 @@ mod tests {
 
         let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
         assert_eq!(fetched, Some(value.clone()));
-        
+
         store
             .set(
                 &session_id,
@@ -732,7 +744,7 @@ mod tests {
         let store = setup_store().await;
         let session_id = Id::default();
         let field = "ttl_zero";
-        
+
         let ttl = store
             .set(
                 &session_id,
@@ -767,7 +779,7 @@ mod tests {
             )
             .await
             .unwrap();
-        
+
         assert_eq!(ttl, -1);
 
         let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
@@ -803,21 +815,29 @@ mod tests {
         let store = setup_store().await;
         let session_id = Id::default();
 
-        store.set(
-            &session_id,
-            "long",
-            &TestData { value: "val".into() },
-            Some(3600),
-            Some(3600),
-            None
-        ).await.unwrap();
+        store
+            .set(
+                &session_id,
+                "long",
+                &TestData {
+                    value: "val".into(),
+                },
+                Some(3600),
+                Some(3600),
+                None,
+            )
+            .await
+            .unwrap();
 
         store.expire(&session_id, 1).await.unwrap();
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         let fetched: Option<TestData> = store.get(&session_id, "long").await.unwrap();
-        assert!(fetched.is_none(), "Field should have been capped by session expire");
+        assert!(
+            fetched.is_none(),
+            "Field should have been capped by session expire"
+        );
     }
 
     #[tokio::test]
@@ -825,27 +845,37 @@ mod tests {
         let store = setup_store().await;
         let session_id = Id::default();
 
-        store.set(
-            &session_id,
-            "A",
-            &TestData { value: "a".into() },
-            Some(100),
-            Some(100),
-            None
-        ).await.unwrap();
+        store
+            .set(
+                &session_id,
+                "A",
+                &TestData { value: "a".into() },
+                Some(100),
+                Some(100),
+                None,
+            )
+            .await
+            .unwrap();
 
-        store.set(
-            &session_id,
-            "B",
-            &TestData { value: "b".into() },
-            Some(10),
-            Some(10),
-            None
-        ).await.unwrap();
-        
+        store
+            .set(
+                &session_id,
+                "B",
+                &TestData { value: "b".into() },
+                Some(10),
+                Some(10),
+                None,
+            )
+            .await
+            .unwrap();
+
         let ttl = store.remove(&session_id, "A").await.unwrap();
 
-        assert!(ttl > 0 && ttl <= 10, "TTL should have downgraded to match Field B (approx 10s), got {}", ttl);
+        assert!(
+            ttl > 0 && ttl <= 10,
+            "TTL should have downgraded to match Field B (approx 10s), got {}",
+            ttl
+        );
     }
 
     #[tokio::test]
@@ -911,23 +941,48 @@ mod tests {
         let store = setup_store().await;
         let old_id = Id::default();
         let new_id = Id::default();
-        
-        store.set(&old_id, "f1", &TestData { value: "v1".into() }, Some(60), Some(60), None).await.unwrap();
-        store.set(&new_id, "f2", &TestData { value: "v2".into() }, Some(60), Some(60), None).await.unwrap();
-        
+
+        store
+            .set(
+                &old_id,
+                "f1",
+                &TestData { value: "v1".into() },
+                Some(60),
+                Some(60),
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .set(
+                &new_id,
+                "f2",
+                &TestData { value: "v2".into() },
+                Some(60),
+                Some(60),
+                None,
+            )
+            .await
+            .unwrap();
+
         let result = store
             .set_and_rename(
                 &old_id,
                 &new_id,
                 "f1",
-                &TestData { value: "v1_upd".into() },
+                &TestData {
+                    value: "v1_upd".into(),
+                },
                 Some(60),
                 Some(60),
                 None,
             )
             .await;
 
-        assert!(result.is_err(), "Rename to existing session ID should fail to prevent session fixation");
+        assert!(
+            result.is_err(),
+            "Rename to existing session ID should fail to prevent session fixation"
+        );
     }
 
     #[tokio::test]

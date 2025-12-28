@@ -137,7 +137,8 @@ where
     {
         let hot_cache_ttl = hot_cache_ttl_secs.or(field_ttl_secs);
         let (_, cold_ttl) = tokio::try_join!(
-            self.hot.set(session_id, field, value, hot_cache_ttl, hot_cache_ttl, None),
+            self.hot
+                .set(session_id, field, value, hot_cache_ttl, hot_cache_ttl, None),
             self.cold.set_with_meta(
                 session_id,
                 field,
@@ -276,7 +277,7 @@ mod tests {
         let store = setup_store().await;
         let session_id = Id::default();
         let test_user = create_test_user();
-        
+
         store
             .set(
                 &session_id,

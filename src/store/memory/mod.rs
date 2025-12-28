@@ -360,14 +360,41 @@ mod tests {
         let store = MemoryStore::new();
         let old_id = Id::default();
         let new_id = Id::default();
-        let user = TestUser { id: 1, name: "A".into() };
+        let user = TestUser {
+            id: 1,
+            name: "A".into(),
+        };
 
-        store.set(&old_id, "f1", &user, Some(60), None, None).await.unwrap();
+        store
+            .set(&old_id, "f1", &user, Some(60), None, None)
+            .await
+            .unwrap();
 
-        store.set_and_rename(&old_id, &new_id, "f2", &user, Some(60), None, None).await.unwrap();
+        store
+            .set_and_rename(&old_id, &new_id, "f2", &user, Some(60), None, None)
+            .await
+            .unwrap();
 
-        assert!(store.get::<TestUser>(&old_id, "f1").await.unwrap().is_none());
-        assert!(store.get::<TestUser>(&new_id, "f1").await.unwrap().is_some());
-        assert!(store.get::<TestUser>(&new_id, "f2").await.unwrap().is_some());
+        assert!(
+            store
+                .get::<TestUser>(&old_id, "f1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .get::<TestUser>(&new_id, "f1")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .get::<TestUser>(&new_id, "f2")
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

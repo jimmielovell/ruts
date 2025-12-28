@@ -528,31 +528,25 @@ mod tests {
         let inner = create_inner(store, Some("test_sess"), Some(3600));
         let session = Session::new(inner);
         let test_data = create_test_user();
-        
-        let inserted = session
-            .set("test", &test_data, None, None)
-            .await
-            .unwrap();
+
+        let inserted = session.set("test", &test_data, None, None).await.unwrap();
         assert!(inserted);
-        
+
         let retrieved: Option<TestUser> = session.get("test").await.unwrap();
         assert_eq!(retrieved.unwrap(), test_data);
-        
+
         let mut new_data = test_data.clone();
         new_data.name = "New Name".to_string();
 
-        let inserted_again = session
-            .set("test", &new_data, None, None)
-            .await
-            .unwrap();
+        let inserted_again = session.set("test", &new_data, None, None).await.unwrap();
         assert!(inserted_again, "Insert should succeed (overwrite)");
 
         let retrieved_new: Option<TestUser> = session.get("test").await.unwrap();
         assert_eq!(retrieved_new.unwrap(), new_data);
-        
+
         let deleted = session.delete().await.unwrap();
         assert!(deleted);
-        
+
         let retrieved: Option<TestUser> = session.get("test").await.unwrap();
         assert!(retrieved.is_none());
     }
@@ -563,22 +557,16 @@ mod tests {
         let inner = create_inner(store.clone(), Some("test_sess"), Some(3600));
         let session = Session::new(inner);
         let test_data = create_test_user();
-        
-        session
-            .set("test1", &test_data, None, None)
-            .await
-            .unwrap();
+
+        session.set("test1", &test_data, None, None).await.unwrap();
         let original_id = session.id().unwrap();
-        
+
         let prepared_id = session.prepare_regenerate();
         let mut new_data = test_data.clone();
         new_data.name = "New User".to_string();
 
         // This update should trigger the rename of the session AND set the new field
-        let inserted = session
-            .set("test2", &new_data, None, None)
-            .await
-            .unwrap();
+        let inserted = session.set("test2", &new_data, None, None).await.unwrap();
         assert!(inserted);
 
         // Verify id changed and both fields exist on the NEW id

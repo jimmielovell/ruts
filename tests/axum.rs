@@ -42,7 +42,6 @@ pub fn build_cookie_options() -> CookieOptions {
         .path("/")
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

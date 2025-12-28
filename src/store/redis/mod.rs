@@ -1,7 +1,10 @@
 mod lua;
 
 use crate::Id;
-use crate::store::redis::lua::{REMOVE_SCRIPT, REMOVE_SCRIPT_HASH, SET_AND_RENAME_SCRIPT, SET_AND_RENAME_SCRIPT_HASH, SET_MULTIPLE_SCRIPT, SET_MULTIPLE_SCRIPT_HASH, SET_SCRIPT, SET_SCRIPT_HASH};
+use crate::store::redis::lua::{
+    REMOVE_SCRIPT, REMOVE_SCRIPT_HASH, SET_AND_RENAME_SCRIPT, SET_AND_RENAME_SCRIPT_HASH,
+    SET_MULTIPLE_SCRIPT, SET_MULTIPLE_SCRIPT_HASH, SET_SCRIPT, SET_SCRIPT_HASH,
+};
 use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize_value};
 use fred::clients::Pool;
 use fred::interfaces::{HashesInterface, KeysInterface};
@@ -363,7 +366,10 @@ mod tests {
             .set_and_rename(&old_sid, &new_sid, "g", &"baz", Some(60), None, None)
             .await;
 
-        assert!(result.is_err(), "Rename to an existing session ID should fail");
+        assert!(
+            result.is_err(),
+            "Rename to an existing session ID should fail"
+        );
 
         let v: Option<String> = store.get(&new_sid, "existing").await.unwrap();
         assert_eq!(v.unwrap(), "bar");
