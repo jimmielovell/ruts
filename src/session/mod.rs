@@ -383,7 +383,7 @@ where
 
     /// Prepares a new session ID to be used in the next store operation.
     /// The new ID will be used to rename the current session (if it exists) when the next
-    /// insert or update operation is performed.
+    /// set operation is performed.
     ///
     /// ## Example
     ///

@@ -107,7 +107,7 @@ impl PostgresStoreBuilder {
         let pool = self.pool.clone();
         let e_table = expiry_table_name.clone();
         let f_table = fields_table_name.clone();
-        let interval = self.cleanup_interval.unwrap_or(Duration::from_secs(300));
+        let interval = self.cleanup_interval.unwrap_or(Duration::from_secs(60 * 5));
 
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
@@ -276,7 +276,7 @@ impl PostgresStore {
         field_ttl_secs: Option<i64>,
         #[cfg(feature = "layered-store")] hot_cache_ttl: Option<i64>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-        old_session_id: Option<&Id>,
+        old_session_id: Option<&Id>
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
@@ -288,13 +288,10 @@ impl PostgresStore {
         }
 
         if field_ttl_secs == Some(0) {
-            let ttl = self._remove(session_id, field).await?;
             if let Some(old_id) = old_session_id {
-                let _ = self
-                    ._rename_session_id(&self.pool, old_id, session_id)
-                    .await?;
+                let _ = self._rename_session_id(&self.pool, old_id, session_id).await?;
             }
-            return Ok(ttl);
+            return self._remove(session_id, field).await;
         }
 
         let value_bytes = serialize_value(value)?;
@@ -306,31 +303,50 @@ impl PostgresStore {
         #[cfg(not(feature = "layered-store"))]
         let hot_cache_ttl: Option<i64> = None;
 
-        let rename_subquery = if old_session_id.is_some() {
-            format!(
-                r#"
-                renamed_session as (
-                    update {e_table}
-                    set session_id = $1
-                    where session_id = $7
+        let (rename_cte, insert_source) = if old_session_id.is_some() {
+            (
+                format!(
+                    r#"
+                    renamed_session as (
+                        update {e_table}
+                        set session_id = $1,
+                            expires_at = case
+                                when {e_table}.expires_at is null then null
+                                else greatest({e_table}.expires_at, now() + make_interval(secs => $5))
+                            end
+                        where session_id = $7
+                        returning
+                            case when expires_at is null then -1
+                            else extract(epoch from (expires_at - now()))::bigint
+                            end as ttl
+                    ),
+                    "#,
+                    e_table = self.expiry_table_name,
                 ),
-                "#,
-                e_table = self.expiry_table_name,
+                // only try insert if rename didn't happen (returned 0 rows)
+                "select $1, now() + make_interval(secs => $5) where not exists (select 1 from renamed_session)"
             )
         } else {
-            String::from("")
+            (
+                String::from(""),
+                "values ($1, now() + make_interval(secs => $5))"
+            )
+        };
+
+        // If rename happened, we want that ttl. if not, we want `exsert` ttl.
+        let final_select = if old_session_id.is_some() {
+            "select coalesce((select expires_at from exsert), (select ttl from renamed_session))"
+        } else {
+            "select expires_at from exsert"
         };
 
         let query = format!(
             r#"
             with
-            {rename_subquery}
+            {rename_cte}
             exsert as (
                 insert into {e_table} (session_id, expires_at)
-                values (
-                    $1,
-                    now() + make_interval(secs => $5)
-                )
+                {insert_source}
                 on conflict (session_id) do update
                 set expires_at = case
                     when {e_table}.expires_at is null or excluded.expires_at is null then null
@@ -354,7 +370,7 @@ impl PostgresStore {
                     expires_at = excluded.expires_at,
                     hot_cache_ttl = excluded.hot_cache_ttl
             )
-            select expires_at from exsert;
+            {final_select};
             "#,
             e_table = self.expiry_table_name,
             f_table = self.fields_table_name,
@@ -1015,5 +1031,38 @@ mod tests {
 
         let all = store.get_all(&session_id).await.unwrap().unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_rename_logic_collision() {
+        let store = setup_store().await;
+        let old_id = Id::default();
+        let new_id = Id::default();
+
+        store
+            .set(
+                &old_id,
+                "existing_field",
+                &TestData { value: "v1".into() },
+                Some(60),
+                Some(60),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let result = store
+            .set_and_rename(
+                &old_id,
+                &new_id,
+                "new_field",
+                &TestData { value: "v2".into() },
+                Some(60),
+                Some(60),
+                None,
+            )
+            .await;
+
+        assert!(result.is_ok(), "Rename failed, likely due to PK collision: {:?}", result.err());
     }
 }
