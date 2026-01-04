@@ -418,8 +418,8 @@ where
     }
 }
 
-const SESSION_STATE_CHANGED: u8 = 0b01;
-const SESSION_STATE_DELETED: u8 = 0b10;
+const SESSION_STATE_CHANGED: u8 = 1;
+const SESSION_STATE_DELETED: u8 = 2;
 
 #[derive(Debug)]
 pub struct Inner<T: SessionStore> {
@@ -450,11 +450,11 @@ impl<T: SessionStore> Inner<T> {
     }
 
     pub fn is_changed(&self) -> bool {
-        self.state.load(Ordering::SeqCst) & SESSION_STATE_CHANGED != 0
+        self.state.load(Ordering::SeqCst) == SESSION_STATE_CHANGED
     }
 
     pub fn is_deleted(&self) -> bool {
-        self.state.load(Ordering::SeqCst) & SESSION_STATE_DELETED != 0
+        self.state.load(Ordering::SeqCst) == SESSION_STATE_DELETED
     }
 
     pub fn get_id(&self) -> Option<Id> {
@@ -478,11 +478,11 @@ impl<T: SessionStore> Inner<T> {
     }
 
     pub fn set_changed(&self) {
-        self.state.fetch_or(SESSION_STATE_CHANGED, Ordering::SeqCst);
+        self.state.store(SESSION_STATE_CHANGED, Ordering::SeqCst);
     }
 
     pub fn set_deleted(&self) {
-        self.state.fetch_or(SESSION_STATE_DELETED, Ordering::SeqCst);
+        self.state.store(SESSION_STATE_DELETED, Ordering::SeqCst);
     }
 
     pub fn get_cookies(&self) -> Option<&Cookies> {

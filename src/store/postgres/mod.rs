@@ -590,7 +590,13 @@ impl crate::store::LayeredColdStore for PostgresStore {
     ) -> Result<Option<(SessionMap, HashMap<String, Option<i64>>)>, Error> {
         let query = format!(
             r#"
-            select f.field, f.value, f.hot_cache_ttl
+            select 
+                f.field,
+                f.value, 
+                f.hot_cache_ttl,
+                case when f.expires_at is null then -1
+                    else extract(epoch from (f.expires_at - now()))::bigint
+                end as ttl
             from {fields} f
             join {expiry} e on f.fk_session_id = e.session_id
             where e.session_id = $1
@@ -601,7 +607,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
             expiry = self.expiry_table_name
         );
 
-        let rows: Vec<(String, Vec<u8>, Option<i64>)> = sqlx::query_as(&query)
+        let rows: Vec<(String, Vec<u8>, Option<i64>, i64)> = sqlx::query_as(&query)
             .bind(session_id.to_string())
             .fetch_all(&self.pool)
             .await?;
@@ -612,9 +618,16 @@ impl crate::store::LayeredColdStore for PostgresStore {
 
         let mut session_map = HashMap::with_capacity(rows.len());
         let mut meta_map = HashMap::new();
-        for (field, value, hot_cache_ttl) in rows {
+        for (field, value, mut hot_cache_ttl, ttl) in rows {
             session_map.insert(field.clone(), value);
-            meta_map.insert(field, hot_cache_ttl);
+            if ttl > -1 {
+                hot_cache_ttl = hot_cache_ttl.or(Some(ttl));
+                hot_cache_ttl = hot_cache_ttl.min(Some(ttl));
+            }
+            
+            if ttl > 0 {
+                meta_map.insert(field, hot_cache_ttl);
+            }
         }
 
         if session_map.is_empty() {
