@@ -206,7 +206,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ruts = { version = "0.7.3", default-features = false, features = ["axum", "messagepack"] }
+//! ruts = { version = "0.7.4", default-features = false, features = ["axum", "messagepack"] }
 //! ```
 //!
 //! ## Cookie Configuration
