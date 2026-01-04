@@ -35,23 +35,23 @@ fn routes() -> Router<()> {
                     name: "Default User".into(),
                 };
                 // This will be written to both Redis and Postgres.
-                session.set("app", &user, None, None).await.unwrap();
+                session.set("user_1", &user, None, None).await.unwrap();
             }),
         )
         // cap the TTL on the hot cache.
         .route(
-            "/insert_capped_ttl",
+            "/set_hot_ttl",
             get(|session: LayeredSession| async move {
                 let user = User {
                     id: 2,
-                    name: "Capped TTL User".into(),
+                    name: "Capped Hot TTL User".into(),
                 };
-                let long_term_expiry = 60 * 60 * 24 * 30; // 1 month in Postgres
+                let long_term_expiry = 60 * 10; // 10 minutes in Postgres
                 let short_term_hot_cache_expiry = 60; // 1 minute in Redis
 
                 session
                     .set(
-                        "user",
+                        "user_2",
                         &user,
                         Some(long_term_expiry),
                         Some(short_term_hot_cache_expiry),
@@ -62,27 +62,40 @@ fn routes() -> Router<()> {
         )
         // write only to the cold store.
         .route(
-            "/insert_cold_only",
+            "/set_cold_only",
             get(|session: LayeredSession| async move {
                 let user = User {
                     id: 3,
                     name: "Cold Only User".into(),
                 };
                 // This will be written to Postgres, but NOT to Redis.
-                session.set("user", &user, None, Some(0)).await.unwrap();
+                session.set("user_3", &user, None, Some(0)).await.unwrap();
+            }),
+        )
+        .route(
+            "/remove_set",
+            get(|session: LayeredSession| async move {
+                session.remove("user_1").await.unwrap();
+                let user = User {
+                    id: 1,
+                    name: "Removed User".into(),
+                };
+                session.prepare_regenerate();
+                // This will be written to both Redis and Postgres.
+                session.set("user_4", &user, None, None).await.unwrap();
             }),
         )
         .route(
             "/get",
             get(|session: LayeredSession| async move {
-                let app_session: Option<User> = session
-                    .get("app")
-                    .await
-                    .expect("Failed to get session data");
-                let user_session: Option<User> =
-                    session.get("user").await.expect("Failed to get user data");
+                let user_1: Option<User> =
+                    session.get("user_1").await.unwrap_or_default();
+                let user_2: Option<User> =
+                    session.get("user_2").await.unwrap_or_default();
+                let user_3: Option<User> =
+                    session.get("user_3").await.unwrap_or_default();
 
-                Json((app_session, user_session))
+                Json((user_1, user_2, user_3))
             }),
         )
 }
@@ -117,7 +130,7 @@ async fn main() {
         .http_only(true)
         .same_site(cookie::SameSite::Lax)
         .secure(false) // Use `true` in production
-        .max_age(60 * 60) // 1 hour
+        .max_age(60 * 10) // 10 minutes
         .path("/");
 
     // Create session layer
