@@ -160,7 +160,7 @@ where
 
         let default_session_ttl = self.max_age();
         let effective_field_ttl = field_ttl_secs.unwrap_or(default_session_ttl);
-        
+
         let required_session_ttl = if default_session_ttl == -1 || effective_field_ttl == -1 {
             -1
         } else {

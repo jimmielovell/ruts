@@ -279,14 +279,7 @@ mod tests {
         let test_user = create_test_user();
 
         store
-            .set(
-                &session_id,
-                "user",
-                &test_user,
-                3600,
-                3600,
-                Some(1),
-            )
+            .set(&session_id, "user", &test_user, 3600, 3600, Some(1))
             .await
             .unwrap();
 
@@ -318,14 +311,7 @@ mod tests {
         let test_user = create_test_user();
 
         store
-            .set(
-                &session_id,
-                "user",
-                &test_user,
-                3600,
-                3600,
-                None,
-            )
+            .set(&session_id, "user", &test_user, 3600, 3600, None)
             .await
             .unwrap();
         assert!(
