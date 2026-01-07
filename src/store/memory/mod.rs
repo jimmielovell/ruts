@@ -354,10 +354,7 @@ mod tests {
             name: "A".into(),
         };
 
-        store
-            .set(&old_id, "f1", &user, 60, 60, None)
-            .await
-            .unwrap();
+        store.set(&old_id, "f1", &user, 60, 60, None).await.unwrap();
 
         store
             .set_and_rename(&old_id, &new_id, "f2", &user, 60, 60, None)

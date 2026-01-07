@@ -88,12 +88,9 @@ fn routes() -> Router<()> {
         .route(
             "/get",
             get(|session: LayeredSession| async move {
-                let user_1: Option<User> =
-                    session.get("user_1").await.unwrap_or_default();
-                let user_2: Option<User> =
-                    session.get("user_2").await.unwrap_or_default();
-                let user_3: Option<User> =
-                    session.get("user_3").await.unwrap_or_default();
+                let user_1: Option<User> = session.get("user_1").await.unwrap_or_default();
+                let user_2: Option<User> = session.get("user_2").await.unwrap_or_default();
+                let user_3: Option<User> = session.get("user_3").await.unwrap_or_default();
 
                 Json((user_1, user_2, user_3))
             }),

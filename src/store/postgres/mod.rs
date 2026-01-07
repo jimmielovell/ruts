@@ -252,11 +252,10 @@ impl PostgresStore {
         field_ttl_secs: i64,
         #[cfg(feature = "layered-store")] hot_cache_ttl: Option<i64>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-        old_session_id: Option<&Id>
+        old_session_id: Option<&Id>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
-
     {
         if key_ttl_secs == 0 {
             self.delete(session_id).await?;
@@ -268,7 +267,9 @@ impl PostgresStore {
                 let mut tx = self.pool.begin().await?;
                 let ttl = self._remove(&self.pool, session_id, field).await?;
                 if ttl != -2 {
-                    let _ = self._rename_session_id(&mut *tx, old_session_id, session_id).await?;
+                    let _ = self
+                        ._rename_session_id(&mut *tx, old_session_id, session_id)
+                        .await?;
                 }
                 tx.commit().await?;
 
@@ -286,8 +287,16 @@ impl PostgresStore {
         #[cfg(not(feature = "layered-store"))]
         let hot_cache_ttl: Option<i64> = None;
 
-        let key_ttl = if key_ttl_secs == -1 { None } else { Some(key_ttl_secs as f64) };
-        let field_ttl = if field_ttl_secs == -1 { None } else { Some(field_ttl_secs as f64) };
+        let key_ttl = if key_ttl_secs == -1 {
+            None
+        } else {
+            Some(key_ttl_secs as f64)
+        };
+        let field_ttl = if field_ttl_secs == -1 {
+            None
+        } else {
+            Some(field_ttl_secs as f64)
+        };
 
         let query = format!(
             r#"
@@ -332,7 +341,9 @@ impl PostgresStore {
 
         if let Some(old_session_id) = old_session_id {
             let mut tx = self.pool.begin().await?;
-            let _ = self._rename_session_id(&mut *tx, old_session_id, session_id).await?;
+            let _ = self
+                ._rename_session_id(&mut *tx, old_session_id, session_id)
+                .await?;
             let ttl = qs.fetch_one(&mut *tx).await?;
             tx.commit().await?;
 
@@ -427,7 +438,7 @@ impl SessionStore for PostgresStore {
             key_ttl_secs,
             field_ttl_secs,
             None,
-            None
+            None,
         )
         .await
     }
@@ -453,7 +464,7 @@ impl SessionStore for PostgresStore {
             key_ttl_secs,
             field_ttl_secs,
             None,
-            Some(old_session_id)
+            Some(old_session_id),
         )
         .await
     }
@@ -575,7 +586,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
                 hot_cache_ttl = hot_cache_ttl.or(Some(ttl));
                 hot_cache_ttl = hot_cache_ttl.min(Some(ttl));
             }
-            
+
             if ttl > 0 {
                 meta_map.insert(field, hot_cache_ttl);
             }
@@ -604,7 +615,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
             key_ttl_secs,
             field_ttl_secs,
             hot_cache_ttl_secs,
-            None
+            None,
         )
         .await
     }
@@ -626,9 +637,9 @@ impl crate::store::LayeredColdStore for PostgresStore {
             key_ttl_secs,
             field_ttl_secs,
             hot_cache_ttl_secs,
-            Some(old_session_id)
+            Some(old_session_id),
         )
-            .await
+        .await
     }
 }
 
@@ -1007,21 +1018,41 @@ mod tests {
         let old_id = Id::default();
         let new_id = Id::default();
 
-        store.set(&old_id, "existing_field", &TestData { value: "v1".into() }, 60, 60, None)
+        store
+            .set(
+                &old_id,
+                "existing_field",
+                &TestData { value: "v1".into() },
+                60,
+                60,
+                None,
+            )
             .await
             .unwrap();
 
         let check: Option<TestData> = store.get(&old_id, "existing_field").await.unwrap();
         assert!(check.is_some(), "old_id not found immediately after set!");
 
-        let result = store.set_and_rename(
-            &old_id, &new_id, "existing_field", &TestData { value: "v2".into() }, 60, 60, None
-        ).await;
+        let result = store
+            .set_and_rename(
+                &old_id,
+                &new_id,
+                "existing_field",
+                &TestData { value: "v2".into() },
+                60,
+                60,
+                None,
+            )
+            .await;
 
         assert!(result.is_ok(), "Rename result error: {:?}", result.err());
 
         let old_val: Option<TestData> = store.get(&old_id, "existing_field").await.unwrap();
-        assert!(old_val.is_none(), "old_id still exists with value: {:?}", old_val);
+        assert!(
+            old_val.is_none(),
+            "old_id still exists with value: {:?}",
+            old_val
+        );
 
         let new_val: Option<TestData> = store.get(&new_id, "existing_field").await.unwrap();
         assert_eq!(new_val.unwrap().value, "v2", "new_id has wrong value");

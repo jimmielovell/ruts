@@ -290,10 +290,7 @@ mod tests {
         let store = setup_store().await;
         let sid = Id::default();
 
-        store
-            .set(&sid, "f", &"temp", 1, 1, None)
-            .await
-            .unwrap();
+        store.set(&sid, "f", &"temp", 1, 1, None).await.unwrap();
 
         let v: Option<String> = store.get(&sid, "f").await.unwrap();
         assert_eq!(v.unwrap(), "temp");
@@ -308,16 +305,10 @@ mod tests {
         let store = setup_store().await;
         let sid = Id::default();
 
-        let ttl = store
-            .set(&sid, "f", &"x", 5, 5, None)
-            .await
-            .unwrap();
+        let ttl = store.set(&sid, "f", &"x", 5, 5, None).await.unwrap();
         assert_eq!(ttl, 5);
 
-        let ttl = store
-            .set(&sid, "f", &"y", -1, -1, None)
-            .await
-            .unwrap();
+        let ttl = store.set(&sid, "f", &"y", -1, -1, None).await.unwrap();
         assert_eq!(ttl, -1);
     }
 
@@ -380,14 +371,8 @@ mod tests {
         let store = setup_store().await;
         let sid = Id::default();
 
-        store
-            .set(&sid, "f1", &"v1", 10, 10, None)
-            .await
-            .unwrap();
-        store
-            .set(&sid, "f2", &"v2", 10, 10, None)
-            .await
-            .unwrap();
+        store.set(&sid, "f1", &"v1", 10, 10, None).await.unwrap();
+        store.set(&sid, "f2", &"v2", 10, 10, None).await.unwrap();
 
         let ttl = store.remove(&sid, "f1").await.unwrap();
         assert!(ttl > 0); // Session still exists
