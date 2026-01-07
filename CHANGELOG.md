@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-01-07
+
+### Breaking Changes
+- Updated `SessionStore` trait methods (`set` and `set_and_rename`) to use `i64` for `key_ttl` and `field_ttl` instead of `Option<i64>`.
+  - `> 0`: Finite TTL (seconds).
+  - `0`: Delete.
+  - `-1`: Persistent.
+- Updated `LayeredColdStore` trait methods (`set_with_meta` and `set_and_rename_with_meta`) to match the new `i64` signature.
+
+### Changed
+- Moved the "Effective TTL" calculation logic (resolving defaults and max(session, field) rules) from individual store backends into the `Session` struct. This ensures consistent expiration behavior across Memory, Redis, and Postgres stores.
+- **Redis:** Simplified Lua scripts (`SET`, `SET_AND_RENAME`) by removing internal TTL derivation logic.
+
 ## [0.7.3] - 2025-12-29
 
 ### Fixed

@@ -76,14 +76,14 @@ fn routes() -> Router<()> {
 
 #[tokio::main]
 async fn main() {
-    // 1. Set up your database connection pool.
+    // Set up database connection
     let database_url =
         std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this example");
     let pool = PgPool::connect(&database_url)
         .await
         .expect("Failed to connect to database");
 
-    // 2. Create the session store using the builder.
+    // Create the session store using the builder
     let store = PostgresStoreBuilder::new(pool, true)
         .schema_name("my_schema")
         .table_name("my_sessions")

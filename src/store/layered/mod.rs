@@ -128,14 +128,14 @@ where
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize + 'static,
     {
-        let hot_cache_ttl = hot_cache_ttl_secs.or(field_ttl_secs);
+        let hot_cache_ttl = hot_cache_ttl_secs.unwrap_or(field_ttl_secs);
         let (_, cold_ttl) = tokio::try_join!(
             self.hot
                 .set(session_id, field, value, hot_cache_ttl, hot_cache_ttl, None),
@@ -145,7 +145,7 @@ where
                 value,
                 key_ttl_secs,
                 field_ttl_secs,
-                hot_cache_ttl
+                Some(hot_cache_ttl)
             ),
         )?;
 
@@ -158,14 +158,14 @@ where
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize + 'static,
     {
-        let hot_cache_ttl = hot_cache_ttl_secs.or(field_ttl_secs);
+        let hot_cache_ttl = hot_cache_ttl_secs.unwrap_or(field_ttl_secs);
         let (_, cold_ttl) = tokio::try_join!(
             self.hot.set_and_rename(
                 old_session_id,
@@ -183,7 +183,7 @@ where
                 value,
                 key_ttl_secs,
                 field_ttl_secs,
-                hot_cache_ttl
+                Some(hot_cache_ttl)
             ),
         )?;
 
@@ -283,8 +283,8 @@ mod tests {
                 &session_id,
                 "user",
                 &test_user,
-                Some(3600),
-                Some(3600),
+                3600,
+                3600,
                 Some(1),
             )
             .await
@@ -322,8 +322,8 @@ mod tests {
                 &session_id,
                 "user",
                 &test_user,
-                Some(3600),
-                Some(3600),
+                3600,
+                3600,
                 None,
             )
             .await

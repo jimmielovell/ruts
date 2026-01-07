@@ -78,25 +78,14 @@ impl MemoryStore {
     }
 }
 
-fn determine_expiry(key_ttl_secs: Option<i64>, field_ttl_secs: Option<i64>) -> Option<Instant> {
-    if field_ttl_secs == Some(-1) {
+fn determine_expiry(key_ttl_secs: i64, field_ttl_secs: i64) -> Option<Instant> {
+    if field_ttl_secs == -1 || key_ttl_secs == -1 {
         return None;
     }
 
-    if key_ttl_secs == Some(-1) {
-        return None;
-    }
-
-    let ttl = match (key_ttl_secs, field_ttl_secs) {
-        (Some(_), Some(fts)) | (None, Some(fts)) => Some(fts),
-        (Some(kts), None) => Some(kts),
-        (None, None) => None,
-    };
-
-    if let Some(ttl) = ttl {
-        if ttl > 0 {
-            return Some(Instant::now() + Duration::from_secs(ttl as u64));
-        }
+    let ttl = key_ttl_secs.min(field_ttl_secs);
+    if ttl > 0 {
+        return Some(Instant::now() + Duration::from_secs(ttl as u64));
     }
 
     None
@@ -129,19 +118,19 @@ impl SessionStore for MemoryStore {
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         #[cfg(feature = "layered-store")] _: Option<i64>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
     {
-        if key_ttl_secs == Some(0) {
+        if key_ttl_secs == 0 {
             self.delete(session_id).await?;
             return Ok(-2);
         }
-        if field_ttl_secs == Some(0) {
+        if field_ttl_secs == 0 {
             return self.remove(session_id, field).await;
         }
 
@@ -169,15 +158,15 @@ impl SessionStore for MemoryStore {
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         #[cfg(feature = "layered-store")] _: Option<i64>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
     {
-        if key_ttl_secs == Some(0) {
+        if key_ttl_secs == 0 {
             self.delete(old_session_id).await?;
             return Ok(-2);
         }
@@ -193,7 +182,7 @@ impl SessionStore for MemoryStore {
             HashMap::new()
         };
 
-        if field_ttl_secs == Some(0) {
+        if field_ttl_secs == 0 {
             fields.remove(field);
         } else {
             let expires_at = determine_expiry(key_ttl_secs, field_ttl_secs);
@@ -308,7 +297,7 @@ mod tests {
         };
 
         let ttl = store
-            .set(&session_id, "user", &user, Some(30), Some(30), None)
+            .set(&session_id, "user", &user, 30, 30, None)
             .await
             .unwrap();
         assert!(ttl <= 30 && ttl > 28);
@@ -322,7 +311,7 @@ mod tests {
         };
 
         let ttl = store
-            .set(&session_id, "user", &updated_user, Some(60), Some(60), None)
+            .set(&session_id, "user", &updated_user, 60, 60, None)
             .await
             .unwrap();
         assert!(ttl <= 60 && ttl > 58);
@@ -342,7 +331,7 @@ mod tests {
         };
 
         store
-            .set(&session_id, "user", &user, Some(2), Some(2), None)
+            .set(&session_id, "user", &user, 2, 2, None)
             .await
             .unwrap();
 
@@ -366,12 +355,12 @@ mod tests {
         };
 
         store
-            .set(&old_id, "f1", &user, Some(60), None, None)
+            .set(&old_id, "f1", &user, 60, 60, None)
             .await
             .unwrap();
 
         store
-            .set_and_rename(&old_id, &new_id, "f2", &user, Some(60), None, None)
+            .set_and_rename(&old_id, &new_id, "f2", &user, 60, 60, None)
             .await
             .unwrap();
 

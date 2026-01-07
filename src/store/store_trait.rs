@@ -125,8 +125,8 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         #[cfg(feature = "layered-store")] hot_cache_ttl_secs: Option<i64>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> impl Future<Output = Result<i64, Error>> + Send
@@ -146,8 +146,8 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         #[cfg(feature = "layered-store")] hot_cache_ttl_secs: Option<i64>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> impl Future<Output = Result<i64, Error>> + Send

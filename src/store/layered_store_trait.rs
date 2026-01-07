@@ -30,8 +30,8 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         hot_cache_ttl: Option<i64>,
     ) -> impl Future<Output = Result<i64, Error>> + Send;
 
@@ -42,8 +42,8 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         hot_cache_ttl: Option<i64>,
     ) -> impl Future<Output = Result<i64, Error>> + Send;
 }
