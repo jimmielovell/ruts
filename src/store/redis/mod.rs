@@ -87,8 +87,8 @@ where
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         #[cfg(feature = "layered-store")] _: Option<i64>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
@@ -114,8 +114,8 @@ where
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         #[cfg(feature = "layered-store")] _: Option<i64>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
@@ -176,8 +176,8 @@ async fn insert_update<C, T>(
     session_ids: Vec<&Id>,
     field: &str,
     value: &T,
-    key_ttl_secs: Option<i64>,
-    field_ttl_secs: Option<i64>,
+    key_ttl_secs: i64,
+    field_ttl_secs: i64,
     once_cell: &OnceCell<String>,
     script: &str,
 ) -> Result<i64, Error>
@@ -204,8 +204,8 @@ where
             (
                 field,
                 serialized_value.as_slice(),
-                key_ttl_secs.unwrap_or(-2),
-                field_ttl_secs.unwrap_or(-2),
+                key_ttl_secs,
+                field_ttl_secs,
             ),
         )
         .await?;
@@ -275,7 +275,7 @@ mod tests {
         let sid = Id::default();
 
         let ttl = store
-            .set(&sid, "field1", &"value1", Some(10), None, None)
+            .set(&sid, "field1", &"value1", 10, 10, None)
             .await
             .unwrap();
 
@@ -291,7 +291,7 @@ mod tests {
         let sid = Id::default();
 
         store
-            .set(&sid, "f", &"temp", None, Some(1), None)
+            .set(&sid, "f", &"temp", 1, 1, None)
             .await
             .unwrap();
 
@@ -309,13 +309,13 @@ mod tests {
         let sid = Id::default();
 
         let ttl = store
-            .set(&sid, "f", &"x", Some(5), Some(5), None)
+            .set(&sid, "f", &"x", 5, 5, None)
             .await
             .unwrap();
         assert_eq!(ttl, 5);
 
         let ttl = store
-            .set(&sid, "f", &"y", None, Some(-1), None)
+            .set(&sid, "f", &"y", -1, -1, None)
             .await
             .unwrap();
         assert_eq!(ttl, -1);
@@ -328,12 +328,12 @@ mod tests {
         let new_sid = Id::default();
 
         store
-            .set(&old_sid, "f", &"foo", None, None, None)
+            .set(&old_sid, "f", &"foo", -1, -1, None)
             .await
             .unwrap();
 
         store
-            .set_and_rename(&old_sid, &new_sid, "g", &"bar", Some(60), None, None)
+            .set_and_rename(&old_sid, &new_sid, "g", &"bar", 60, 60, None)
             .await
             .unwrap();
 
@@ -354,16 +354,16 @@ mod tests {
         let new_sid = Id::default();
 
         store
-            .set(&old_sid, "f", &"foo", Some(60), None, None)
+            .set(&old_sid, "f", &"foo", 60, 60, None)
             .await
             .unwrap();
         store
-            .set(&new_sid, "existing", &"bar", Some(60), None, None)
+            .set(&new_sid, "existing", &"bar", 60, 60, None)
             .await
             .unwrap();
 
         let result = store
-            .set_and_rename(&old_sid, &new_sid, "g", &"baz", Some(60), None, None)
+            .set_and_rename(&old_sid, &new_sid, "g", &"baz", 60, 60, None)
             .await;
 
         assert!(
@@ -381,11 +381,11 @@ mod tests {
         let sid = Id::default();
 
         store
-            .set(&sid, "f1", &"v1", Some(10), None, None)
+            .set(&sid, "f1", &"v1", 10, 10, None)
             .await
             .unwrap();
         store
-            .set(&sid, "f2", &"v2", Some(10), None, None)
+            .set(&sid, "f2", &"v2", 10, 10, None)
             .await
             .unwrap();
 

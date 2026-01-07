@@ -9,55 +9,39 @@ pub(crate) static SET_SCRIPT: &str = r#"
     local key = KEYS[1]
     local field = ARGV[1]
     local value = ARGV[2]
-    local key_ttl_secs = tonumber(ARGV[3])
-    local field_ttl_secs = tonumber(ARGV[4])
+    local key_ttl = tonumber(ARGV[3])
+    local field_ttl = tonumber(ARGV[4])
 
     local key_existed = redis.call('EXISTS', key)
-    local effective_key_ttl = key_ttl_secs
 
-    if field_ttl_secs then
-        if field_ttl_secs == -1 then
-            effective_key_ttl = -1
-        elseif field_ttl_secs > 0 then
-            if effective_key_ttl == nil then
-                effective_key_ttl = field_ttl_secs
-            elseif effective_key_ttl ~= -1 and field_ttl_secs > effective_key_ttl then
-                effective_key_ttl = field_ttl_secs
-            end
-        end
-    end
-
-    if field_ttl_secs and field_ttl_secs == 0 then
+    if field_ttl == 0 then
         redis.call('HDEL', key, field)
+        if redis.call('EXISTS', key) == 0 then return -2 end
     else
         redis.call('HSET', key, field, value)
-        if field_ttl_secs and field_ttl_secs > 0 then
-            redis.call('HEXPIRE', key, field_ttl_secs, 'FIELDS', 1, field)
-        elseif field_ttl_secs and field_ttl_secs == -1 then
+        if field_ttl > 0 then
+            redis.call('HEXPIRE', key, field_ttl, 'FIELDS', 1, field)
+        elseif field_ttl == -1 then
             redis.call('HPERSIST', key, 'FIELDS', 1, field)
         end
     end
 
-    if redis.call('EXISTS', key) == 0 then
-        return -2
-    end
-
-    if effective_key_ttl and effective_key_ttl == -1 then
+    if key_ttl == -1 then
         redis.call('PERSIST', key)
         return -1
     end
 
-    if effective_key_ttl and effective_key_ttl > 0 then
+    if key_ttl > 0 then
         if key_existed == 0 then
-            redis.call('EXPIRE', key, effective_key_ttl)
-            return effective_key_ttl
+            redis.call('EXPIRE', key, key_ttl)
+            return key_ttl
         else
             local current_ttl = redis.call('TTL', key)
             if current_ttl == -1 then
                 return -1
-            elseif effective_key_ttl > current_ttl then
-                redis.call('EXPIRE', key, effective_key_ttl)
-                return effective_key_ttl
+            elseif key_ttl > current_ttl then
+                redis.call('EXPIRE', key, key_ttl)
+                return key_ttl
             else
                 return current_ttl
             end
@@ -138,21 +122,8 @@ pub(crate) static SET_AND_RENAME_SCRIPT: &str = r#"
     local new_key = KEYS[2]
     local field = ARGV[1]
     local value = ARGV[2]
-    local key_ttl_secs = tonumber(ARGV[3])
-    local field_ttl_secs = tonumber(ARGV[4])
-
-    local effective_key_ttl = key_ttl_secs
-    if field_ttl_secs then
-        if field_ttl_secs == -1 then
-            effective_key_ttl = -1
-        elseif field_ttl_secs > 0 then
-            if effective_key_ttl == nil then
-                effective_key_ttl = field_ttl_secs
-            elseif effective_key_ttl ~= -1 and field_ttl_secs > effective_key_ttl then
-                effective_key_ttl = field_ttl_secs
-            end
-        end
-    end
+    local key_ttl = tonumber(ARGV[3])
+    local field_ttl = tonumber(ARGV[4])
 
     if redis.call('EXISTS', new_key) == 1 then
         return redis.error_reply("Target session ID already exists")
@@ -161,19 +132,18 @@ pub(crate) static SET_AND_RENAME_SCRIPT: &str = r#"
     local key_existed_before_rename = 0
     if redis.call('EXISTS', old_key) == 1 then
         key_existed_before_rename = 1
-        local success = redis.call('RENAMENX', old_key, new_key)
-        if success == 0 then
+        if redis.call('RENAMENX', old_key, new_key) == 0 then
              return redis.error_reply("Target session ID collision during RENAME")
         end
     end
 
-    if field_ttl_secs and field_ttl_secs == 0 then
+    if field_ttl == 0 then
         redis.call('HDEL', new_key, field)
     else
         redis.call('HSET', new_key, field, value)
-        if field_ttl_secs and field_ttl_secs > 0 then
-            redis.call('HEXPIRE', new_key, field_ttl_secs, 'FIELDS', 1, field)
-        elseif field_ttl_secs and field_ttl_secs == -1 then
+        if field_ttl > 0 then
+            redis.call('HEXPIRE', new_key, field_ttl, 'FIELDS', 1, field)
+        elseif field_ttl == -1 then
             redis.call('HPERSIST', new_key, 'FIELDS', 1, field)
         end
     end
@@ -182,22 +152,20 @@ pub(crate) static SET_AND_RENAME_SCRIPT: &str = r#"
         return -2
     end
 
-    if effective_key_ttl and effective_key_ttl == -1 then
+    if key_ttl == -1 then
         redis.call('PERSIST', new_key)
         return -1
-    end
-
-    if effective_key_ttl and effective_key_ttl > 0 then
+    elseif key_ttl > 0 then
         if key_existed_before_rename == 0 then
-            redis.call('EXPIRE', new_key, effective_key_ttl)
-            return effective_key_ttl
+            redis.call('EXPIRE', new_key, key_ttl)
+            return key_ttl
         else
             local current_ttl = redis.call('TTL', new_key)
             if current_ttl == -1 then
                 return -1
-            elseif effective_key_ttl > current_ttl then
-                redis.call('EXPIRE', new_key, effective_key_ttl)
-                return effective_key_ttl
+            elseif key_ttl > current_ttl then
+                redis.call('EXPIRE', new_key, key_ttl)
+                return key_ttl
             else
                 return current_ttl
             end

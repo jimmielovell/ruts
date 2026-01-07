@@ -158,20 +158,20 @@ where
         let current_id = self.inner.get_or_set_id();
         let pending_id = self.inner.take_pending_id();
 
-        let key_ttl_secs = self.max_age();
-        if let Some(ttl) = field_ttl_secs
-            && ttl > key_ttl_secs
-        {
-            Some(ttl)
+        let default_session_ttl = self.max_age();
+        let effective_field_ttl = field_ttl_secs.unwrap_or(default_session_ttl);
+        
+        let required_session_ttl = if default_session_ttl == -1 || effective_field_ttl == -1 {
+            -1
         } else {
-            Some(key_ttl_secs)
+            std::cmp::max(default_session_ttl, effective_field_ttl)
         };
 
         let max_age = match pending_id {
             Some(new_id) => {
                 let max_age = self.inner
                     .store
-                    .set_and_rename(&current_id, &new_id, field, value, Some(key_ttl_secs), field_ttl_secs.or(Some(key_ttl_secs)), hot_cache_ttl_secs)
+                    .set_and_rename(&current_id, &new_id, field, value, required_session_ttl, effective_field_ttl, hot_cache_ttl_secs)
                     .await
                     .map_err(|err| {
                         tracing::error!(err = %err, "failed to update field-value with rename in session store");
@@ -190,8 +190,8 @@ where
                     &current_id,
                     field,
                     value,
-                    Some(key_ttl_secs),
-                    field_ttl_secs.or(Some(key_ttl_secs)),
+                    required_session_ttl,
+                    effective_field_ttl,
                     hot_cache_ttl_secs,
                 )
                 .await

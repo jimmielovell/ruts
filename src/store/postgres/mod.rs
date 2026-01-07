@@ -87,13 +87,14 @@ impl PostgresStoreBuilder {
             sqlx::raw_sql(&format!(
                 r#"
                 create table if not exists {fields_table_name} (
-                    fk_session_id text not null references {expiry_table_name}(session_id) on delete cascade on update cascade,
+                    fk_session_id text not null references {expiry_table_name} (session_id) on update cascade on delete cascade,
                     field text not null,
                     value bytea not null,
                     expires_at timestamptz,
                     hot_cache_ttl bigint,
                     primary key (fk_session_id, field)
                 );
+
                 -- for looking up fields by session
                 create index if not exists idx_fields_session_id on {fields_table_name}(fk_session_id);
                 -- for field-level cleanup
@@ -144,34 +145,6 @@ pub struct PostgresStore {
     fields_table_name: String,
 }
 
-fn determine_ttls(
-    key_ttl_secs: Option<i64>,
-    field_ttl_secs: Option<i64>,
-) -> (Option<f64>, Option<f64>) {
-    if field_ttl_secs == Some(-1) {
-        return (None, None);
-    }
-
-    if key_ttl_secs == Some(-1) {
-        let f_ttl = field_ttl_secs.and_then(|t| if t <= 0 { None } else { Some(t as f64) });
-        return (None, f_ttl);
-    }
-
-    let k_ttl = key_ttl_secs.and_then(|t| if t <= 0 { None } else { Some(t as f64) });
-    let f_ttl = match field_ttl_secs {
-        Some(fts) => {
-            if fts <= 0 {
-                None
-            } else {
-                Some(fts as f64)
-            }
-        }
-        None => k_ttl,
-    };
-
-    (k_ttl, f_ttl)
-}
-
 impl PostgresStore {
     async fn _rename_session_id<'e, E>(
         &self,
@@ -194,7 +167,10 @@ impl PostgresStore {
         Ok(result.rows_affected() > 0)
     }
 
-    async fn _remove(&self, session_id: &Id, field: &str) -> Result<i64, Error> {
+    async fn _remove<'e, E>(&self, executor: E, session_id: &Id, field: &str) -> Result<i64, Error>
+    where
+        E: Executor<'e, Database = Postgres>,
+    {
         let query = format!(
             r#"
             with
@@ -261,7 +237,7 @@ impl PostgresStore {
         let ttl: i64 = sqlx::query_scalar(&query)
             .bind(session_id.to_string())
             .bind(field)
-            .fetch_one(&self.pool)
+            .fetch_one(executor)
             .await?;
 
         Ok(ttl)
@@ -272,123 +248,98 @@ impl PostgresStore {
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         #[cfg(feature = "layered-store")] hot_cache_ttl: Option<i64>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
         old_session_id: Option<&Id>
     ) -> Result<i64, Error>
     where
         T: Send + Sync + Serialize,
+
     {
-        if key_ttl_secs == Some(0) {
-            let target_id = old_session_id.unwrap_or(session_id);
-            self.delete(target_id).await?;
+        if key_ttl_secs == 0 {
+            self.delete(session_id).await?;
             return Ok(-2);
         }
 
-        if field_ttl_secs == Some(0) {
-            if let Some(old_id) = old_session_id {
-                let _ = self._rename_session_id(&self.pool, old_id, session_id).await?;
+        if field_ttl_secs == 0 {
+            if let Some(old_session_id) = old_session_id {
+                let mut tx = self.pool.begin().await?;
+                let ttl = self._remove(&self.pool, session_id, field).await?;
+                if ttl != -2 {
+                    let _ = self._rename_session_id(&mut *tx, old_session_id, session_id).await?;
+                }
+                tx.commit().await?;
+
+                return Ok(ttl);
             }
-            return self._remove(session_id, field).await;
+
+            return self._remove(&self.pool, session_id, field).await;
         }
 
         let value_bytes = serialize_value(value)?;
-        let (session_ttl, field_ttl) = determine_ttls(key_ttl_secs, field_ttl_secs);
 
         #[cfg(feature = "layered-store")]
-        let hot_cache_ttl = hot_cache_ttl.min(field_ttl.map(|v| v as i64));
+        let hot_cache_ttl = hot_cache_ttl.min(Some(field_ttl_secs));
 
         #[cfg(not(feature = "layered-store"))]
         let hot_cache_ttl: Option<i64> = None;
 
-        let (rename_cte, insert_source) = if old_session_id.is_some() {
-            (
-                format!(
-                    r#"
-                    renamed_session as (
-                        update {e_table}
-                        set session_id = $1,
-                            expires_at = case
-                                when {e_table}.expires_at is null then null
-                                else greatest({e_table}.expires_at, now() + make_interval(secs => $5))
-                            end
-                        where session_id = $7
-                        returning
-                            case when expires_at is null then -1
-                            else extract(epoch from (expires_at - now()))::bigint
-                            end as ttl
-                    ),
-                    "#,
-                    e_table = self.expiry_table_name,
-                ),
-                // only try insert if rename didn't happen (returned 0 rows)
-                "select $1, now() + make_interval(secs => $5) where not exists (select 1 from renamed_session)"
-            )
-        } else {
-            (
-                String::from(""),
-                "values ($1, now() + make_interval(secs => $5))"
-            )
-        };
-
-        // If rename happened, we want that ttl. if not, we want `exsert` ttl.
-        let final_select = if old_session_id.is_some() {
-            "select coalesce((select expires_at from exsert), (select ttl from renamed_session))"
-        } else {
-            "select expires_at from exsert"
-        };
+        let key_ttl = if key_ttl_secs == -1 { None } else { Some(key_ttl_secs as f64) };
+        let field_ttl = if field_ttl_secs == -1 { None } else { Some(field_ttl_secs as f64) };
 
         let query = format!(
             r#"
             with
-            {rename_cte}
             exsert as (
                 insert into {e_table} (session_id, expires_at)
-                {insert_source}
+                values ($1, now() + make_interval(secs => $5))
                 on conflict (session_id) do update
                 set expires_at = case
                     when {e_table}.expires_at is null or excluded.expires_at is null then null
                     else greatest({e_table}.expires_at, excluded.expires_at)
                 end
-                returning
-                    case when expires_at is null then -1
-                    else extract(epoch from (expires_at - now()))::bigint
-                    end
-                as expires_at
+                returning session_id, expires_at
             ),
             upsert as (
                 insert into {f_table} (fk_session_id, field, value, hot_cache_ttl, expires_at)
-                values (
-                    $1, $2, $3, $4,
-                    now() + make_interval(secs => $6)
-                )
+                select p.session_id, $2, $3, $4, now() + make_interval(secs => $6)
+                from exsert p
                 on conflict (fk_session_id, field) do update
                 set
                     value = excluded.value,
                     expires_at = excluded.expires_at,
                     hot_cache_ttl = excluded.hot_cache_ttl
             )
-            {final_select};
+            select
+                case when expires_at is null then -1
+                else extract(epoch from (expires_at - now()))::bigint
+                end
+            from exsert
             "#,
             e_table = self.expiry_table_name,
             f_table = self.fields_table_name,
         );
 
-        let mut qb = sqlx::query_scalar(&query)
+        let qs = sqlx::query_scalar(&query)
             .bind(session_id.to_string())
             .bind(field)
             .bind(value_bytes)
             .bind(hot_cache_ttl)
-            .bind(session_ttl)
+            .bind(key_ttl)
             .bind(field_ttl);
 
-        if let Some(session_id) = old_session_id {
-            qb = qb.bind(session_id.to_string());
+        if let Some(old_session_id) = old_session_id {
+            let mut tx = self.pool.begin().await?;
+            let _ = self._rename_session_id(&mut *tx, old_session_id, session_id).await?;
+            let ttl = qs.fetch_one(&mut *tx).await?;
+            tx.commit().await?;
+
+            return Ok(ttl);
         }
 
-        let ttl: i64 = qb.fetch_one(&self.pool).await?;
+        let ttl: i64 = qs.fetch_one(&self.pool).await?;
 
         Ok(ttl)
     }
@@ -461,8 +412,8 @@ impl SessionStore for PostgresStore {
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         #[cfg(feature = "layered-store")] _: Option<i64>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
@@ -476,7 +427,7 @@ impl SessionStore for PostgresStore {
             key_ttl_secs,
             field_ttl_secs,
             None,
-            None,
+            None
         )
         .await
     }
@@ -487,8 +438,8 @@ impl SessionStore for PostgresStore {
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         #[cfg(feature = "layered-store")] _: Option<i64>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> Result<i64, Error>
@@ -502,7 +453,7 @@ impl SessionStore for PostgresStore {
             key_ttl_secs,
             field_ttl_secs,
             None,
-            Some(old_session_id),
+            Some(old_session_id)
         )
         .await
     }
@@ -519,7 +470,7 @@ impl SessionStore for PostgresStore {
     }
 
     async fn remove(&self, session_id: &Id, field: &str) -> Result<i64, Error> {
-        self._remove(session_id, field).await
+        self._remove(&self.pool, session_id, field).await
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
@@ -642,8 +593,8 @@ impl crate::store::LayeredColdStore for PostgresStore {
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error> {
         self._upsert(
@@ -653,7 +604,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
             key_ttl_secs,
             field_ttl_secs,
             hot_cache_ttl_secs,
-            None,
+            None
         )
         .await
     }
@@ -664,8 +615,8 @@ impl crate::store::LayeredColdStore for PostgresStore {
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: Option<i64>,
-        field_ttl_secs: Option<i64>,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
         hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error> {
         self._upsert(
@@ -675,9 +626,9 @@ impl crate::store::LayeredColdStore for PostgresStore {
             key_ttl_secs,
             field_ttl_secs,
             hot_cache_ttl_secs,
-            Some(old_session_id),
+            Some(old_session_id)
         )
-        .await
+            .await
     }
 }
 
@@ -702,6 +653,10 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query("drop table if exists t_sessions_kv cascade")
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let store = PostgresStoreBuilder::new(pool.clone(), true)
             .build()
@@ -720,7 +675,7 @@ mod tests {
         };
 
         let ttl = store
-            .set(&session_id, field, &value, Some(60), Some(60), None)
+            .set(&session_id, field, &value, 60, 60, None)
             .await
             .unwrap();
         assert!(ttl > 55);
@@ -733,8 +688,8 @@ mod tests {
                 &session_id,
                 field,
                 &TestData { value: "x".into() },
-                Some(60),
-                Some(60),
+                60,
+                60,
                 None,
             )
             .await
@@ -756,11 +711,11 @@ mod tests {
         };
 
         store
-            .set(&session_id, field, &value, Some(60), Some(60), None)
+            .set(&session_id, field, &value, 60, 60, None)
             .await
             .unwrap();
         store
-            .set(&session_id, field, &updated_value, Some(60), Some(60), None)
+            .set(&session_id, field, &updated_value, 60, 60, None)
             .await
             .unwrap();
 
@@ -779,8 +734,8 @@ mod tests {
                 &session_id,
                 field,
                 &TestData { value: "x".into() },
-                Some(60),
-                Some(0),
+                60,
+                0,
                 None,
             )
             .await
@@ -802,8 +757,8 @@ mod tests {
                 &session_id,
                 field,
                 &TestData { value: "y".into() },
-                Some(60),
-                Some(-1),
+                -1,
+                -1,
                 None,
             )
             .await
@@ -827,8 +782,8 @@ mod tests {
                 &TestData {
                     value: "temp".into(),
                 },
-                Some(2),
-                Some(2),
+                2,
+                2,
                 None,
             )
             .await
@@ -851,8 +806,8 @@ mod tests {
                 &TestData {
                     value: "val".into(),
                 },
-                Some(3600),
-                Some(3600),
+                3600,
+                3600,
                 None,
             )
             .await
@@ -879,8 +834,8 @@ mod tests {
                 &session_id,
                 "A",
                 &TestData { value: "a".into() },
-                Some(100),
-                Some(100),
+                100,
+                100,
                 None,
             )
             .await
@@ -891,8 +846,8 @@ mod tests {
                 &session_id,
                 "B",
                 &TestData { value: "b".into() },
-                Some(10),
-                Some(10),
+                10,
+                10,
                 None,
             )
             .await
@@ -920,8 +875,8 @@ mod tests {
                 &TestData {
                     value: "bye".into(),
                 },
-                Some(60),
-                Some(60),
+                60,
+                60,
                 None,
             )
             .await
@@ -948,7 +903,7 @@ mod tests {
         };
 
         store
-            .set_and_rename(&old_id, &new_id, field, &value, Some(60), Some(60), None)
+            .set_and_rename(&old_id, &new_id, field, &value, 60, 60, None)
             .await
             .unwrap();
 
@@ -976,8 +931,8 @@ mod tests {
                 &old_id,
                 "f1",
                 &TestData { value: "v1".into() },
-                Some(60),
-                Some(60),
+                60,
+                60,
                 None,
             )
             .await
@@ -987,8 +942,8 @@ mod tests {
                 &new_id,
                 "f2",
                 &TestData { value: "v2".into() },
-                Some(60),
-                Some(60),
+                60,
+                60,
                 None,
             )
             .await
@@ -1002,8 +957,8 @@ mod tests {
                 &TestData {
                     value: "v1_upd".into(),
                 },
-                Some(60),
-                Some(60),
+                60,
+                60,
                 None,
             )
             .await;
@@ -1024,8 +979,8 @@ mod tests {
                 &session_id,
                 "f1",
                 &TestData { value: "v1".into() },
-                Some(60),
-                Some(60),
+                60,
+                60,
                 None,
             )
             .await
@@ -1035,8 +990,8 @@ mod tests {
                 &session_id,
                 "f2",
                 &TestData { value: "v2".into() },
-                Some(60),
-                Some(60),
+                60,
+                60,
                 None,
             )
             .await
@@ -1052,30 +1007,23 @@ mod tests {
         let old_id = Id::default();
         let new_id = Id::default();
 
-        store
-            .set(
-                &old_id,
-                "existing_field",
-                &TestData { value: "v1".into() },
-                Some(60),
-                Some(60),
-                None,
-            )
+        store.set(&old_id, "existing_field", &TestData { value: "v1".into() }, 60, 60, None)
             .await
             .unwrap();
 
-        let result = store
-            .set_and_rename(
-                &old_id,
-                &new_id,
-                "new_field",
-                &TestData { value: "v2".into() },
-                Some(60),
-                Some(60),
-                None,
-            )
-            .await;
+        let check: Option<TestData> = store.get(&old_id, "existing_field").await.unwrap();
+        assert!(check.is_some(), "old_id not found immediately after set!");
 
-        assert!(result.is_ok(), "Rename failed, likely due to PK collision: {:?}", result.err());
+        let result = store.set_and_rename(
+            &old_id, &new_id, "existing_field", &TestData { value: "v2".into() }, 60, 60, None
+        ).await;
+
+        assert!(result.is_ok(), "Rename result error: {:?}", result.err());
+
+        let old_val: Option<TestData> = store.get(&old_id, "existing_field").await.unwrap();
+        assert!(old_val.is_none(), "old_id still exists with value: {:?}", old_val);
+
+        let new_val: Option<TestData> = store.get(&new_id, "existing_field").await.unwrap();
+        assert_eq!(new_val.unwrap().value, "v2", "new_id has wrong value");
     }
 }
