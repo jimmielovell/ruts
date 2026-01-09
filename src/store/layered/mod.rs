@@ -96,30 +96,27 @@ where
     }
 
     async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error> {
-        match self.hot.get_all(session_id).await? {
-            Some(session_map) => Ok(Some(session_map)),
-            None => match self.cold.get_all_with_meta(session_id).await? {
-                Some((session_map, hot_cache_ttl_map)) => {
-                    let pairs_to_cache: Vec<(&str, &[u8], Option<i64>)> = session_map
-                        .iter()
-                        .filter_map(|(key, value)| {
-                            let hot_cache_ttl = hot_cache_ttl_map.get(key).unwrap().to_owned();
-                            if hot_cache_ttl != Some(0) {
-                                Some((key.as_str(), value.as_slice(), hot_cache_ttl))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
+        match self.cold.get_all_with_meta(session_id).await? {
+            Some((session_map, hot_cache_ttl_map)) => {
+                let pairs_to_cache: Vec<(&str, &[u8], Option<i64>)> = session_map
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        let hot_cache_ttl = hot_cache_ttl_map.get(key).unwrap().to_owned();
+                        if hot_cache_ttl != Some(0) {
+                            Some((key.as_str(), value.as_slice(), hot_cache_ttl))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
 
-                    if !pairs_to_cache.is_empty() {
-                        self.hot.set_multiple(session_id, &pairs_to_cache).await?;
-                    }
-
-                    Ok(Some(session_map))
+                if !pairs_to_cache.is_empty() {
+                    self.hot.set_multiple(session_id, &pairs_to_cache).await?;
                 }
-                None => Ok(None),
-            },
+
+                Ok(Some(session_map))
+            }
+            None => Ok(None),
         }
     }
 
