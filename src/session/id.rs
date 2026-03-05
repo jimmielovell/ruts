@@ -8,7 +8,7 @@ use std::fmt::Display;
 use std::str::FromStr;
 use std::{fmt, str};
 
-#[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Deserialize, Serialize, Eq, Hash, PartialEq)]
 pub struct Id([u8; 16]);
 
 impl Default for Id {

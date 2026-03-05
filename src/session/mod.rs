@@ -28,7 +28,7 @@ pub enum Error {
 type Result<T> = result::Result<T, Error>;
 
 /// A parsed on-demand session store.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Session<S: SessionStore> {
     inner: Arc<Inner<S>>,
 }
@@ -421,7 +421,6 @@ where
 const SESSION_STATE_CHANGED: u8 = 1;
 const SESSION_STATE_DELETED: u8 = 2;
 
-#[derive(Debug)]
 pub struct Inner<T: SessionStore> {
     pub state: AtomicU8,
     pub id: RwLock<Option<Id>>,
@@ -571,8 +570,8 @@ mod tests {
 
         // Verify id changed and both fields exist on the NEW id
         let current_id = session.id().unwrap();
-        assert_eq!(current_id, prepared_id);
-        assert_ne!(current_id, original_id);
+        assert_eq!(current_id.to_string(), prepared_id.to_string());
+        assert_ne!(current_id.to_string(), original_id.to_string());
 
         let retrieved1: Option<TestUser> = session.get("test1").await.unwrap();
         let retrieved2: Option<TestUser> = session.get("test2").await.unwrap();

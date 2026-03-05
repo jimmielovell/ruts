@@ -143,7 +143,6 @@ where
 
 pin_project! {
     /// Response future for SessionManager
-    #[derive(Debug)]
     pub struct ResponseFuture<F, T: SessionStore> {
         #[pin]
         future: F,
