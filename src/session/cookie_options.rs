@@ -1,4 +1,8 @@
 use cookie::SameSite;
+#[cfg(feature = "signed")]
+use std::sync::Arc;
+#[cfg(feature = "signed")]
+use tower_cookies::Key;
 
 /// Configuration options for session cookies.
 ///
@@ -15,7 +19,7 @@ use cookie::SameSite;
 ///         .max_age(1 * 60)
 ///         .path("/");
 /// ```
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct CookieOptions {
     pub http_only: bool,
     pub name: &'static str,
@@ -24,6 +28,8 @@ pub struct CookieOptions {
     pub same_site: SameSite,
     pub secure: bool,
     pub max_age: i64,
+    #[cfg(feature = "signed")]
+    pub signing_key: Option<Arc<Key>>,
 }
 
 impl Default for CookieOptions {
@@ -36,6 +42,8 @@ impl Default for CookieOptions {
             same_site: SameSite::Lax,
             secure: true,
             max_age: 10 * 60,
+            #[cfg(feature = "signed")]
+            signing_key: None,
         }
     }
 }
@@ -79,6 +87,12 @@ impl CookieOptions {
 
     pub fn max_age(mut self, seconds: i64) -> Self {
         self.max_age = seconds;
+        self
+    }
+
+    #[cfg(feature = "signed")]
+    pub fn signing_key(mut self, key: Key) -> Self {
+        self.signing_key = Some(Arc::new(key));
         self
     }
 }

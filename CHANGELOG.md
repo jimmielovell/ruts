@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-03-06
+
+### Added
+- Support for cryptographically signed cookies via the new optional `signed` feature.
+
+### Changed
+- Removed `derive(Debug)` from the `Id` type to prevent accidental logging of sensitive session IDs.
+
+### Removed
+- Removed public re-exports of `fred` and `sqlx` crates.
+
 ## [0.8.1] - 2026-01-10
 ### Changed
 - **Layered Store:** `Session::get_all` should always fetch from the cold store as the hot store could be missing some field/value(s).

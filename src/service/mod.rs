@@ -57,13 +57,26 @@ where
     }
 
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
-        let (cookie_name, cookie_max_age) = if let Some(cookie_options) = &self.cookie_options {
-            (Some(cookie_options.name), Some(cookie_options.max_age))
-        } else {
-            (None, None)
+        let cookie_name = self.cookie_options.as_ref().map(|o| o.name);
+        let cookie_max_age = self.cookie_options.as_ref().map(|o| o.max_age);
+
+        #[cfg(feature = "signed")]
+        let inner_session = {
+            let signing_key = self
+                .cookie_options
+                .as_ref()
+                .and_then(|o| o.signing_key.clone());
+            Inner::new(
+                Arc::clone(&self.store),
+                cookie_name,
+                cookie_max_age,
+                signing_key,
+            )
         };
 
+        #[cfg(not(feature = "signed"))]
         let inner_session = Inner::new(Arc::clone(&self.store), cookie_name, cookie_max_age);
+
         let inner_session = Arc::new(inner_session);
         req.extensions_mut().insert(inner_session.clone());
 
@@ -133,7 +146,7 @@ where
     fn layer(&self, inner: S) -> Self::Service {
         let service = SessionService::new(inner, self.store.clone());
 
-        if let Some(cookie_options) = self.cookie_options {
+        if let Some(cookie_options) = self.cookie_options.clone() {
             service.with_cookie_options(Arc::new(cookie_options))
         } else {
             service
@@ -209,5 +222,13 @@ fn build_cookie(id: &Id, cookie_options: &CookieOptions, cookie_max_age: i64, co
         cookie_builder
     };
 
+    #[cfg(feature = "signed")]
+    if let Some(key) = &cookie_options.signing_key {
+        cookies.signed(key).add(cookie_builder.build());
+    } else {
+        cookies.add(cookie_builder.build());
+    }
+
+    #[cfg(not(feature = "signed"))]
     cookies.add(cookie_builder.build());
 }
