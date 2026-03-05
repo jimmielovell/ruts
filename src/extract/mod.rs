@@ -40,7 +40,17 @@ where
 
         session_inner.set_cookies_if_empty(cookies_ext.to_owned());
 
-        if let Some(cookie) = cookies_ext.get(cookie_name) {
+        #[cfg(feature = "signed")]
+        let cookie = if let Some(signing_key) = &session_inner.signing_key {
+            cookies_ext.signed(signing_key).get(cookie_name)
+        } else {
+            cookies_ext.get(cookie_name)
+        };
+
+        #[cfg(not(feature = "signed"))]
+        let cookie = cookies_ext.get(cookie_name);
+
+        if let Some(cookie) = cookie {
             let session_id = cookie
                 .value()
                 .parse::<Id>()

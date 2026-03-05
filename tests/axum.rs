@@ -1,45 +1,39 @@
 use ruts::CookieOptions;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "signed")]
+use tower_cookies::Key;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-pub(crate) struct TestUser {
-    pub id: i64,
-    pub name: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-pub struct TestSession {
-    pub user: TestUser,
-    pub preferences: TestPreferences,
+struct TestUser {
+    id: i64,
+    name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-pub(crate) struct TestPreferences {
-    pub theme: String,
-    pub language: String,
+struct TestSession {
+    user: TestUser,
+    preferences: TestPreferences,
 }
 
-pub fn create_test_session() -> TestSession {
-    TestSession {
-        user: TestUser {
-            id: 1,
-            name: "Test User".to_string(),
-        },
-        preferences: TestPreferences {
-            theme: "dark".to_string(),
-            language: "en".to_string(),
-        },
-    }
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+struct TestPreferences {
+    theme: String,
+    language: String,
 }
 
-pub fn build_cookie_options() -> CookieOptions {
-    CookieOptions::build()
+fn build_cookie_options() -> CookieOptions {
+    let mut options = CookieOptions::build()
         .name("test_sess")
         .http_only(true)
         .same_site(cookie::SameSite::Lax)
         .secure(true)
         .max_age(15)
-        .path("/")
+        .path("/");
+
+    #[cfg(feature = "signed")]
+    let options = options.signing_key(Key::generate());
+    
+    options
 }
 
 #[cfg(test)]

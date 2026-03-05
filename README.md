@@ -183,7 +183,7 @@ async fn handler(session: MySession) {
 }
 ```
 
-### Serialization
+## Serialization
 Ruts supports two serialization backends for session data storage:
 
 - [`bincode`](https://crates.io/crates/bincode) (default) - Fast, compact binary serialization.
@@ -193,10 +193,10 @@ To use [`MessagePack`](https://crates.io/crates/rmp-serde) instead of the defaul
 
 ```toml
 [dependencies]
-ruts = { version = "0.8.1", default-features = false, features = ["axum", "messagepack"] }
+ruts = { version = "0.9.0", default-features = false, features = ["axum", "messagepack"] }
 ```
 
-### Cookie Configuration
+## Cookie Configuration
 
 ```rust
 let cookie_options = CookieOptions::build()
@@ -207,6 +207,29 @@ let cookie_options = CookieOptions::build()
     .max_age(7200) // 2 hours
     .path("/")
     .domain("example.com");
+```
+
+### Signed Cookies
+
+Ruts supports cryptographically signed cookies to prevent client-side tampering of the session ID. To use this, you must enable the `signed` feature in your `Cargo.toml`:
+
+```toml
+[dependencies]
+ruts = { version = "0.9.0", features = ["signed"] }
+```
+
+Then you can provide a `ruts::Key` (A re-export of `tower_cookies::Key` to your CookieOptions.
+
+```rust
+let key = Key::generate();
+let cookie_options = CookieOptions::build()
+    .name("secure_session")
+    .http_only(true)
+    .same_site(cookie::SameSite::Lax)
+    .secure(true)
+    .max_age(3600)
+    .path("/")
+    .signing_key(key);
 ```
 
 ## Important Notes

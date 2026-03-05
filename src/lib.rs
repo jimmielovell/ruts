@@ -206,7 +206,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ruts = { version = "0.8.1", default-features = false, features = ["axum", "messagepack"] }
+//! ruts = { version = "0.9.0", default-features = false, features = ["axum", "messagepack"] }
 //! ```
 //!
 //! ## Cookie Configuration
@@ -214,6 +214,7 @@
 //! ```rust
 //! use ruts::CookieOptions;
 //! use ruts::cookie::SameSite;
+//!
 //! let cookie_options = CookieOptions::build()
 //!     .name("my_session_cookie")
 //!     .http_only(true)
@@ -222,6 +223,38 @@
 //!     .max_age(7200) // 2 hours
 //!     .path("/")
 //!     .domain("example.com");
+//! ```
+//!
+//! ### Signed Cookies
+//!
+//! Ruts supports cryptographically signed cookies to prevent client-side tampering of the session ID. To use this, you must enable the `signed` feature in your `Cargo.toml`:
+//!
+//! ```toml
+//! [dependencies]
+//! ruts = { version = "0.9.0", features = ["signed"] }
+//! ```
+//!
+//! Then you can provide a `ruts::Key` (A re-export of `tower_cookies::Key` to your CookieOptions.
+//!
+//! ```rust
+//! # #[cfg(feature = "signed")]
+//! # fn main() {
+//! use ruts::CookieOptions;
+//! use cookie::SameSite;
+//! use tower_cookies::Key;
+//!
+//! let key = Key::generate();
+//! let cookie_options = CookieOptions::build()
+//!     .name("secure_session")
+//!     .http_only(true)
+//!     .same_site(SameSite::Lax)
+//!     .secure(true)
+//!     .max_age(3600)
+//!     .path("/")
+//!     .signing_key(key);
+//! # }
+//! # #[cfg(not(feature = "signed"))]
+//! # fn main() {}
 //! ```
 //!
 //! # Important Notes
@@ -259,12 +292,6 @@ pub use cookie;
 #[cfg(feature = "axum")]
 mod extract;
 
-#[cfg(feature = "redis-store")]
-pub use fred;
-
-#[cfg(feature = "postgres-store")]
-pub use sqlx;
-
 mod service;
 pub use service::*;
 
@@ -273,4 +300,5 @@ pub use session::*;
 
 pub mod store;
 
-pub use tower_cookies;
+#[cfg(feature = "signed")]
+pub use tower_cookies::Key;

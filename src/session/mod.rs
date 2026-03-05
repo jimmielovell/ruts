@@ -28,7 +28,7 @@ pub enum Error {
 type Result<T> = result::Result<T, Error>;
 
 /// A parsed on-demand session store.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Session<S: SessionStore> {
     inner: Arc<Inner<S>>,
 }
@@ -421,7 +421,9 @@ where
 const SESSION_STATE_CHANGED: u8 = 1;
 const SESSION_STATE_DELETED: u8 = 2;
 
-#[derive(Debug)]
+#[cfg(feature = "signed")]
+use tower_cookies::Key;
+
 pub struct Inner<T: SessionStore> {
     pub state: AtomicU8,
     pub id: RwLock<Option<Id>>,
@@ -430,6 +432,8 @@ pub struct Inner<T: SessionStore> {
     pub cookie_name: Option<&'static str>,
     pub cookies: OnceLock<Cookies>,
     pub store: Arc<T>,
+    #[cfg(feature = "signed")]
+    pub signing_key: Option<Arc<Key>>,
 }
 
 impl<T: SessionStore> Inner<T> {
@@ -437,6 +441,7 @@ impl<T: SessionStore> Inner<T> {
         store: Arc<T>,
         cookie_name: Option<&'static str>,
         cookie_max_age: Option<i64>,
+        #[cfg(feature = "signed")] signing_key: Option<Arc<Key>>,
     ) -> Self {
         Self {
             state: AtomicU8::new(0),
@@ -446,6 +451,8 @@ impl<T: SessionStore> Inner<T> {
             cookie_name,
             cookies: OnceLock::new(),
             store,
+            #[cfg(feature = "signed")]
+            signing_key,
         }
     }
 
@@ -519,7 +526,12 @@ mod tests {
         cookie_name: Option<&'static str>,
         cookie_max_age: Option<i64>,
     ) -> Arc<Inner<S>> {
-        Arc::new(Inner::new(store, cookie_name, cookie_max_age))
+        #[cfg(feature = "signed")]
+        let inner = Arc::new(Inner::new(store, cookie_name, cookie_max_age, None));
+        #[cfg(not(feature = "signed"))]
+        let inner = Arc::new(Inner::new(store, cookie_name, cookie_max_age));
+
+        inner
     }
 
     #[tokio::test]
@@ -571,8 +583,8 @@ mod tests {
 
         // Verify id changed and both fields exist on the NEW id
         let current_id = session.id().unwrap();
-        assert_eq!(current_id, prepared_id);
-        assert_ne!(current_id, original_id);
+        assert_eq!(current_id.to_string(), prepared_id.to_string());
+        assert_ne!(current_id.to_string(), original_id.to_string());
 
         let retrieved1: Option<TestUser> = session.get("test1").await.unwrap();
         let retrieved2: Option<TestUser> = session.get("test2").await.unwrap();

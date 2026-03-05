@@ -1,20 +1,20 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::{DecodeError, Engine};
-use rand::TryRngCore;
-use rand::rngs::OsRng;
+use rand::TryRng;
+use rand::rngs::SysRng;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::str::FromStr;
 use std::{fmt, str};
 
-#[derive(Copy, Clone, Debug, Deserialize, Serialize, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Deserialize, Serialize, Eq, Hash, PartialEq)]
 pub struct Id([u8; 16]);
 
 impl Default for Id {
     fn default() -> Self {
         let mut bytes = [0u8; 16];
-        OsRng.try_fill_bytes(&mut bytes).unwrap();
+        SysRng.try_fill_bytes(&mut bytes).unwrap();
         Self(bytes)
     }
 }
