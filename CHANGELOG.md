@@ -8,9 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- Redis store now pre-loads Lua scripts at construction via `RedisStore::new`,
-  which is now `async` and returns `Result<Self, Error>`. Removes per-call
-  script hash caching.
+- **Breaking:** `RedisStore::new` is now `async` and returns `Result<Self, Error>`.
+  Lua scripts are pre-loaded at construction instead of cached per-call.
+- **Breaking:** `SessionStore::set` and `SessionStore::set_and_rename` no longer
+  require `T: 'static`.
 
 ### Added
 - `RedisStore::reload_scripts` for manual re-loading after server-side
