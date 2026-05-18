@@ -11,18 +11,32 @@ struct StoredValue {
     expires_at: Option<Instant>,
 }
 
-/// An in-memory session store implementation.
+/// An in-memory session store, intended for development and testing.
 ///
-/// It uses a DashMap to manage session data concurrently.
+/// Backed by a [`DashMap`] for concurrent access. Data is lost when the
+/// process exits; use [`RedisStore`] or [`PostgresStore`] for production.
+///
+/// # Behavioral divergence from production stores
+///
+/// `MemoryStore` tracks expiry per-field only — there is no separate
+/// session-level TTL. As a consequence, the TTL returned by [`set`],
+/// [`set_and_rename`], and [`remove`] is synthesized from the maximum
+/// finite field expiry in the session, which can differ from what
+/// [`RedisStore`] or [`PostgresStore`] would return for the same call.
+///
+/// Tests that assert on the *value* of returned TTLs may pass against
+/// `MemoryStore` and fail against the production stores (or vice versa).
+/// Prefer asserting on observable behavior — whether a field exists,
+/// whether `get` returns `Some` or `None` — over the returned TTL.
+///
+/// [`set`]: SessionStore::set
+/// [`set_and_rename`]: SessionStore::set_and_rename
+/// [`remove`]: SessionStore::remove
+/// [`RedisStore`]: crate::store::redis::RedisStore
+/// [`PostgresStore`]: crate::store::postgres::PostgresStore
 #[derive(Debug, Clone)]
 pub struct MemoryStore {
     data: DashMap<String, HashMap<String, StoredValue>>,
-}
-
-impl Default for MemoryStore {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl MemoryStore {
@@ -79,16 +93,12 @@ impl MemoryStore {
 }
 
 fn determine_expiry(key_ttl_secs: i64, field_ttl_secs: i64) -> Option<Instant> {
-    if field_ttl_secs == -1 || key_ttl_secs == -1 {
-        return None;
-    }
-
-    let ttl = key_ttl_secs.min(field_ttl_secs);
-    if ttl > 0 {
-        return Some(Instant::now() + Duration::from_secs(ttl as u64));
-    }
-
-    None
+    let ttl = match (key_ttl_secs, field_ttl_secs) {
+        (-1, -1) => return None,
+        (-1, t) | (t, -1) => t,
+        (a, b) => a.min(b),
+    };
+    (ttl > 0).then(|| Instant::now() + Duration::from_secs(ttl as u64))
 }
 
 impl SessionStore for MemoryStore {
@@ -107,10 +117,9 @@ impl SessionStore for MemoryStore {
     }
 
     async fn get_all(&self, _session_id: &Id) -> Result<Option<SessionMap>, Error> {
-        unimplemented!(
-            "`get_all` is intentionally not implemented for `MemoryStore`.
-            Please use `session.get()` directly for the most efficient access."
-        );
+        Err(Error::Backend(
+            "MemoryStore does not support get_all; use get() per field instead".to_string(),
+        ))
     }
 
     async fn set<T>(
@@ -166,21 +175,27 @@ impl SessionStore for MemoryStore {
     where
         T: Send + Sync + Serialize,
     {
-        if key_ttl_secs == 0 {
-            self.delete(old_session_id).await?;
-            return Ok(-2);
-        }
-
         self.cleanup_expired();
 
         let old_key = old_session_id.to_string();
         let new_key = new_session_id.to_string();
 
-        let mut fields = if let Some((_, fields)) = self.data.remove(&old_key) {
-            fields
-        } else {
-            HashMap::new()
-        };
+        if old_key != new_key && self.data.contains_key(&new_key) {
+            return Err(Error::Backend(format!(
+                "rename failed: target session {new_session_id} already exists"
+            )));
+        }
+
+        if key_ttl_secs == 0 {
+            self.data.remove(&old_key);
+            return Ok(-2);
+        }
+
+        let mut fields = self
+            .data
+            .remove(&old_key)
+            .map(|(_, f)| f)
+            .unwrap_or_default();
 
         if field_ttl_secs == 0 {
             fields.remove(field);
@@ -195,12 +210,12 @@ impl SessionStore for MemoryStore {
             );
         }
 
-        if !fields.is_empty() {
-            self.data.insert(new_key, fields);
-            Ok(self.get_ttl(new_session_id))
-        } else {
-            Ok(-2)
+        if fields.is_empty() {
+            return Ok(-2);
         }
+
+        self.data.insert(new_key, fields);
+        Ok(self.get_ttl(new_session_id))
     }
 
     async fn rename_session_id(
@@ -259,14 +274,16 @@ impl SessionStore for MemoryStore {
         }
 
         if let Some(mut fields) = self.data.get_mut(&session_id.to_string()) {
-            let expires_at = if seconds < 0 {
-                None
-            } else {
-                Some(Instant::now() + Duration::from_secs(seconds as u64))
-            };
+            let new_expiry =
+                (seconds > 0).then(|| Instant::now() + Duration::from_secs(seconds as u64));
 
             for value in fields.values_mut() {
-                value.expires_at = expires_at;
+                value.expires_at = match (new_expiry, value.expires_at) {
+                    (None, _) => None,
+                    (Some(_), None) => value.expires_at,
+                    (Some(new), Some(cur)) if cur > new => Some(new),
+                    _ => value.expires_at,
+                };
             }
             Ok(true)
         } else {

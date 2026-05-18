@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PostgresStore` cleanup task now runs expired-session and expired-field
   deletes in a single statement, and is aborted when the original store is
   dropped.
+- `MemoryStore::set_and_rename` now returns an error when the target session
+    already exists, matching the redis and postgres stores.
+- `MemoryStore::expire` no longer extends field TTLs beyond their original
+  expiry; behavior now matches the postgres store.
 
 ### Added
 - `RedisStore::reload_scripts` for manual re-loading after server-side
