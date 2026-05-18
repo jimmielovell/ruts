@@ -38,7 +38,7 @@ where
     S: SessionStore,
 {
     /// Creates a new `Session` instance.
-    pub fn new(inner: Arc<Inner<S>>) -> Self {
+    pub(crate) fn new(inner: Arc<Inner<S>>) -> Self {
         Self { inner }
     }
 
@@ -225,21 +225,15 @@ where
     /// ```
     #[tracing::instrument(name = "session-store: removing field", skip(self, field))]
     pub async fn remove(&self, field: &str) -> Result<bool> {
-        let id = self.id();
-        if id.is_none() {
+        let id = self.id().ok_or_else(|| {
             tracing::error!("session not initialized");
-            return Err(Error::UnInitialized);
-        }
+            return Error::UnInitialized;
+        })?;
 
-        let max_age = self
-            .inner
-            .store
-            .remove(&id.unwrap(), field)
-            .await
-            .map_err(|err| {
-                tracing::error!(err = %err, "failed to remove field from session store");
-                err
-            })?;
+        let max_age = self.inner.store.remove(&id, field).await.map_err(|err| {
+            tracing::error!(err = %err, "failed to remove field from session store");
+            err
+        })?;
 
         if max_age == -2 {
             self.inner.set_deleted();
@@ -268,13 +262,12 @@ where
     /// ```
     #[tracing::instrument(name = "session-store: deleting session", skip(self))]
     pub async fn delete(&self) -> Result<bool> {
-        let id = self.id();
-        if id.is_none() {
+        let id = self.id().ok_or_else(|| {
             tracing::error!("session not initialized");
-            return Err(Error::UnInitialized);
-        }
+            return Error::UnInitialized;
+        })?;
 
-        let deleted = self.inner.store.delete(&id.unwrap()).await.map_err(|err| {
+        let deleted = self.inner.store.delete(&id).await.map_err(|err| {
             tracing::error!(err = %err, "failed to delete session from store");
             err
         })?;
@@ -305,21 +298,20 @@ where
     /// ```
     #[tracing::instrument(name = "updating session expiry", skip(self, ttl_secs))]
     pub async fn expire(&self, ttl_secs: i64) -> Result<bool> {
-        if ttl_secs == -1 || ttl_secs == 0 {
+        if ttl_secs == 0 {
             return self.delete().await;
         }
 
-        let id = self.id();
-        if id.is_none() {
+        let id = self.id().ok_or_else(|| {
             tracing::error!("session not initialized");
-            return Err(Error::UnInitialized);
-        }
+            return Error::UnInitialized;
+        })?;
 
         self.set_expiration(ttl_secs);
         let expired = self
             .inner
             .store
-            .expire(&id.unwrap(), ttl_secs)
+            .expire(&id, ttl_secs)
             .await
             .map_err(|err| {
                 tracing::error!(err = %err, "failed to update session expiry");
@@ -335,10 +327,10 @@ where
 
     /// Updates the cookie max-age.
     ///
-    /// Any subsequent call to `insert`, `update` or `regenerate` within this request cycle
+    /// Any subsequent call to `set` or `regenerate` within this request cycle
     /// will use this value.
     pub fn set_expiration(&self, seconds: i64) {
-        self.inner.cookie_max_age.store(seconds, Ordering::SeqCst);
+        self.inner.cookie_max_age.store(seconds, Ordering::Relaxed);
     }
 
     /// Regenerates the session with a new ID.
@@ -360,12 +352,16 @@ where
     /// **Note**: This does not renew the session expiry.
     #[tracing::instrument(name = "regenerating session id", skip(self))]
     pub async fn regenerate(&self) -> Result<Option<Id>> {
-        let old_id = self.id();
+        let old_id = self.id().ok_or_else(|| {
+            tracing::error!("session not initialized");
+            return Error::UnInitialized;
+        })?;
+
         let new_id = Id::default();
         let renamed = self
             .inner
             .store
-            .rename_session_id(&old_id.unwrap(), &new_id)
+            .rename_session_id(&old_id, &new_id)
             .await
             .map_err(|err| {
                 tracing::error!(err = %err, "failed to regenerate session id: {err:?}");
@@ -394,7 +390,7 @@ where
     ///
     /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
     ///     let new_id = session.prepare_regenerate();
-    ///     // The next update/insert operation will use this new ID
+    ///     // The next set operation will use this new ID
     ///     session.set("field", &"value", None, None).await.unwrap();
     /// }
     /// ```
@@ -414,7 +410,7 @@ where
     }
 
     fn max_age(&self) -> i64 {
-        self.inner.cookie_max_age.load(Ordering::SeqCst)
+        self.inner.cookie_max_age.load(Ordering::Relaxed)
     }
 }
 
@@ -424,16 +420,16 @@ const SESSION_STATE_DELETED: u8 = 2;
 #[cfg(feature = "signed")]
 use tower_cookies::Key;
 
-pub struct Inner<T: SessionStore> {
-    pub state: AtomicU8,
-    pub id: RwLock<Option<Id>>,
-    pub pending_id: RwLock<Option<Id>>,
-    pub cookie_max_age: AtomicI64,
-    pub cookie_name: Option<&'static str>,
-    pub cookies: OnceLock<Cookies>,
-    pub store: Arc<T>,
+pub(crate) struct Inner<T: SessionStore> {
+    pub(crate) state: AtomicU8,
+    pub(crate) id: RwLock<Option<Id>>,
+    pub(crate) pending_id: RwLock<Option<Id>>,
+    pub(crate) cookie_max_age: AtomicI64,
+    pub(crate) cookie_name: Option<&'static str>,
+    pub(crate) cookies: OnceLock<Cookies>,
+    pub(crate) store: Arc<T>,
     #[cfg(feature = "signed")]
-    pub signing_key: Option<Arc<Key>>,
+    pub(crate) signing_key: Option<Arc<Key>>,
 }
 
 impl<T: SessionStore> Inner<T> {
@@ -457,11 +453,11 @@ impl<T: SessionStore> Inner<T> {
     }
 
     pub fn is_changed(&self) -> bool {
-        self.state.load(Ordering::SeqCst) == SESSION_STATE_CHANGED
+        self.state.load(Ordering::Relaxed) == SESSION_STATE_CHANGED
     }
 
     pub fn is_deleted(&self) -> bool {
-        self.state.load(Ordering::SeqCst) == SESSION_STATE_DELETED
+        self.state.load(Ordering::Relaxed) == SESSION_STATE_DELETED
     }
 
     pub fn get_id(&self) -> Option<Id> {
@@ -485,11 +481,11 @@ impl<T: SessionStore> Inner<T> {
     }
 
     pub fn set_changed(&self) {
-        self.state.store(SESSION_STATE_CHANGED, Ordering::SeqCst);
+        self.state.store(SESSION_STATE_CHANGED, Ordering::Relaxed);
     }
 
     pub fn set_deleted(&self) {
-        self.state.store(SESSION_STATE_DELETED, Ordering::SeqCst);
+        self.state.store(SESSION_STATE_DELETED, Ordering::Relaxed);
     }
 
     pub fn get_cookies(&self) -> Option<&Cookies> {
