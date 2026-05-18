@@ -207,7 +207,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ruts = { version = "0.9.0", default-features = false, features = ["axum", "messagepack"] }
+//! ruts = { version = "0.10.0", default-features = false, features = ["axum", "messagepack"] }
 //! ```
 //!
 //! ## Cookie Configuration
@@ -232,7 +232,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ruts = { version = "0.9.0", features = ["signed"] }
+//! ruts = { version = "0.10.0", features = ["signed"] }
 //! ```
 //!
 //! Then you can provide a `ruts::Key` (A re-export of `tower_cookies::Key` to your CookieOptions.
