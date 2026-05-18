@@ -113,7 +113,8 @@ async fn main() {
     let pool = PgPool::connect(&database_url)
         .await
         .expect("Failed to connect to database");
-    let cold_store = PostgresStoreBuilder::new(pool, true)
+    let cold_store = PostgresStoreBuilder::new(pool)
+        .create_table(true)
         .build()
         .await
         .expect("Failed to build PostgresStore");

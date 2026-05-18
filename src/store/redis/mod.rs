@@ -37,6 +37,11 @@ where
         Ok(Self { client })
     }
 
+    /// Reloads all Lua scripts into the Redis server's script cache.
+    ///
+    /// Scripts are loaded once during [`RedisStore::new`]. Call this method to
+    /// reload them if the server's script cache has been lost — for example,
+    /// after a Redis restart, failover to a replica, or `SCRIPT FLUSH`.
     pub async fn reload_scripts(&self) -> Result<(), Error> {
         load_scripts(&*self.client).await.map_err(Into::into)
     }

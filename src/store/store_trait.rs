@@ -99,7 +99,7 @@ impl SessionMap {
     }
 }
 
-pub trait SessionStore: Send + Sync + 'static {
+pub trait SessionStore: Clone + Send + Sync + 'static {
     /// Gets the `value` for a `field` stored at `session_id`
     fn get<T>(
         &self,

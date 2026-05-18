@@ -257,7 +257,8 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let cold_store = PostgresStoreBuilder::new(pool.clone(), true)
+        let cold_store = PostgresStoreBuilder::new(pool.clone())
+            .create_table(true)
             .build()
             .await
             .unwrap();
