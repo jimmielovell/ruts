@@ -5,7 +5,7 @@ use sqlx::{Executor, PgPool, Postgres};
 use std::collections::HashMap;
 
 // Re-export Duration
-pub use tokio::time::Duration;
+pub use std::time::Duration;
 
 /// A builder for creating a `PostgresStore`.
 ///
@@ -21,26 +21,39 @@ pub struct PostgresStoreBuilder {
 
 impl PostgresStoreBuilder {
     /// Creates a new builder with a database pool and default settings.
-    pub fn new(pool: PgPool, create_table: bool) -> Self {
+    pub fn new(pool: PgPool) -> Self {
         Self {
             pool,
             table_name: "t_sessions".to_string(),
-            create_table,
+            create_table: false,
             schema_name: None,
             cleanup_interval: None,
         }
     }
 
-    /// Sets a custom table name for the session store. Defaults to "t_sessions".
-    pub fn table_name(mut self, table_name: impl Into<String>) -> Self {
-        self.table_name = table_name.into();
+    /// Create the session tables (and schema, if configured) on `build()`.
+    ///
+    /// Defaults to `false`. Enable for development or when no external
+    /// migration system manages the schema.
+    pub fn create_table(mut self, create: bool) -> Self {
+        self.create_table = create;
         self
     }
 
+    /// Sets a custom table name for the session store. Defaults to "t_sessions".
+    pub fn table_name(mut self, table_name: impl Into<String>) -> Result<Self, Error> {
+        let name = table_name.into();
+        validate_identifier(&name)?;
+        self.table_name = name;
+        Ok(self)
+    }
+
     /// Sets a custom schema name for the session store.
-    pub fn schema_name(mut self, schema_name: impl Into<String>) -> Self {
-        self.schema_name = Some(schema_name.into());
-        self
+    pub fn schema_name(mut self, schema_name: impl Into<String>) -> Result<Self, Error> {
+        let name = schema_name.into();
+        validate_identifier(&name)?;
+        self.schema_name = Some(name);
+        Ok(self)
     }
 
     /// Sets the interval for the background task that cleans up expired sessions.
@@ -110,22 +123,24 @@ impl PostgresStoreBuilder {
         let f_table = fields_table_name.clone();
         let interval = self.cleanup_interval.unwrap_or(Duration::from_secs(60 * 5));
 
-        tokio::spawn(async move {
+        let cleanup_task = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            let query = format!(
+                r#"
+                with expired_sessions as (
+                    delete from {e_table}
+                    where expires_at is not null and expires_at < now()
+                )
+                delete from {f_table}
+                where expires_at is not null and expires_at < now()
+                "#
+            );
+
             loop {
                 ticker.tick().await;
-                // Expired sessions (cascades to fields)
-                let _ = sqlx::query(&format!(
-                    "delete from {e_table} where expires_at is not null and expires_at < now()"
-                ))
-                .execute(&pool)
-                .await;
-
-                let _ = sqlx::query(&format!(
-                    "delete from {f_table} where expires_at is not null and expires_at < now()"
-                ))
-                .execute(&pool)
-                .await;
+                let _ = sqlx::query(&query).execute(&pool).await;
             }
         });
 
@@ -133,16 +148,57 @@ impl PostgresStoreBuilder {
             pool: self.pool,
             expiry_table_name,
             fields_table_name,
+            cleanup_task: Some(cleanup_task),
         })
     }
 }
 
+fn validate_identifier(name: &str) -> Result<(), Error> {
+    if name.is_empty() || name.len() > 63 {
+        return Err(Error::Backend(format!(
+            "invalid identifier {name:?}: must be 1-63 bytes"
+        )));
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(Error::Backend(format!(
+            "invalid identifier {name:?}: must start with a letter or underscore"
+        )));
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(Error::Backend(format!(
+            "invalid identifier {name:?}: only ASCII alphanumerics and underscore allowed"
+        )));
+    }
+    Ok(())
+}
+
 /// A Postgres-backed session store.
-#[derive(Clone, Debug)]
 pub struct PostgresStore {
     pool: PgPool,
     expiry_table_name: String,
     fields_table_name: String,
+    cleanup_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Clone for PostgresStore {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            expiry_table_name: self.expiry_table_name.clone(),
+            fields_table_name: self.fields_table_name.clone(),
+            cleanup_task: None, // only the original owns the task
+        }
+    }
+}
+
+impl Drop for PostgresStore {
+    fn drop(&mut self) {
+        if let Some(handle) = self.cleanup_task.take() {
+            handle.abort();
+        }
+    }
 }
 
 impl PostgresStore {
@@ -263,40 +319,28 @@ impl PostgresStore {
         }
 
         if field_ttl_secs == 0 {
-            if let Some(old_session_id) = old_session_id {
-                let mut tx = self.pool.begin().await?;
-                let ttl = self._remove(&self.pool, session_id, field).await?;
-                if ttl != -2 {
-                    let _ = self
-                        ._rename_session_id(&mut *tx, old_session_id, session_id)
-                        .await?;
-                }
-                tx.commit().await?;
+            let mut tx = self.pool.begin().await?;
 
-                return Ok(ttl);
+            if let Some(old_session_id) = old_session_id {
+                let _ = self
+                    ._rename_session_id(&mut *tx, old_session_id, session_id)
+                    .await?;
             }
 
-            return self._remove(&self.pool, session_id, field).await;
+            let ttl = self._remove(&self.pool, session_id, field).await?;
+            tx.commit().await?;
+            return Ok(ttl);
         }
 
         let value_bytes = serialize_value(value)?;
 
         #[cfg(feature = "layered-store")]
         let hot_cache_ttl = hot_cache_ttl.min(Some(field_ttl_secs));
-
         #[cfg(not(feature = "layered-store"))]
         let hot_cache_ttl: Option<i64> = None;
 
-        let key_ttl = if key_ttl_secs == -1 {
-            None
-        } else {
-            Some(key_ttl_secs as f64)
-        };
-        let field_ttl = if field_ttl_secs == -1 {
-            None
-        } else {
-            Some(field_ttl_secs as f64)
-        };
+        let key_ttl = (key_ttl_secs != -1).then_some(key_ttl_secs as f64);
+        let field_ttl = (field_ttl_secs != -1).then_some(field_ttl_secs as f64);
 
         let query = format!(
             r#"
@@ -518,7 +562,7 @@ impl SessionStore for PostgresStore {
                 set expires_at = target.new_expiry
                 from target
                 where session_id = $1
-                and (expires_at is null or expires_at > now())
+                    and (expires_at is null or expires_at > now())
                 returning 1
             ),
             field_update as (
@@ -526,7 +570,10 @@ impl SessionStore for PostgresStore {
                 set expires_at = target.new_expiry
                 from target, session_update
                 where fk_session_id = $1
-                and (expires_at is null or expires_at > target.new_expiry)
+                    and (
+                        target.new_expiry is null
+                        or (expires_at is not null and expires_at > target.new_expiry)
+                    )
             )
             select count(*) from session_update
             "#,
@@ -599,7 +646,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
         Ok(Some((SessionMap::new(session_map), meta_map)))
     }
 
-    async fn set_with_meta<T: Serialize + Send + Sync + 'static>(
+    async fn set_with_meta<T: Serialize + Send + Sync>(
         &self,
         session_id: &Id,
         field: &str,
@@ -620,7 +667,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
         .await
     }
 
-    async fn set_and_rename_with_meta<T: Serialize + Send + Sync + 'static>(
+    async fn set_and_rename_with_meta<T: Serialize + Send + Sync>(
         &self,
         old_session_id: &Id,
         new_session_id: &Id,
@@ -669,7 +716,8 @@ mod tests {
             .await
             .unwrap();
 
-        let store = PostgresStoreBuilder::new(pool.clone(), true)
+        let store = PostgresStoreBuilder::new(pool.clone())
+            .create_table(true)
             .build()
             .await
             .unwrap();

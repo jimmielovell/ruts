@@ -130,7 +130,7 @@ where
         hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error>
     where
-        T: Send + Sync + Serialize + 'static,
+        T: Send + Sync + Serialize,
     {
         let hot_cache_ttl = hot_cache_ttl_secs.unwrap_or(field_ttl_secs);
         let (_, cold_ttl) = tokio::try_join!(
@@ -160,7 +160,7 @@ where
         hot_cache_ttl_secs: Option<i64>,
     ) -> Result<i64, Error>
     where
-        T: Send + Sync + Serialize + 'static,
+        T: Send + Sync + Serialize,
     {
         let hot_cache_ttl = hot_cache_ttl_secs.unwrap_or(field_ttl_secs);
         let (_, cold_ttl) = tokio::try_join!(
@@ -257,14 +257,15 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let cold_store = PostgresStoreBuilder::new(pool.clone(), true)
+        let cold_store = PostgresStoreBuilder::new(pool.clone())
+            .create_table(true)
             .build()
             .await
             .unwrap();
 
         let client = Client::default();
         client.init().await.unwrap();
-        let hot_store = RedisStore::new(Arc::new(client.clone()));
+        let hot_store = RedisStore::new(Arc::new(client.clone())).await.unwrap();
 
         LayeredStore::new(hot_store, cold_store)
     }

@@ -84,9 +84,12 @@ async fn main() {
         .expect("Failed to connect to database");
 
     // Create the session store using the builder
-    let store = PostgresStoreBuilder::new(pool, true)
+    let store = PostgresStoreBuilder::new(pool)
+        .create_table(true)
         .schema_name("my_schema")
+        .unwrap()
         .table_name("my_sessions")
+        .unwrap()
         .cleanup_interval(tokio::time::Duration::from_secs(60))
         .build()
         .await

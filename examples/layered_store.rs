@@ -105,7 +105,7 @@ async fn main() {
         .init()
         .await
         .expect("Failed to connect to Redis");
-    let hot_store = RedisStore::new(Arc::new(redis_client));
+    let hot_store = RedisStore::new(Arc::new(redis_client)).await.unwrap();
 
     // 2. Set up Postgres pool (Cold Store)
     let database_url =
@@ -113,7 +113,8 @@ async fn main() {
     let pool = PgPool::connect(&database_url)
         .await
         .expect("Failed to connect to database");
-    let cold_store = PostgresStoreBuilder::new(pool, true)
+    let cold_store = PostgresStoreBuilder::new(pool)
+        .create_table(true)
         .build()
         .await
         .expect("Failed to build PostgresStore");

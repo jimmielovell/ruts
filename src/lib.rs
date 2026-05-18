@@ -25,7 +25,7 @@
 //!     client.wait_for_connect().await.unwrap();
 //!
 //!     // Create session store
-//!     let store = RedisStore::new(Arc::new(client));
+//!     let store = RedisStore::new(Arc::new(client)).await.unwrap();
 //!
 //!     // Configure session-cookie options
 //!     let cookie_options = CookieOptions::build()
@@ -147,7 +147,8 @@
 //!
 //!      // 2. Create the session store using the builder.
 //!      // This will also run a migration to create the `sessions` table.
-//!      let store = PostgresStoreBuilder::new(pool, true)
+//!      let store = PostgresStoreBuilder::new(pool)
+//!          .create_table(true)
 //!          // Optionally, you can customize the schema and table name
 //!          // .schema_name("my_app")
 //!          // .table_name("user_sessions")
@@ -206,7 +207,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ruts = { version = "0.9.0", default-features = false, features = ["axum", "messagepack"] }
+//! ruts = { version = "0.10.0", default-features = false, features = ["axum", "messagepack"] }
 //! ```
 //!
 //! ## Cookie Configuration
@@ -231,7 +232,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ruts = { version = "0.9.0", features = ["signed"] }
+//! ruts = { version = "0.10.0", features = ["signed"] }
 //! ```
 //!
 //! Then you can provide a `ruts::Key` (A re-export of `tower_cookies::Key` to your CookieOptions.

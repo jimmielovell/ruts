@@ -153,7 +153,7 @@ where
         >,
     ) -> Result<bool>
     where
-        T: Send + Sync + Serialize + 'static,
+        T: Send + Sync + Serialize,
     {
         let current_id = self.inner.get_or_set_id();
         let pending_id = self.inner.take_pending_id();

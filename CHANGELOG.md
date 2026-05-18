@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Breaking:** `RedisStore::new` is now `async` and returns `Result<Self, Error>`.
+  Lua scripts are pre-loaded at construction instead of cached per-call.
+- **Breaking:** `SessionStore::set` and `SessionStore::set_and_rename` no longer
+  require `T: 'static`.
+- **Breaking:** `PostgresStoreBuilder::new` no longer takes `create_table` as a
+    positional argument. Use the `create_table(bool)` builder method instead;
+    defaults to `false`.
+- **Breaking:** `PostgresStoreBuilder::table_name` and `schema_name` now return
+  `Result` and reject identifiers outside `[A-Za-z_][A-Za-z0-9_]{0,62}`.
+- `PostgresStore` cleanup task now runs expired-session and expired-field
+  deletes in a single statement, and is aborted when the original store is
+  dropped.
+- `MemoryStore::set_and_rename` now returns an error when the target session
+    already exists, matching the redis and postgres stores.
+- `MemoryStore::expire` no longer extends field TTLs beyond their original
+  expiry; behavior now matches the postgres store.
+
+### Added
+- `RedisStore::reload_scripts` for manual re-loading after server-side
+  cache loss (restart, failover, `SCRIPT FLUSH`).
+
+### Fixed
+- `PostgresStore::set_and_rename` with `field_ttl_secs == 0` no longer leaves
+  the store in an inconsistent state on crash; rename and remove now run in
+  a single transaction with the correct ordering.
+- `PostgresStore::expire(sid, -1)` now correctly persists field expiries
+  along with the session, instead of leaving fields with their original TTLs.
+- `PostgresStore` table and schema names are now validated to prevent SQL
+  injection via embedded quotes.
+
 ## [0.9.0] - 2026-03-06
 
 ### Added

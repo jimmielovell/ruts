@@ -95,7 +95,7 @@ where
 /// ```rust
 /// use fred::clients::Client;
 /// use ruts::{CookieOptions, Session, SessionLayer};
-/// use ruts::store::redis::RedisStore;
+/// use ruts::store::memory::MemoryStore;
 /// use std::sync::Arc;
 /// use tower_cookies::CookieManagerLayer;
 ///
@@ -105,10 +105,8 @@ where
 ///         .same_site(cookie::SameSite::Lax)
 ///         .secure(true)
 ///         .max_age(1 * 60)
-///         .path("/");///
-/// let client = Client::default();
-/// // Initialize the client///
-/// let store = RedisStore::new(Arc::new(client));
+///         .path("/");
+/// let store = MemoryStore::new();
 /// let session_layer = SessionLayer::new(Arc::new(store))
 ///     .with_cookie_options(cookie_options);
 /// ```

@@ -8,10 +8,8 @@ use std::future::Future;
 pub enum Error {
     #[error("Encoding failed with: {0}")]
     Encode(String),
-
     #[error("Decoding failed with: {0}")]
     Decode(String),
-
     #[error("{0}")]
     Backend(String),
 }
@@ -131,7 +129,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> impl Future<Output = Result<i64, Error>> + Send
     where
-        T: Send + Sync + Serialize + 'static;
+        T: Send + Sync + Serialize;
 
     /// Updates a `field` stored at `session_id` to the new `value` and renames
     /// the session ID from `old_session_id` to `new_session_id`.
@@ -152,7 +150,7 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
     ) -> impl Future<Output = Result<i64, Error>> + Send
     where
-        T: Send + Sync + Serialize + 'static;
+        T: Send + Sync + Serialize;
 
     /// Renames the `old_session_id` to `new_session_id` if the `old_session_id` exists.
     ///

@@ -9,20 +9,8 @@ struct TestUser {
     name: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-struct TestSession {
-    user: TestUser,
-    preferences: TestPreferences,
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-struct TestPreferences {
-    theme: String,
-    language: String,
-}
-
 fn build_cookie_options() -> CookieOptions {
-    let mut options = CookieOptions::build()
+    let options = CookieOptions::build()
         .name("test_sess")
         .http_only(true)
         .same_site(cookie::SameSite::Lax)
@@ -32,7 +20,7 @@ fn build_cookie_options() -> CookieOptions {
 
     #[cfg(feature = "signed")]
     let options = options.signing_key(Key::generate());
-    
+
     options
 }
 
