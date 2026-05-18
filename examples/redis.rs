@@ -107,7 +107,7 @@ async fn main() {
     client.init().await.unwrap();
 
     // Create session store
-    let store = RedisStore::new(Arc::new(client));
+    let store = RedisStore::new(Arc::new(client)).await.unwrap();
 
     // Configure session options
     let cookie_options = CookieOptions::build()

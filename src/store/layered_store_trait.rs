@@ -25,7 +25,7 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
     ) -> impl Future<Output = Result<Option<(SessionMap, HashMap<String, Option<i64>>)>, Error>> + Send;
 
     /// Updates a session field along with its specific caching metadata.
-    fn set_with_meta<T: Serialize + Send + Sync + 'static>(
+    fn set_with_meta<T: Serialize + Send + Sync>(
         &self,
         session_id: &Id,
         field: &str,
@@ -36,7 +36,7 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
     ) -> impl Future<Output = Result<i64, Error>> + Send;
 
     /// Inserts a session field with rename along with its specific caching metadata.
-    fn set_and_rename_with_meta<T: Serialize + Send + Sync + 'static>(
+    fn set_and_rename_with_meta<T: Serialize + Send + Sync>(
         &self,
         old_session_id: &Id,
         new_session_id: &Id,

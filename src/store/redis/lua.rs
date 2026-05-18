@@ -1,186 +1,198 @@
-use tokio::sync::OnceCell;
+use fred::types::scripts::Script;
+use std::sync::LazyLock;
 
-pub(crate) static SET_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
-pub(crate) static SET_MULTIPLE_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
-pub(crate) static SET_AND_RENAME_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
-pub(crate) static REMOVE_SCRIPT_HASH: OnceCell<String> = OnceCell::const_new();
+pub(crate) static SET_SCRIPT: LazyLock<Script> = LazyLock::new(|| {
+    Script::from_lua(
+        r#"
+        local key = KEYS[1]
+        local field = ARGV[1]
+        local value = ARGV[2]
+        local key_ttl = tonumber(ARGV[3])
+        local field_ttl = tonumber(ARGV[4])
 
-pub(crate) static SET_SCRIPT: &str = r#"
-    local key = KEYS[1]
-    local field = ARGV[1]
-    local value = ARGV[2]
-    local key_ttl = tonumber(ARGV[3])
-    local field_ttl = tonumber(ARGV[4])
+        local key_existed = redis.call('EXISTS', key)
 
-    local key_existed = redis.call('EXISTS', key)
-
-    if field_ttl == 0 then
-        redis.call('HDEL', key, field)
-        if redis.call('EXISTS', key) == 0 then return -2 end
-    else
-        redis.call('HSET', key, field, value)
-        if field_ttl > 0 then
-            redis.call('HEXPIRE', key, field_ttl, 'FIELDS', 1, field)
-        elseif field_ttl == -1 then
-            redis.call('HPERSIST', key, 'FIELDS', 1, field)
-        end
-    end
-
-    if key_ttl == -1 then
-        redis.call('PERSIST', key)
-        return -1
-    end
-
-    if key_ttl > 0 then
-        if key_existed == 0 then
-            redis.call('EXPIRE', key, key_ttl)
-            return key_ttl
+        if field_ttl == 0 then
+            redis.call('HDEL', key, field)
+            if redis.call('EXISTS', key) == 0 then return -2 end
         else
-            local current_ttl = redis.call('TTL', key)
-            if current_ttl == -1 then
-                return -1
-            elseif key_ttl > current_ttl then
-                redis.call('EXPIRE', key, key_ttl)
-                return key_ttl
-            else
-                return current_ttl
-            end
-        end
-    end
-
-    return redis.call('TTL', key)
-"#;
-
-pub(crate) static SET_MULTIPLE_SCRIPT: &str = r#"
-    local key = KEYS[1]
-
-    if (#ARGV % 3) ~= 0 then
-        return redis.error_reply("ARGV must be field,value,expiry triples")
-    end
-
-    local key_existed = redis.call('EXISTS', key)
-    local max_finite_ttl = 0
-    local has_persistent_field = false
-
-    for i = 1, #ARGV, 3 do
-        local f_ttl = tonumber(ARGV[i + 2])
-        if f_ttl then
-            if f_ttl == -1 then
-                has_persistent_field = true
-            elseif f_ttl > max_finite_ttl then
-                max_finite_ttl = f_ttl
-            end
-        end
-    end
-
-    local hset_args = {key}
-    for i = 1, #ARGV, 3 do
-        table.insert(hset_args, ARGV[i])     -- field
-        table.insert(hset_args, ARGV[i + 1]) -- value
-    end
-    redis.call('HSET', unpack(hset_args))
-
-    for i = 1, #ARGV, 3 do
-        local field = ARGV[i]
-        local f_ttl = tonumber(ARGV[i + 2])
-        if f_ttl then
-            if f_ttl > 0 then
-                redis.call('HEXPIRE', key, f_ttl, 'FIELDS', 1, field)
-            elseif f_ttl == -1 then
+            redis.call('HSET', key, field, value)
+            if field_ttl > 0 then
+                redis.call('HEXPIRE', key, field_ttl, 'FIELDS', 1, field)
+            elseif field_ttl == -1 then
                 redis.call('HPERSIST', key, 'FIELDS', 1, field)
             end
         end
-    end
 
-    if has_persistent_field then
-        redis.call('PERSIST', key)
-        return -1
-    end
+        if key_ttl == -1 then
+            redis.call('PERSIST', key)
+            return -1
+        end
 
-    if max_finite_ttl > 0 then
-        if key_existed == 0 then
-            redis.call('EXPIRE', key, max_finite_ttl)
-            return max_finite_ttl
-        else
-            local current_ttl = redis.call('TTL', key)
-            if current_ttl == -1 then
-                return -1
-            elseif max_finite_ttl > current_ttl then
+        if key_ttl > 0 then
+            if key_existed == 0 then
+                redis.call('EXPIRE', key, key_ttl)
+                return key_ttl
+            else
+                local current_ttl = redis.call('TTL', key)
+                if current_ttl == -1 then
+                    return -1
+                elseif key_ttl > current_ttl then
+                    redis.call('EXPIRE', key, key_ttl)
+                    return key_ttl
+                else
+                    return current_ttl
+                end
+            end
+        end
+
+        return redis.call('TTL', key)
+        "#,
+    )
+});
+
+pub(crate) static SET_MULTIPLE_SCRIPT: LazyLock<Script> = LazyLock::new(|| {
+    Script::from_lua(
+        r#"
+        local key = KEYS[1]
+    
+        if (#ARGV % 3) ~= 0 then
+            return redis.error_reply("ARGV must be field,value,expiry triples")
+        end
+    
+        local key_existed = redis.call('EXISTS', key)
+        local max_finite_ttl = 0
+        local has_persistent_field = false
+    
+        for i = 1, #ARGV, 3 do
+            local f_ttl = tonumber(ARGV[i + 2])
+            if f_ttl then
+                if f_ttl == -1 then
+                    has_persistent_field = true
+                elseif f_ttl > max_finite_ttl then
+                    max_finite_ttl = f_ttl
+                end
+            end
+        end
+    
+        local hset_args = {key}
+        for i = 1, #ARGV, 3 do
+            table.insert(hset_args, ARGV[i])     -- field
+            table.insert(hset_args, ARGV[i + 1]) -- value
+        end
+        redis.call('HSET', unpack(hset_args))
+    
+        for i = 1, #ARGV, 3 do
+            local field = ARGV[i]
+            local f_ttl = tonumber(ARGV[i + 2])
+            if f_ttl then
+                if f_ttl > 0 then
+                    redis.call('HEXPIRE', key, f_ttl, 'FIELDS', 1, field)
+                elseif f_ttl == -1 then
+                    redis.call('HPERSIST', key, 'FIELDS', 1, field)
+                end
+            end
+        end
+    
+        if has_persistent_field then
+            redis.call('PERSIST', key)
+            return -1
+        end
+    
+        if max_finite_ttl > 0 then
+            if key_existed == 0 then
                 redis.call('EXPIRE', key, max_finite_ttl)
                 return max_finite_ttl
             else
-                return current_ttl
+                local current_ttl = redis.call('TTL', key)
+                if current_ttl == -1 then
+                    return -1
+                elseif max_finite_ttl > current_ttl then
+                    redis.call('EXPIRE', key, max_finite_ttl)
+                    return max_finite_ttl
+                else
+                    return current_ttl
+                end
             end
         end
-    end
+    
+        return redis.call('TTL', key)
+    "#,
+    )
+});
 
-    return redis.call('TTL', key)
-"#;
-
-pub(crate) static SET_AND_RENAME_SCRIPT: &str = r#"
-    local old_key = KEYS[1]
-    local new_key = KEYS[2]
-    local field = ARGV[1]
-    local value = ARGV[2]
-    local key_ttl = tonumber(ARGV[3])
-    local field_ttl = tonumber(ARGV[4])
-
-    if redis.call('EXISTS', new_key) == 1 then
-        return redis.error_reply("Target session ID already exists")
-    end
-
-    local key_existed_before_rename = 0
-    if redis.call('EXISTS', old_key) == 1 then
-        key_existed_before_rename = 1
-        if redis.call('RENAMENX', old_key, new_key) == 0 then
-             return redis.error_reply("Target session ID collision during RENAME")
+pub(crate) static SET_AND_RENAME_SCRIPT: LazyLock<Script> = LazyLock::new(|| {
+    Script::from_lua(
+        r#"
+        local old_key = KEYS[1]
+        local new_key = KEYS[2]
+        local field = ARGV[1]
+        local value = ARGV[2]
+        local key_ttl = tonumber(ARGV[3])
+        local field_ttl = tonumber(ARGV[4])
+    
+        if redis.call('EXISTS', new_key) == 1 then
+            return redis.error_reply("Target session ID already exists")
         end
-    end
-
-    if field_ttl == 0 then
-        redis.call('HDEL', new_key, field)
-    else
-        redis.call('HSET', new_key, field, value)
-        if field_ttl > 0 then
-            redis.call('HEXPIRE', new_key, field_ttl, 'FIELDS', 1, field)
-        elseif field_ttl == -1 then
-            redis.call('HPERSIST', new_key, 'FIELDS', 1, field)
+    
+        local key_existed_before_rename = 0
+        if redis.call('EXISTS', old_key) == 1 then
+            key_existed_before_rename = 1
+            if redis.call('RENAMENX', old_key, new_key) == 0 then
+                 return redis.error_reply("Target session ID collision during RENAME")
+            end
         end
-    end
-
-    if redis.call('EXISTS', new_key) == 0 then
-        return -2
-    end
-
-    if key_ttl == -1 then
-        redis.call('PERSIST', new_key)
-        return -1
-    elseif key_ttl > 0 then
-        if key_existed_before_rename == 0 then
-            redis.call('EXPIRE', new_key, key_ttl)
-            return key_ttl
+    
+        if field_ttl == 0 then
+            redis.call('HDEL', new_key, field)
         else
-            local current_ttl = redis.call('TTL', new_key)
-            if current_ttl == -1 then
-                return -1
-            elseif key_ttl > current_ttl then
+            redis.call('HSET', new_key, field, value)
+            if field_ttl > 0 then
+                redis.call('HEXPIRE', new_key, field_ttl, 'FIELDS', 1, field)
+            elseif field_ttl == -1 then
+                redis.call('HPERSIST', new_key, 'FIELDS', 1, field)
+            end
+        end
+    
+        if redis.call('EXISTS', new_key) == 0 then
+            return -2
+        end
+    
+        if key_ttl == -1 then
+            redis.call('PERSIST', new_key)
+            return -1
+        elseif key_ttl > 0 then
+            if key_existed_before_rename == 0 then
                 redis.call('EXPIRE', new_key, key_ttl)
                 return key_ttl
             else
-                return current_ttl
+                local current_ttl = redis.call('TTL', new_key)
+                if current_ttl == -1 then
+                    return -1
+                elseif key_ttl > current_ttl then
+                    redis.call('EXPIRE', new_key, key_ttl)
+                    return key_ttl
+                else
+                    return current_ttl
+                end
             end
         end
-    end
+    
+        return redis.call('TTL', new_key)
+    "#,
+    )
+});
 
-    return redis.call('TTL', new_key)
-"#;
-
-pub(crate) static REMOVE_SCRIPT: &str = r#"
-    local removed = redis.call("HDEL", KEYS[1], ARGV[1])
-
-    if removed > 0 then
-        return redis.call("TTL", KEYS[1])
-    end
-
-    return -2
-"#;
+pub(crate) static REMOVE_SCRIPT: LazyLock<Script> = LazyLock::new(|| {
+    Script::from_lua(
+        r#"
+        local removed = redis.call("HDEL", KEYS[1], ARGV[1])
+    
+        if removed > 0 then
+            return redis.call("TTL", KEYS[1])
+        end
+    
+        return -2
+    "#,
+    )
+});

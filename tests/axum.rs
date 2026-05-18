@@ -32,7 +32,7 @@ fn build_cookie_options() -> CookieOptions {
 
     #[cfg(feature = "signed")]
     let options = options.signing_key(Key::generate());
-    
+
     options
 }
 

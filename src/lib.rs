@@ -25,7 +25,7 @@
 //!     client.wait_for_connect().await.unwrap();
 //!
 //!     // Create session store
-//!     let store = RedisStore::new(Arc::new(client));
+//!     let store = RedisStore::new(Arc::new(client)).await.unwrap();
 //!
 //!     // Configure session-cookie options
 //!     let cookie_options = CookieOptions::build()

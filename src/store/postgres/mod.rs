@@ -599,7 +599,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
         Ok(Some((SessionMap::new(session_map), meta_map)))
     }
 
-    async fn set_with_meta<T: Serialize + Send + Sync + 'static>(
+    async fn set_with_meta<T: Serialize + Send + Sync>(
         &self,
         session_id: &Id,
         field: &str,
@@ -620,7 +620,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
         .await
     }
 
-    async fn set_and_rename_with_meta<T: Serialize + Send + Sync + 'static>(
+    async fn set_and_rename_with_meta<T: Serialize + Send + Sync>(
         &self,
         old_session_id: &Id,
         new_session_id: &Id,
