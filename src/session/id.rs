@@ -1,20 +1,25 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::{DecodeError, Engine};
-use rand::TryRng;
-use rand::rngs::SysRng;
+use rand::Rng;
+use rand::prelude::StdRng;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::fmt::Display;
 use std::str::FromStr;
 use std::{fmt, str};
 
-#[derive(Copy, Clone, Deserialize, Serialize, Eq, Hash, PartialEq)]
+thread_local! {
+    static RNG: RefCell<StdRng> = RefCell::new(rand::make_rng());
+}
+
+#[derive(Copy, Clone, Eq, Hash, PartialEq, Deserialize, Serialize)]
 pub struct Id([u8; 16]);
 
 impl Default for Id {
     fn default() -> Self {
         let mut bytes = [0u8; 16];
-        SysRng.try_fill_bytes(&mut bytes).unwrap();
+        RNG.with(|rng| rng.borrow_mut().fill_bytes(&mut bytes));
         Self(bytes)
     }
 }

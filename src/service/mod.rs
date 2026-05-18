@@ -190,7 +190,7 @@ where
                     build_cookie(
                         id,
                         cookie_options,
-                        this.inner_session.cookie_max_age.load(Ordering::SeqCst),
+                        this.inner_session.cookie_max_age.load(Ordering::Relaxed),
                         cookies,
                     );
                 }
