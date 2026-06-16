@@ -1,0 +1,770 @@
+use crate::Id;
+use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize_value};
+use futures::stream::StreamExt;
+use scylla::client::session::Session as ScyllaSession;
+use scylla::statement::prepared::PreparedStatement;
+use serde::{Serialize, de::DeserializeOwned};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+#[derive(Debug)]
+pub struct ScyllaStoreBuilder {
+    session: Arc<ScyllaSession>,
+    keyspace_name: String,
+    table_name: String,
+    create_table: bool,
+}
+
+impl ScyllaStoreBuilder {
+    pub fn new(session: Arc<ScyllaSession>) -> Self {
+        Self {
+            session,
+            keyspace_name: "ruts".to_string(),
+            table_name: "t_sessions".to_string(),
+            create_table: false,
+        }
+    }
+
+    pub fn keyspace_name(mut self, name: impl Into<String>) -> Result<Self, Error> {
+        let name = name.into();
+        validate_identifier(&name)?;
+        self.keyspace_name = name;
+        Ok(self)
+    }
+
+    pub fn table_name(mut self, name: impl Into<String>) -> Result<Self, Error> {
+        let name = name.into();
+        validate_identifier(&name)?;
+        self.table_name = name;
+        Ok(self)
+    }
+
+    pub fn create_table(mut self, create: bool) -> Self {
+        self.create_table = create;
+        self
+    }
+
+    pub async fn build(self) -> Result<ScyllaStore, Error> {
+        let full_table_name = format!("{}.{}", self.keyspace_name, self.table_name);
+
+        if self.create_table {
+            let ks_query = format!(
+                "create keyspace if not exists {} with replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}",
+                self.keyspace_name
+            );
+            self.session
+                .query_unpaged(ks_query, &[])
+                .await
+                .map_err(|e| Error::Backend(e.to_string()))?;
+
+            let table_query = format!(
+                r#"
+                create table if not exists {} (
+                    session_id text,
+                    field text,
+                    value blob,
+                    hot_cache_ttl bigint,
+                    primary key (session_id, field)
+                )
+                "#,
+                full_table_name
+            );
+            self.session
+                .query_unpaged(table_query, &[])
+                .await
+                .map_err(|e| Error::Backend(e.to_string()))?;
+        }
+
+        // Prepare statements during initialization
+        let get_ttl_stmt = self
+            .session
+            .prepare(format!(
+                "select ttl(value) from {} where session_id = ?",
+                full_table_name
+            ))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?;
+        let insert_no_ttl_stmt = self
+            .session
+            .prepare(format!(
+                "insert into {} (session_id, field, value, hot_cache_ttl) values (?, ?, ?, ?)",
+                full_table_name
+            ))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?;
+        let insert_with_ttl_stmt = self
+            .session
+            .prepare(format!(
+                r#"
+                insert into {} (session_id, field, value, hot_cache_ttl)
+                values (?, ?, ?, ?)
+                using ttl ?
+                "#,
+                full_table_name
+            ))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?;
+        let get_stmt = self
+            .session
+            .prepare(format!(
+                "select value from {} where session_id = ? and field = ?",
+                full_table_name
+            ))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?;
+        let get_all_stmt = self
+            .session
+            .prepare(format!(
+                "select field, value from {} where session_id = ?",
+                full_table_name
+            ))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?;
+        let get_all_meta_stmt = self
+            .session
+            .prepare(format!(
+                r#"
+                select field, value, hot_cache_ttl, ttl(value)
+                from {}
+                where session_id = ?
+                "#,
+                full_table_name
+            ))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?;
+        let remove_stmt = self
+            .session
+            .prepare(format!(
+                "delete from {} where session_id = ? and field = ?",
+                full_table_name
+            ))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?;
+        let delete_stmt = self
+            .session
+            .prepare(format!(
+                "delete from {} where session_id = ?",
+                full_table_name
+            ))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?;
+
+        Ok(ScyllaStore {
+            session: self.session,
+            table_name: full_table_name,
+            get_ttl_stmt,
+            insert_no_ttl_stmt,
+            insert_with_ttl_stmt,
+            get_stmt,
+            get_all_stmt,
+            get_all_meta_stmt,
+            remove_stmt,
+            delete_stmt,
+        })
+    }
+}
+
+fn validate_identifier(name: &str) -> Result<(), Error> {
+    if name.is_empty() || name.len() > 48 {
+        return Err(Error::Backend(format!(
+            "invalid identifier {name:?}: must be 1-48 bytes"
+        )));
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(Error::Backend(format!(
+            "invalid identifier {name:?}: must start with a letter or underscore"
+        )));
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(Error::Backend(format!(
+            "invalid identifier {name:?}: only ASCII alphanumerics and underscore allowed"
+        )));
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+pub struct ScyllaStore {
+    session: Arc<ScyllaSession>,
+    table_name: String,
+    get_ttl_stmt: PreparedStatement,
+    insert_no_ttl_stmt: PreparedStatement,
+    insert_with_ttl_stmt: PreparedStatement,
+    get_stmt: PreparedStatement,
+    get_all_stmt: PreparedStatement,
+    get_all_meta_stmt: PreparedStatement,
+    remove_stmt: PreparedStatement,
+    delete_stmt: PreparedStatement,
+}
+
+impl ScyllaStore {
+    async fn get_session_ttl(&self, session_id: &Id) -> Result<i64, Error> {
+        let mut rows_stream = self
+            .session
+            .execute_iter(self.get_ttl_stmt.clone(), (session_id.to_string(),))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?
+            .rows_stream::<(Option<i32>,)>()
+            .map_err(|e| Error::Backend(e.to_string()))?;
+
+        let mut max_ttl: i64 = -2;
+        let mut has_rows = false;
+        let mut has_persistent = false;
+
+        while let Some(next_row_res) = rows_stream.next().await {
+            has_rows = true;
+            let (ttl,) = next_row_res.map_err(|e| Error::Backend(e.to_string()))?;
+            match ttl {
+                Some(ttl) => max_ttl = max_ttl.max(ttl as i64),
+                None => has_persistent = true,
+            }
+        }
+
+        if !has_rows {
+            Ok(-2)
+        } else if has_persistent {
+            Ok(-1)
+        } else {
+            Ok(max_ttl)
+        }
+    }
+
+    async fn _upsert<T>(
+        &self,
+        session_id: &Id,
+        field: &str,
+        value: &T,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
+        hot_cache_ttl: Option<i64>,
+        old_session_id: Option<&Id>,
+    ) -> Result<i64, Error>
+    where
+        T: Send + Sync + Serialize,
+    {
+        if key_ttl_secs == 0 {
+            self.delete(session_id).await?;
+            return Ok(-2);
+        }
+
+        if field_ttl_secs == 0 {
+            if let Some(old_id) = old_session_id {
+                self.rename_session_id(old_id, session_id).await?;
+            }
+            let ttl = self.remove(session_id, field).await?;
+            return Ok(ttl);
+        }
+
+        if let Some(old_id) = old_session_id {
+            self.rename_session_id(old_id, session_id).await?;
+        }
+
+        let value_bytes = serialize_value(value)?;
+        let mut computed_hot_cache_ttl = hot_cache_ttl;
+
+        if field_ttl_secs > 0 {
+            computed_hot_cache_ttl = computed_hot_cache_ttl.map(|h| h.min(field_ttl_secs));
+        }
+
+        if field_ttl_secs == -1 {
+            self.session
+                .execute_unpaged(
+                    &self.insert_no_ttl_stmt,
+                    (
+                        session_id.to_string(),
+                        field,
+                        value_bytes,
+                        computed_hot_cache_ttl,
+                    ),
+                )
+                .await
+                .map_err(|e| Error::Backend(e.to_string()))?;
+        } else {
+            let ttl_i32 = field_ttl_secs.clamp(1, i32::MAX as i64) as i32;
+            self.session
+                .execute_unpaged(
+                    &self.insert_with_ttl_stmt,
+                    (
+                        session_id.to_string(),
+                        field,
+                        value_bytes,
+                        computed_hot_cache_ttl,
+                        ttl_i32,
+                    ),
+                )
+                .await
+                .map_err(|e| Error::Backend(e.to_string()))?;
+        }
+
+        self.get_session_ttl(session_id).await
+    }
+}
+
+impl SessionStore for ScyllaStore {
+    async fn get<T>(&self, session_id: &Id, field: &str) -> Result<Option<T>, Error>
+    where
+        T: Send + Sync + DeserializeOwned,
+    {
+        let mut rows_stream = self
+            .session
+            .execute_iter(self.get_stmt.clone(), (session_id.to_string(), field))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?
+            .rows_stream::<(Vec<u8>,)>()
+            .map_err(|e| Error::Backend(e.to_string()))?;
+
+        if let Some(next_row_res) = rows_stream.next().await {
+            let (data,) = next_row_res.map_err(|e| Error::Backend(e.to_string()))?;
+            Ok(Some(deserialize_value(&data)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error> {
+        let mut rows_stream = self
+            .session
+            .execute_iter(self.get_all_stmt.clone(), (session_id.to_string(),))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?
+            .rows_stream::<(String, Vec<u8>)>()
+            .map_err(|e| Error::Backend(e.to_string()))?;
+
+        let mut map = HashMap::new();
+        while let Some(next_row_res) = rows_stream.next().await {
+            let (field, value) = next_row_res.map_err(|e| Error::Backend(e.to_string()))?;
+            map.insert(field, value);
+        }
+
+        if map.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(SessionMap::new(map)))
+    }
+
+    async fn set<T>(
+        &self,
+        session_id: &Id,
+        field: &str,
+        value: &T,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
+        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
+    ) -> Result<i64, Error>
+    where
+        T: Send + Sync + Serialize,
+    {
+        #[cfg(feature = "layered-store")]
+        let hot_ttl = hot_cache_ttl;
+        #[cfg(not(feature = "layered-store"))]
+        let hot_ttl: Option<i64> = None;
+
+        self._upsert(
+            session_id,
+            field,
+            value,
+            key_ttl_secs,
+            field_ttl_secs,
+            hot_ttl,
+            None,
+        )
+        .await
+    }
+
+    async fn set_and_rename<T>(
+        &self,
+        old_session_id: &Id,
+        new_session_id: &Id,
+        field: &str,
+        value: &T,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
+        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<i64>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
+    ) -> Result<i64, Error>
+    where
+        T: Send + Sync + Serialize,
+    {
+        #[cfg(feature = "layered-store")]
+        let hot_ttl = hot_cache_ttl;
+        #[cfg(not(feature = "layered-store"))]
+        let hot_ttl: Option<i64> = None;
+
+        self._upsert(
+            new_session_id,
+            field,
+            value,
+            key_ttl_secs,
+            field_ttl_secs,
+            hot_ttl,
+            Some(old_session_id),
+        )
+        .await
+    }
+
+    async fn rename_session_id(
+        &self,
+        old_session_id: &Id,
+        new_session_id: &Id,
+    ) -> Result<bool, Error> {
+        let mut rows_stream = self
+            .session
+            .execute_iter(
+                self.get_all_meta_stmt.clone(),
+                (old_session_id.to_string(),),
+            )
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?
+            .rows_stream::<(String, Vec<u8>, Option<i64>, Option<i32>)>()
+            .map_err(|e| Error::Backend(e.to_string()))?;
+
+        let mut affected = false;
+
+        while let Some(next_row_res) = rows_stream.next().await {
+            let (field, value, hot_cache_ttl, ttl) =
+                next_row_res.map_err(|e| Error::Backend(e.to_string()))?;
+            affected = true;
+
+            if let Some(ttl_val) = ttl {
+                self.session
+                    .execute_unpaged(
+                        &self.insert_with_ttl_stmt,
+                        (
+                            new_session_id.to_string(),
+                            field,
+                            value,
+                            hot_cache_ttl,
+                            ttl_val,
+                        ),
+                    )
+                    .await
+                    .map_err(|e| Error::Backend(e.to_string()))?;
+            } else {
+                self.session
+                    .execute_unpaged(
+                        &self.insert_no_ttl_stmt,
+                        (new_session_id.to_string(), field, value, hot_cache_ttl),
+                    )
+                    .await
+                    .map_err(|e| Error::Backend(e.to_string()))?;
+            }
+        }
+
+        if affected {
+            self.delete(old_session_id).await?;
+        }
+
+        Ok(affected)
+    }
+
+    async fn remove(&self, session_id: &Id, field: &str) -> Result<i64, Error> {
+        self.session
+            .execute_unpaged(&self.remove_stmt, (session_id.to_string(), field))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?;
+
+        self.get_session_ttl(session_id).await
+    }
+
+    async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
+        self.session
+            .execute_unpaged(&self.delete_stmt, (session_id.to_string(),))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?;
+
+        Ok(true)
+    }
+
+    async fn expire(&self, session_id: &Id, ttl_secs: i64) -> Result<bool, Error> {
+        if ttl_secs == 0 {
+            return self.delete(session_id).await;
+        }
+
+        let mut rows_stream = self
+            .session
+            .execute_iter(self.get_all_meta_stmt.clone(), (session_id.to_string(),))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?
+            .rows_stream::<(String, Vec<u8>, Option<i64>, Option<i32>)>()
+            .map_err(|e| Error::Backend(e.to_string()))?;
+
+        let mut affected = false;
+
+        while let Some(next_row_res) = rows_stream.next().await {
+            let (field, value, hot_cache_ttl, _) =
+                next_row_res.map_err(|e| Error::Backend(e.to_string()))?;
+            affected = true;
+
+            if ttl_secs > 0 {
+                self.session
+                    .execute_unpaged(
+                        &self.insert_with_ttl_stmt,
+                        (
+                            session_id.to_string(),
+                            field,
+                            value,
+                            hot_cache_ttl,
+                            ttl_secs as i32,
+                        ),
+                    )
+                    .await
+                    .map_err(|e| Error::Backend(e.to_string()))?;
+            } else {
+                self.session
+                    .execute_unpaged(
+                        &self.insert_no_ttl_stmt,
+                        (session_id.to_string(), field, value, hot_cache_ttl),
+                    )
+                    .await
+                    .map_err(|e| Error::Backend(e.to_string()))?;
+            }
+        }
+
+        Ok(affected)
+    }
+}
+
+#[cfg(feature = "layered-store")]
+impl crate::store::LayeredColdStore for ScyllaStore {
+    async fn get_all_with_meta(
+        &self,
+        session_id: &Id,
+    ) -> Result<Option<(SessionMap, HashMap<String, Option<i64>>)>, Error> {
+        let mut rows_stream = self
+            .session
+            .execute_iter(self.get_all_meta_stmt.clone(), (session_id.to_string(),))
+            .await
+            .map_err(|e| Error::Backend(e.to_string()))?
+            .rows_stream::<(String, Vec<u8>, Option<i64>, Option<i32>)>()
+            .map_err(|e| Error::Backend(e.to_string()))?;
+
+        let mut session_map = HashMap::new();
+        let mut meta_map = HashMap::new();
+
+        while let Some(next_row_res) = rows_stream.next().await {
+            let (field, value, mut hot_cache_ttl, ttl) =
+                next_row_res.map_err(|e| Error::Backend(e.to_string()))?;
+
+            session_map.insert(field.clone(), value);
+
+            let ttl_i64 = ttl.map(|t| t as i64).unwrap_or(-1);
+
+            if ttl_i64 > -1 {
+                hot_cache_ttl = hot_cache_ttl.or(Some(ttl_i64));
+                hot_cache_ttl = hot_cache_ttl.min(Some(ttl_i64));
+            }
+
+            if ttl_i64 > 0 {
+                meta_map.insert(field, hot_cache_ttl);
+            }
+        }
+
+        if session_map.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some((SessionMap::new(session_map), meta_map)))
+    }
+
+    async fn set_with_meta<T: Serialize + Send + Sync>(
+        &self,
+        session_id: &Id,
+        field: &str,
+        value: &T,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
+        hot_cache_ttl_secs: Option<i64>,
+    ) -> Result<i64, Error> {
+        self._upsert(
+            session_id,
+            field,
+            value,
+            key_ttl_secs,
+            field_ttl_secs,
+            hot_cache_ttl_secs,
+            None,
+        )
+        .await
+    }
+
+    async fn set_and_rename_with_meta<T: Serialize + Send + Sync>(
+        &self,
+        old_session_id: &Id,
+        new_session_id: &Id,
+        field: &str,
+        value: &T,
+        key_ttl_secs: i64,
+        field_ttl_secs: i64,
+        hot_cache_ttl_secs: Option<i64>,
+    ) -> Result<i64, Error> {
+        self._upsert(
+            new_session_id,
+            field,
+            value,
+            key_ttl_secs,
+            field_ttl_secs,
+            hot_cache_ttl_secs,
+            Some(old_session_id),
+        )
+        .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use scylla::client::session_builder::SessionBuilder;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+    struct TestData {
+        value: String,
+    }
+
+    async fn setup_store() -> Arc<ScyllaStore> {
+        let uri = std::env::var("SCYLLA_URI").unwrap_or_else(|_| "127.0.0.1:9042".to_string());
+        let session = SessionBuilder::new().known_node(uri).build().await.unwrap();
+        let session = Arc::new(session);
+
+        let store = ScyllaStoreBuilder::new(session.clone())
+            .keyspace_name("ruts_test")
+            .unwrap()
+            .create_table(true)
+            .build()
+            .await
+            .unwrap();
+
+        // Truncate before returning cleanly for tests
+        let _ = session
+            .query_unpaged(format!("truncate table {}", store.table_name), &[])
+            .await;
+
+        Arc::new(store)
+    }
+
+    #[tokio::test]
+    async fn test_set_and_get() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "field1";
+        let value = TestData {
+            value: "hello".into(),
+        };
+
+        let ttl = store
+            .set(&session_id, field, &value, 60, 60, None)
+            .await
+            .unwrap();
+        assert!(ttl > 55);
+
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert_eq!(fetched, Some(value.clone()));
+    }
+
+    #[tokio::test]
+    async fn test_update_overwrites() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "field_update";
+        let value = TestData {
+            value: "initial".into(),
+        };
+        let updated_value = TestData {
+            value: "updated".into(),
+        };
+
+        store
+            .set(&session_id, field, &value, 60, 60, None)
+            .await
+            .unwrap();
+        store
+            .set(&session_id, field, &updated_value, 60, 60, None)
+            .await
+            .unwrap();
+
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert_eq!(fetched, Some(updated_value));
+    }
+
+    #[tokio::test]
+    async fn test_ttl_zero_removes() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "ttl_zero";
+
+        let ttl = store
+            .set(
+                &session_id,
+                field,
+                &TestData { value: "x".into() },
+                60,
+                0,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(ttl, -2);
+
+        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
+        assert!(fetched.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_remove_and_delete() {
+        let store = setup_store().await;
+        let session_id = Id::default();
+        let field = "to_remove";
+
+        store
+            .set(
+                &session_id,
+                field,
+                &TestData {
+                    value: "bye".into(),
+                },
+                60,
+                60,
+                None,
+            )
+            .await
+            .unwrap();
+        let ttl = store.remove(&session_id, field).await.unwrap();
+        assert_eq!(ttl, -2);
+
+        store.delete(&session_id).await.unwrap();
+        let all = store.get_all(&session_id).await.unwrap();
+        assert!(all.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_set_with_rename() {
+        let store = setup_store().await;
+        let old_id = Id::default();
+        let new_id = Id::default();
+        let field = "rename_field";
+        let value = TestData {
+            value: "rename".into(),
+        };
+
+        store
+            .set_and_rename(&old_id, &new_id, field, &value, 60, 60, None)
+            .await
+            .unwrap();
+
+        assert!(
+            store
+                .get::<TestData>(&old_id, field)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store.get::<TestData>(&new_id, field).await.unwrap(),
+            Some(value)
+        );
+    }
+}

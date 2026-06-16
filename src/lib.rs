@@ -1,6 +1,6 @@
 //! # Ruts: Rust Tower Session for HTTP Applications
 //!
-//! `ruts` is a powerful and flexible session management middleware for Rust's Tower web
+//! `ruts` is a flexible session management middleware for Rust's Tower web
 //! framework, with a focus on performance, durability, and ergonomic design.
 //!
 //! # Quick Start
@@ -9,6 +9,8 @@
 //! This requires the `axum` (enabled by default) and `redis-store` features.
 //!
 //! ```rust,no_run
+//! # #[cfg(all(feature = "redis-store", feature = "axum"))]
+//! # mod docs {
 //! use axum::{Router, routing::get};
 //! use ruts::{Session, SessionLayer, CookieOptions};
 //! use ruts::store::redis::RedisStore;
@@ -57,6 +59,8 @@
 //!     session.set("count", &new_count, None, None).await.unwrap();
 //!     format!("You've visited this page {} times", new_count)
 //! }
+//! # }
+//! # fn main() {}
 //! ```
 //!
 //! # Session Management
@@ -118,12 +122,16 @@
 //! - Redis 7.4 or later (required for field-level expiration using `HEXPIRE`).
 //!
 //! ```rust,no_run
+//! # #[cfg(feature = "redis-store")]
+//! # fn docs_main() {
 //! use std::sync::Arc;
 //! use fred::clients::Client;
 //! use ruts::store::redis::RedisStore;
 //!
 //! let fred_client_or_pool = Client::default();
 //! let store = RedisStore::new(Arc::new(fred_client_or_pool));
+//! # }
+//! # fn main() {}
 //! ```
 //!
 //! ## Postgres
@@ -134,6 +142,8 @@
 //! - The `postgres-store` feature.
 //!
 //! ```rust,no_run
+//! # #[cfg(feature = "postgres-store")]
+//! # mod docs {
 //! use std::sync::Arc;
 //! use sqlx::PgPool;
 //! use ruts::store::postgres::PostgresStoreBuilder;
@@ -156,18 +166,22 @@
 //!          .await
 //!          .unwrap();
 //! # }
+//! # }
+//! # fn main() {}
 //! ```
 //!
 //! ## LayeredStore
 //!
-//! **Note**: Requires the `layered-store`, `redis-store`, and `postgres-store` features
+//! **Note**: Requires the `layered-store` feature alongside your chosen combination of hot and cold backend stores (e.g., `redis-store` and `postgres-store`, or `redis-store` and `scylla-store`).
 //!
 //! A composite store that layers a fast, ephemeral "hot" cache (like Redis) on top of a
-//! slower, persistent "cold" store (like Postgres). It is designed for scenarios where
+//! slower, persistent "cold" store (like Postgres or Scylla). It is designed for scenarios where
 //! sessions can have long lifespans but should only occupy expensive cache memory when
 //! actively being used, thus balancing performance and durability.
 //!
 //! ```rust,no_run
+//! # #[cfg(all(feature = "layered-store", feature = "redis-store", feature = "postgres-store"))]
+//! # mod docs {
 //! use ruts::store::redis::RedisStore;
 //! use ruts::store::postgres::PostgresStore;
 //! use fred::clients::Client;
@@ -195,6 +209,8 @@
 //!     // but the hot store (Redis) will be capped at the shorter TTL.
 //!     session.set("user", &user, None, Some(short_term_hot_cache_expiry)).await.unwrap();
 //! }
+//! # }
+//! # fn main() {}
 //! ```
 //!
 //! ## Serialization
@@ -264,18 +280,23 @@
 //! The `SessionLayer` must be applied **before** the `CookieManagerLayer`:
 //!
 //! ```rust,no_run
-//! use axum::Router;
-//! use ruts::{SessionLayer, store::memory::MemoryStore};
-//! use tower_cookies::CookieManagerLayer;
-//! use std::sync::Arc;
+//! # #[cfg(feature = "axum")]
+//! # fn main() {
+//!     use axum::Router;
+//!     use ruts::{SessionLayer, store::memory::MemoryStore};
+//!     use tower_cookies::CookieManagerLayer;
+//!     use std::sync::Arc;
 //!
-//! let app: Router<()> = Router::new();
-//! let session_layer = SessionLayer::new(Arc::new(MemoryStore::new()));
+//!     let app: Router<()> = Router::new();
+//!     let session_layer = SessionLayer::new(Arc::new(MemoryStore::new()));
 //!
-//! // Correct order
-//! let router = app
-//!     .layer(session_layer)
-//!     .layer(CookieManagerLayer::new());
+//!     // Correct order
+//!     let router = app
+//!         .layer(session_layer)
+//!         .layer(CookieManagerLayer::new());
+//! # }
+//! # #[cfg(not(feature = "axum"))]
+//! # fn main() {}
 //! ```
 //!
 //! ## Best Practices

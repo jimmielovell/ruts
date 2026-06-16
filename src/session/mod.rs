@@ -48,7 +48,6 @@ where
     ///
     /// ```rust,no_run
     /// use ruts::{Session};
-    /// use fred::clients::Client;
     /// use serde::Deserialize;
     /// use ruts::store::memory::MemoryStore;
     ///
@@ -122,7 +121,6 @@ where
     ///
     /// ```rust,no_run
     /// use ruts::{Session};
-    /// use fred::clients::Client;
     /// use serde::Serialize;
     /// use ruts::store::memory::MemoryStore;
     ///
@@ -216,7 +214,6 @@ where
     ///
     /// ```rust,no_run
     /// use ruts::{Session};
-    /// use fred::clients::Client;
     /// use ruts::store::memory::MemoryStore;
     ///
     /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
@@ -227,7 +224,7 @@ where
     pub async fn remove(&self, field: &str) -> Result<bool> {
         let id = self.id().ok_or_else(|| {
             tracing::error!("session not initialized");
-            return Error::UnInitialized;
+            Error::UnInitialized
         })?;
 
         let max_age = self.inner.store.remove(&id, field).await.map_err(|err| {
@@ -253,7 +250,6 @@ where
     ///
     /// ```rust,no_run
     /// use ruts::{Session};
-    /// use fred::clients::Client;
     /// use ruts::store::memory::MemoryStore;
     ///
     /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
@@ -264,7 +260,7 @@ where
     pub async fn delete(&self) -> Result<bool> {
         let id = self.id().ok_or_else(|| {
             tracing::error!("session not initialized");
-            return Error::UnInitialized;
+            Error::UnInitialized
         })?;
 
         let deleted = self.inner.store.delete(&id).await.map_err(|err| {
@@ -289,7 +285,6 @@ where
     ///
     /// ```rust,no_run
     /// use ruts::{Session};
-    /// use fred::clients::Client;
     /// use ruts::store::memory::MemoryStore;
     ///
     /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
@@ -304,7 +299,7 @@ where
 
         let id = self.id().ok_or_else(|| {
             tracing::error!("session not initialized");
-            return Error::UnInitialized;
+            Error::UnInitialized
         })?;
 
         self.set_expiration(ttl_secs);
@@ -341,7 +336,6 @@ where
     ///
     /// ```rust
     /// use ruts::{Session};
-    /// use fred::clients::Client;
     /// use ruts::store::memory::MemoryStore;
     ///
     /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
@@ -354,7 +348,7 @@ where
     pub async fn regenerate(&self) -> Result<Option<Id>> {
         let old_id = self.id().ok_or_else(|| {
             tracing::error!("session not initialized");
-            return Error::UnInitialized;
+            Error::UnInitialized
         })?;
 
         let new_id = Id::default();
@@ -385,7 +379,6 @@ where
     ///
     /// ```rust,no_run
     /// use ruts::Session;
-    /// use fred::clients::Client;
     /// use ruts::store::memory::MemoryStore;
     ///
     /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {

@@ -93,7 +93,6 @@ where
 /// # Example
 ///
 /// ```rust
-/// use fred::clients::Client;
 /// use ruts::{CookieOptions, Session, SessionLayer};
 /// use ruts::store::memory::MemoryStore;
 /// use std::sync::Arc;
