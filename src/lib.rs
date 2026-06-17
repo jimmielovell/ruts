@@ -70,12 +70,12 @@
 //! ```rust,no_run
 //! use ruts::Session;
 //! use ruts::store::SessionMap;
-//! use ruts::store::memory::MemoryStore;
+//! use ruts::store::moka::MokaStore;
 //!
 //! #[derive(serde::Deserialize)]
 //! struct User;
 //!
-//! async fn handler(session: Session<MemoryStore>) {
+//! async fn handler(session: Session<MokaStore>) {
 //! // Get a single field's data
 //! let value: Option<User> = session.get("key").await.unwrap();
 //!
@@ -176,7 +176,7 @@
 //!
 //! A composite store that layers a fast, ephemeral "hot" cache (like Redis) on top of a
 //! slower, persistent "cold" store (like Postgres or Scylla). It is designed for scenarios where
-//! sessions can have long lifespans but should only occupy expensive cache memory when
+//! sessions can have long lifespans but should only occupy expensive cache moka when
 //! actively being used, thus balancing performance and durability.
 //!
 //! ```rust,no_run
@@ -244,14 +244,17 @@
 //!
 //! ### Signed Cookies
 //!
-//! Ruts supports cryptographically signed cookies to prevent client-side tampering of the session ID. To use this, you must enable the `signed` feature in your `Cargo.toml`:
+//! Ruts supports cryptographically signed cookies to prevent client-side
+//! tampering of the session ID. To use this, you must enable the `signed`
+//! feature in your `Cargo.toml`:
 //!
 //! ```toml
 //! [dependencies]
 //! ruts = { version = "0.10.1", features = ["signed"] }
 //! ```
 //!
-//! Then you can provide a `ruts::Key` (A re-export of `tower_cookies::Key` to your CookieOptions.
+//! Then you can provide a `ruts::Key` (A re-export of `tower_cookies::Key`)
+//! to your CookieOptions.
 //!
 //! ```rust
 //! # #[cfg(feature = "signed")]
@@ -283,12 +286,12 @@
 //! # #[cfg(feature = "axum")]
 //! # fn main() {
 //!     use axum::Router;
-//!     use ruts::{SessionLayer, store::memory::MemoryStore};
+//!     use ruts::{SessionLayer, store::moka::MokaStore, store::moka::MokaStoreBuilder};
 //!     use tower_cookies::CookieManagerLayer;
 //!     use std::sync::Arc;
 //!
 //!     let app: Router<()> = Router::new();
-//!     let session_layer = SessionLayer::new(Arc::new(MemoryStore::new()));
+//!     let session_layer = SessionLayer::new(Arc::new(MokaStoreBuilder::new().build()));
 //!
 //!     // Correct order
 //!     let router = app

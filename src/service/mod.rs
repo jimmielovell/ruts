@@ -94,7 +94,7 @@ where
 ///
 /// ```rust
 /// use ruts::{CookieOptions, Session, SessionLayer};
-/// use ruts::store::memory::MemoryStore;
+/// use ruts::store::moka::{MokaStore, MokaStoreBuilder};
 /// use std::sync::Arc;
 /// use tower_cookies::CookieManagerLayer;
 ///
@@ -105,7 +105,7 @@ where
 ///         .secure(true)
 ///         .max_age(1 * 60)
 ///         .path("/");
-/// let store = MemoryStore::new();
+/// let store = MokaStoreBuilder::new().build();
 /// let session_layer = SessionLayer::new(Arc::new(store))
 ///     .with_cookie_options(cookie_options);
 /// ```

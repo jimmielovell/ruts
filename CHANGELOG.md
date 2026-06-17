@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - Unreleased
+
+### Added
+
+- **ScyllaDB Backend:** Introduced `ScyllaStore` and `ScyllaStoreBuilder` (gated behind the new `scylla-store` feature) for highly scalable, wide-column session storage.
+- **Layered Scylla Support:** The `layered-store` now fully supports pairing a fast cache (e.g., Redis) with `ScyllaStore` as the cold persistent tier.
+
+### Changed (Breaking)
+
+- **Decoupled Layered Store Features:** The `layered-store` feature no longer automatically pulls in `redis-store` and `postgres-store`. Consumers must now explicitly declare their desired backend combination in their `Cargo.toml` (e.g., `features = ["layered-store", "redis-store", "scylla-store"]`). This prevents combinatorial explosion of feature flags.
+- **`Id` Struct Memory Layout:** The internal representation of the `Id` struct was changed from raw random bytes (`[u8; 16]`) to pre-computed Base64 bytes (`[u8; 22]`). *Note: This will break `bincode` deserialization for any existing active sessions that serialize the `Id` struct directly.*
+
+### Performance
+
+- **Zero-Allocation Session IDs:** The new `Id` struct memory layout allows `Id::as_str()` to return a string slice without generating heap allocations, drastically reducing allocation overhead during database queries and HTTP request cycles.
+
+### Fixed
+
+- **Doctest Compilation:** Fixed an issue where `rustdoc` tests would fail to compile when specific backend features (like `redis-store` or `postgres-store`) were excluded from the build.
+
 ## [0.10.0] - 2026-05-18
 
 ### Changed

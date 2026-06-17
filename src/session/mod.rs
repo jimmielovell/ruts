@@ -1,5 +1,13 @@
 //! Session management for web applications.
 
+mod cookie_options;
+pub use cookie_options::CookieOptions;
+
+mod id;
+pub use id::Id;
+
+use crate::store;
+use crate::store::{SessionMap, SessionStore};
 use parking_lot::RwLock;
 use serde::{Serialize, de::DeserializeOwned};
 use std::sync::OnceLock;
@@ -8,14 +16,6 @@ use std::{result, sync::Arc};
 
 use thiserror::Error;
 use tower_cookies::Cookies;
-
-mod cookie_options;
-mod id;
-
-use crate::store;
-use crate::store::{SessionMap, SessionStore};
-pub use cookie_options::CookieOptions;
-pub use id::Id;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -49,7 +49,7 @@ where
     /// ```rust,no_run
     /// use ruts::{Session};
     /// use serde::Deserialize;
-    /// use ruts::store::memory::MemoryStore;
+    /// use ruts::store::moka::MokaStore;
     ///
     /// #[derive(Clone, Deserialize)]
     /// struct User {
@@ -57,7 +57,7 @@ where
     ///     name: String,
     /// }
     ///
-    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
+    /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
     ///     session.get::<User>("user").await.unwrap();
     /// }
     /// ```
@@ -122,7 +122,7 @@ where
     /// ```rust,no_run
     /// use ruts::{Session};
     /// use serde::Serialize;
-    /// use ruts::store::memory::MemoryStore;
+    /// use ruts::store::moka::MokaStore;
     ///
     /// #[derive(Serialize)]
     /// struct User {
@@ -130,7 +130,7 @@ where
     ///     name: String,
     /// }
     ///
-    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
+    /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
     ///     let user = User {id: 21342365, name: String::from("Jane Doe")};
     ///
     ///     let updated = session.set("app", &user, Some(5), None).await.unwrap();
@@ -214,9 +214,9 @@ where
     ///
     /// ```rust,no_run
     /// use ruts::{Session};
-    /// use ruts::store::memory::MemoryStore;
+    /// use ruts::store::moka::MokaStore;
     ///
-    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
+    /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
     ///     let removed = session.remove("user").await.unwrap();
     /// }
     /// ```
@@ -250,9 +250,9 @@ where
     ///
     /// ```rust,no_run
     /// use ruts::{Session};
-    /// use ruts::store::memory::MemoryStore;
+    /// use ruts::store::moka::MokaStore;
     ///
-    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
+    /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
     ///     let deleted = session.delete().await.unwrap();
     /// }
     /// ```
@@ -285,9 +285,9 @@ where
     ///
     /// ```rust,no_run
     /// use ruts::{Session};
-    /// use ruts::store::memory::MemoryStore;
+    /// use ruts::store::moka::MokaStore;
     ///
-    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
+    /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
     ///     session.expire(30).await.unwrap();
     /// }
     /// ```
@@ -336,9 +336,9 @@ where
     ///
     /// ```rust
     /// use ruts::{Session};
-    /// use ruts::store::memory::MemoryStore;
+    /// use ruts::store::moka::MokaStore;
     ///
-    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
+    /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
     ///     let id = session.regenerate().await.unwrap();
     /// }
     /// ```
@@ -379,9 +379,9 @@ where
     ///
     /// ```rust,no_run
     /// use ruts::Session;
-    /// use ruts::store::memory::MemoryStore;
+    /// use ruts::store::moka::MokaStore;
     ///
-    /// async fn some_handler_could_be_axum(session: Session<MemoryStore>) {
+    /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
     ///     let new_id = session.prepare_regenerate();
     ///     // The next set operation will use this new ID
     ///     session.set("field", &"value", None, None).await.unwrap();
@@ -493,7 +493,7 @@ impl<T: SessionStore> Inner<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::memory::MemoryStore;
+    use crate::store::moka::MokaStoreBuilder;
     use serde::Deserialize;
     use std::sync::Arc;
 
@@ -525,7 +525,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_operations() {
-        let store = Arc::new(MemoryStore::new());
+        let store = Arc::new(MokaStoreBuilder::new().build());
         let inner = create_inner(store, Some("test_sess"), Some(3600));
         let session = Session::new(inner);
         let test_data = create_test_user();
@@ -554,7 +554,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_prepare_regenerate() {
-        let store = Arc::new(MemoryStore::new());
+        let store = Arc::new(MokaStoreBuilder::new().build());
         let inner = create_inner(store.clone(), Some("test_sess"), Some(3600));
         let session = Session::new(inner);
         let test_data = create_test_user();

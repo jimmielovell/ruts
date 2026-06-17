@@ -35,14 +35,14 @@ mod tests {
         routing::get,
     };
     use http::header::{COOKIE, SET_COOKIE};
-    use ruts::store::memory::MemoryStore;
+    use ruts::store::moka::{MokaStore, MokaStoreBuilder};
     use ruts::{CookieOptions, Session, SessionLayer};
     use std::sync::Arc;
     use tower::ServiceExt;
     use tower_cookies::CookieManagerLayer;
 
     // Test handler that requires Session
-    async fn insert_handler(session: Session<MemoryStore>) -> Result<String, StatusCode> {
+    async fn insert_handler(session: Session<MokaStore>) -> Result<String, StatusCode> {
         let user = TestUser {
             id: 1,
             name: "Test".to_string(),
@@ -54,7 +54,7 @@ mod tests {
         Ok("Success".to_string())
     }
 
-    async fn get_handler(session: Session<MemoryStore>) -> Result<String, StatusCode> {
+    async fn get_handler(session: Session<MokaStore>) -> Result<String, StatusCode> {
         let user: Option<TestUser> = session
             .get("user")
             .await
@@ -66,8 +66,8 @@ mod tests {
 
     fn create_test_app() -> Router {
         let cookie_options = build_cookie_options();
-        let session_layer =
-            SessionLayer::new(Arc::new(MemoryStore::new())).with_cookie_options(cookie_options);
+        let session_layer = SessionLayer::new(Arc::new(MokaStoreBuilder::new().build()))
+            .with_cookie_options(cookie_options);
 
         Router::new()
             .route("/set", get(insert_handler))
@@ -143,7 +143,7 @@ mod tests {
     async fn test_missing_cookie_middleware() {
         // Create app without CookieManagerLayer
         let app = Router::new().route("/set", get(insert_handler)).layer(
-            SessionLayer::new(Arc::new(MemoryStore::new()))
+            SessionLayer::new(Arc::new(MokaStoreBuilder::new().build()))
                 .with_cookie_options(CookieOptions::build().name("test_sess")),
         );
 

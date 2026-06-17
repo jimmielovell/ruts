@@ -1,9 +1,11 @@
 use crate::Id;
 use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize_value};
-use dashmap::DashMap;
+use moka::future::Cache;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 
 #[derive(Debug, Clone)]
 struct StoredValue {
@@ -11,57 +13,78 @@ struct StoredValue {
     expires_at: Option<Instant>,
 }
 
-/// An in-memory session store, intended for development and testing.
+/// A highly concurrent, thread-safe in-moka session store backed by `moka`.
 ///
-/// Backed by a [`DashMap`] for concurrent access. Data is lost when the
-/// process exits; use [`RedisStore`],  [`PostgresStore`] or [`ScyllaStore`]
-/// for production.
-///
-/// # Behavioral divergence from production stores
-///
-/// `MemoryStore` tracks expiry per-field only — there is no separate
-/// session-level TTL. As a consequence, the TTL returned by [`set`],
-/// [`set_and_rename`], and [`remove`] is synthesized from the maximum
-/// finite field expiry in the session, which can differ from what
-/// [`RedisStore`],  [`PostgresStore`] or [`ScyllaStore`] would
-/// return for the same call.
-///
-/// Tests that assert on the *value* of returned TTLs may pass against
-/// `MemoryStore` and fail against the production stores (or vice versa).
-/// Prefer asserting on observable behavior — whether a field exists,
-/// whether `get` returns `Some` or `None` — over the returned TTL.
-///
-/// [`set`]: SessionStore::set
-/// [`set_and_rename`]: SessionStore::set_and_rename
-/// [`remove`]: SessionStore::remove
-/// [`RedisStore`]: crate::store::redis::RedisStore
-/// [`PostgresStore`]: crate::store::postgres::PostgresStore
-#[derive(Debug, Clone)]
-pub struct MemoryStore {
-    data: DashMap<String, HashMap<String, StoredValue>>,
+/// Ideal for production use cases where a local, fast cache is required,
+/// or as a `HotStore` in a `LayeredStore` topology.
+#[derive(Clone)]
+pub struct MokaStore {
+    data: Cache<String, Arc<RwLock<HashMap<String, StoredValue>>>>,
 }
 
-impl MemoryStore {
+pub struct MokaStoreBuilder {
+    max_capacity: u64,
+    time_to_live: Option<Duration>,
+    time_to_idle: Option<Duration>,
+}
+
+impl Default for MokaStoreBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MokaStoreBuilder {
     pub fn new() -> Self {
         Self {
-            data: DashMap::new(),
+            max_capacity: 10_000,
+            time_to_live: None,
+            time_to_idle: None,
         }
     }
 
-    fn cleanup_expired(&self) {
-        self.data.retain(|_, fields| {
-            fields.retain(|_, value| {
-                value
-                    .expires_at
-                    .map(|expires| expires > Instant::now())
-                    .unwrap_or(true)
-            });
-            !fields.is_empty()
-        });
+    /// Sets the maximum capacity of the cache.
+    pub fn max_capacity(mut self, capacity: u64) -> Self {
+        self.max_capacity = capacity;
+        self
     }
 
-    fn get_ttl(&self, session_id: &Id) -> i64 {
-        if let Some(fields) = self.data.get(session_id.as_str()) {
+    /// Sets the time to live for cache entries.
+    pub fn time_to_live(mut self, ttl: Duration) -> Self {
+        self.time_to_live = Some(ttl);
+        self
+    }
+
+    /// Sets the time to idle for cache entries.
+    pub fn time_to_idle(mut self, tti: Duration) -> Self {
+        self.time_to_idle = Some(tti);
+        self
+    }
+
+    pub fn build(self) -> MokaStore {
+        let mut builder = Cache::builder().max_capacity(self.max_capacity);
+
+        if let Some(ttl) = self.time_to_live {
+            builder = builder.time_to_live(ttl);
+        }
+        if let Some(tti) = self.time_to_idle {
+            builder = builder.time_to_idle(tti);
+        }
+
+        MokaStore {
+            data: builder.build(),
+        }
+    }
+}
+
+impl MokaStore {
+    pub fn builder() -> MokaStoreBuilder {
+        MokaStoreBuilder::new()
+    }
+
+    async fn get_ttl(&self, session_id: &Id) -> i64 {
+        if let Some(fields_lock) = self.data.get(session_id.as_str()).await {
+            let fields = fields_lock.read().await;
             if fields.is_empty() {
                 return -2;
             }
@@ -103,12 +126,13 @@ fn determine_expiry(key_ttl_secs: i64, field_ttl_secs: i64) -> Option<Instant> {
     (ttl > 0).then(|| Instant::now() + Duration::from_secs(ttl as u64))
 }
 
-impl SessionStore for MemoryStore {
+impl SessionStore for MokaStore {
     async fn get<T>(&self, session_id: &Id, field: &str) -> Result<Option<T>, Error>
     where
         T: Send + Sync + DeserializeOwned,
     {
-        if let Some(fields) = self.data.get(session_id.as_str()) {
+        if let Some(fields_lock) = self.data.get(session_id.as_str()).await {
+            let fields = fields_lock.read().await;
             if let Some(value) = fields.get(field) {
                 if value.expires_at.map(|e| e > Instant::now()).unwrap_or(true) {
                     return Ok(Some(deserialize_value(&value.data)?));
@@ -118,10 +142,29 @@ impl SessionStore for MemoryStore {
         Ok(None)
     }
 
-    async fn get_all(&self, _session_id: &Id) -> Result<Option<SessionMap>, Error> {
-        Err(Error::Backend(
-            "MemoryStore does not support get_all; use get() per field instead".to_string(),
-        ))
+    async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error> {
+        if let Some(fields_lock) = self.data.get(session_id.as_str()).await {
+            let fields = fields_lock.read().await;
+            if fields.is_empty() {
+                return Ok(None);
+            }
+
+            let now = Instant::now();
+            let mut map = HashMap::new();
+
+            for (k, v) in fields.iter() {
+                if v.expires_at.map(|e| e > now).unwrap_or(true) {
+                    map.insert(k.clone(), v.data.clone());
+                }
+            }
+
+            if map.is_empty() {
+                return Ok(None);
+            }
+
+            return Ok(Some(SessionMap::new(map)));
+        }
+        Ok(None)
     }
 
     async fn set<T>(
@@ -145,22 +188,32 @@ impl SessionStore for MemoryStore {
             return self.remove(session_id, field).await;
         }
 
-        self.cleanup_expired();
-
         let expires_at = determine_expiry(key_ttl_secs, field_ttl_secs);
+        let data_bytes = serialize_value(value)?;
 
-        let mut fields = self.data.entry(session_id.to_string()).or_default();
+        let fields_lock = self
+            .data
+            .get_with(session_id.to_string(), async {
+                Arc::new(RwLock::new(HashMap::new()))
+            })
+            .await;
+
+        let mut fields = fields_lock.write().await;
+
+        let now = Instant::now();
+        fields.retain(|_, v| v.expires_at.map(|e| e > now).unwrap_or(true));
+
         fields.insert(
             field.to_string(),
             StoredValue {
-                data: serialize_value(value)?,
+                data: data_bytes,
                 expires_at,
             },
         );
 
         drop(fields);
 
-        Ok(self.get_ttl(session_id))
+        Ok(self.get_ttl(session_id).await)
     }
 
     async fn set_and_rename<T>(
@@ -177,8 +230,6 @@ impl SessionStore for MemoryStore {
     where
         T: Send + Sync + Serialize,
     {
-        self.cleanup_expired();
-
         let old_key = old_session_id.as_str();
         let new_key = new_session_id.as_str();
 
@@ -189,15 +240,21 @@ impl SessionStore for MemoryStore {
         }
 
         if key_ttl_secs == 0 {
-            self.data.remove(old_key);
+            self.data.invalidate(old_key).await;
             return Ok(-2);
         }
 
-        let mut fields = self
-            .data
-            .remove(old_key)
-            .map(|(_, f)| f)
-            .unwrap_or_default();
+        let fields_lock = if let Some(lock) = self.data.get(old_key).await {
+            self.data.invalidate(old_key).await;
+            lock
+        } else {
+            Arc::new(RwLock::new(HashMap::new()))
+        };
+
+        let mut fields = fields_lock.write().await;
+
+        let now = Instant::now();
+        fields.retain(|_, v| v.expires_at.map(|e| e > now).unwrap_or(true));
 
         if field_ttl_secs == 0 {
             fields.remove(field);
@@ -212,12 +269,15 @@ impl SessionStore for MemoryStore {
             );
         }
 
-        if fields.is_empty() {
+        let is_empty = fields.is_empty();
+        drop(fields);
+
+        if is_empty {
             return Ok(-2);
         }
 
-        self.data.insert(new_key.to_owned(), fields);
-        Ok(self.get_ttl(new_session_id))
+        self.data.insert(new_key.to_string(), fields_lock).await;
+        Ok(self.get_ttl(new_session_id).await)
     }
 
     async fn rename_session_id(
@@ -225,16 +285,16 @@ impl SessionStore for MemoryStore {
         old_session_id: &Id,
         new_session_id: &Id,
     ) -> Result<bool, Error> {
-        self.cleanup_expired();
+        let new_key = new_session_id.as_str();
 
-        let new_key = new_session_id.to_string();
-
-        if self.data.contains_key(&new_key) {
+        if self.data.contains_key(new_key) {
             return Ok(false);
         }
 
-        if let Some((_, fields)) = self.data.remove(old_session_id.as_str()) {
-            self.data.insert(new_key, fields);
+        let old_key = old_session_id.as_str();
+        if let Some(fields_lock) = self.data.get(old_key).await {
+            self.data.invalidate(old_key).await;
+            self.data.insert(new_key.to_string(), fields_lock).await;
             Ok(true)
         } else {
             Ok(false)
@@ -242,34 +302,40 @@ impl SessionStore for MemoryStore {
     }
 
     async fn remove(&self, session_id: &Id, field: &str) -> Result<i64, Error> {
-        self.cleanup_expired();
-
         let session_id_str = session_id.as_str();
 
-        if let Some(mut fields) = self.data.get_mut(session_id_str) {
+        if let Some(fields_lock) = self.data.get(session_id_str).await {
+            let mut fields = fields_lock.write().await;
+
+            let now = Instant::now();
+            fields.retain(|_, v| v.expires_at.map(|e| e > now).unwrap_or(true));
+
             let removed = fields.remove(field).is_some();
 
             if fields.is_empty() {
                 drop(fields);
-                self.data.remove(session_id_str);
+                self.data.invalidate(session_id_str).await;
                 return Ok(-2);
             }
 
-            if removed {
-                drop(fields);
-                return Ok(self.get_ttl(session_id));
-            }
-
             drop(fields);
-            return Ok(self.get_ttl(session_id));
+            if removed {
+                return Ok(self.get_ttl(session_id).await);
+            }
+            return Ok(self.get_ttl(session_id).await);
         }
 
         Ok(-2)
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
-        self.cleanup_expired();
-        Ok(self.data.remove(session_id.as_str()).is_some())
+        let session_id_str = session_id.as_str();
+        if self.data.contains_key(session_id_str) {
+            self.data.invalidate(session_id_str).await;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     async fn expire(&self, session_id: &Id, seconds: i64) -> Result<bool, Error> {
@@ -277,7 +343,8 @@ impl SessionStore for MemoryStore {
             return self.delete(session_id).await;
         }
 
-        if let Some(mut fields) = self.data.get_mut(session_id.as_str()) {
+        if let Some(fields_lock) = self.data.get(session_id.as_str()).await {
+            let mut fields = fields_lock.write().await;
             let new_expiry =
                 (seconds > 0).then(|| Instant::now() + Duration::from_secs(seconds as u64));
 
@@ -296,6 +363,45 @@ impl SessionStore for MemoryStore {
     }
 }
 
+#[cfg(feature = "layered-store")]
+impl crate::store::LayeredHotStore for MokaStore {
+    async fn set_multiple(
+        &self,
+        session_id: &Id,
+        pairs: &[(&str, &[u8], Option<i64>)],
+    ) -> Result<i64, Error> {
+        let session_id_str = session_id.as_str();
+
+        let fields_lock = self
+            .data
+            .get_with(session_id_str.to_string(), async {
+                Arc::new(RwLock::new(HashMap::new()))
+            })
+            .await;
+
+        let mut fields = fields_lock.write().await;
+
+        let now = Instant::now();
+        fields.retain(|_, v| v.expires_at.map(|e| e > now).unwrap_or(true));
+
+        for (field, data, cache_ttl) in pairs {
+            let expires_at =
+                cache_ttl.and_then(|ttl| (ttl > 0).then(|| now + Duration::from_secs(ttl as u64)));
+
+            fields.insert(
+                field.to_string(),
+                StoredValue {
+                    data: data.to_vec(),
+                    expires_at,
+                },
+            );
+        }
+
+        drop(fields);
+        Ok(self.get_ttl(session_id).await)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,7 +416,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_basic_operations() {
-        let store = MemoryStore::new();
+        let store = MokaStore::builder().build();
         let session_id = Id::default();
         let user = TestUser {
             id: 1,
@@ -344,7 +450,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_expiration() {
-        let store = MemoryStore::new();
+        let store = MokaStore::builder().build();
         let session_id = Id::default();
         let user = TestUser {
             id: 1,
@@ -367,7 +473,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rename_preserves_data() {
-        let store = MemoryStore::new();
+        let store = MokaStore::builder().build();
         let old_id = Id::default();
         let new_id = Id::default();
         let user = TestUser {

@@ -5,7 +5,7 @@ use serde::{Serialize, de::DeserializeOwned};
 /// [`LayeredStore`], a composite store that layers a fast,
 /// ephemeral "hot" cache (like Redis) on top of a slower, persistent "cold"
 /// store (like Postgres or Scylla). It is designed for scenarios where sessions can have
-/// long lifespans but should only occupy expensive cache memory when actively
+/// long lifespans but should only occupy expensive cache moka when actively
 /// being used thus balancing performance and durability.
 ///
 /// ## Example

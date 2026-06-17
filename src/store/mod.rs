@@ -1,7 +1,8 @@
 mod store_trait;
 pub use store_trait::*;
 
-pub mod memory;
+#[cfg(feature = "moka-store")]
+pub mod moka;
 
 #[cfg(feature = "postgres-store")]
 pub mod postgres;
