@@ -55,7 +55,7 @@ impl ScyllaStoreBuilder {
             self.session
                 .query_unpaged(ks_query, &[])
                 .await
-                .map_err(|e| Error::Backend(e.to_string()))?;
+                .map_err(|err| Error::Backend(err.to_string()))?;
 
             let table_query = format!(
                 r#"
@@ -65,17 +65,16 @@ impl ScyllaStoreBuilder {
                     value blob,
                     hot_cache_ttl bigint,
                     primary key (session_id, field)
-                )
+                );
                 "#,
                 full_table_name
             );
             self.session
                 .query_unpaged(table_query, &[])
                 .await
-                .map_err(|e| Error::Backend(e.to_string()))?;
+                .map_err(|err| Error::Backend(err.to_string()))?;
         }
 
-        // Prepare statements during initialization
         let get_ttl_stmt = self
             .session
             .prepare(format!(
@@ -83,7 +82,8 @@ impl ScyllaStoreBuilder {
                 full_table_name
             ))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
+
         let insert_no_ttl_stmt = self
             .session
             .prepare(format!(
@@ -91,7 +91,8 @@ impl ScyllaStoreBuilder {
                 full_table_name
             ))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
+
         let insert_with_ttl_stmt = self
             .session
             .prepare(format!(
@@ -103,7 +104,8 @@ impl ScyllaStoreBuilder {
                 full_table_name
             ))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
+
         let get_stmt = self
             .session
             .prepare(format!(
@@ -111,7 +113,8 @@ impl ScyllaStoreBuilder {
                 full_table_name
             ))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
+
         let get_all_stmt = self
             .session
             .prepare(format!(
@@ -119,7 +122,8 @@ impl ScyllaStoreBuilder {
                 full_table_name
             ))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
+
         let get_all_meta_stmt = self
             .session
             .prepare(format!(
@@ -131,7 +135,8 @@ impl ScyllaStoreBuilder {
                 full_table_name
             ))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
+
         let remove_stmt = self
             .session
             .prepare(format!(
@@ -139,7 +144,8 @@ impl ScyllaStoreBuilder {
                 full_table_name
             ))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
+
         let delete_stmt = self
             .session
             .prepare(format!(
@@ -147,7 +153,7 @@ impl ScyllaStoreBuilder {
                 full_table_name
             ))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
 
         Ok(ScyllaStore {
             session: self.session,
@@ -203,11 +209,11 @@ impl ScyllaStore {
     async fn get_session_ttl(&self, session_id: &Id) -> Result<i64, Error> {
         let mut rows_stream = self
             .session
-            .execute_iter(self.get_ttl_stmt.clone(), (session_id.to_string(),))
+            .execute_iter(self.get_ttl_stmt.clone(), (session_id.as_str(),))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?
+            .map_err(|err| Error::Backend(err.to_string()))?
             .rows_stream::<(Option<i32>,)>()
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
 
         let mut max_ttl: i64 = -2;
         let mut has_rows = false;
@@ -215,7 +221,7 @@ impl ScyllaStore {
 
         while let Some(next_row_res) = rows_stream.next().await {
             has_rows = true;
-            let (ttl,) = next_row_res.map_err(|e| Error::Backend(e.to_string()))?;
+            let (ttl,) = next_row_res.map_err(|err| Error::Backend(err.to_string()))?;
             match ttl {
                 Some(ttl) => max_ttl = max_ttl.max(ttl as i64),
                 None => has_persistent = true,
@@ -273,21 +279,21 @@ impl ScyllaStore {
                 .execute_unpaged(
                     &self.insert_no_ttl_stmt,
                     (
-                        session_id.to_string(),
+                        session_id.as_str(),
                         field,
                         value_bytes,
                         computed_hot_cache_ttl,
                     ),
                 )
                 .await
-                .map_err(|e| Error::Backend(e.to_string()))?;
+                .map_err(|err| Error::Backend(err.to_string()))?;
         } else {
             let ttl_i32 = field_ttl_secs.clamp(1, i32::MAX as i64) as i32;
             self.session
                 .execute_unpaged(
                     &self.insert_with_ttl_stmt,
                     (
-                        session_id.to_string(),
+                        session_id.as_str(),
                         field,
                         value_bytes,
                         computed_hot_cache_ttl,
@@ -295,7 +301,7 @@ impl ScyllaStore {
                     ),
                 )
                 .await
-                .map_err(|e| Error::Backend(e.to_string()))?;
+                .map_err(|err| Error::Backend(err.to_string()))?;
         }
 
         self.get_session_ttl(session_id).await
@@ -309,14 +315,14 @@ impl SessionStore for ScyllaStore {
     {
         let mut rows_stream = self
             .session
-            .execute_iter(self.get_stmt.clone(), (session_id.to_string(), field))
+            .execute_iter(self.get_stmt.clone(), (session_id.as_str(), field))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?
+            .map_err(|err| Error::Backend(err.to_string()))?
             .rows_stream::<(Vec<u8>,)>()
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
 
         if let Some(next_row_res) = rows_stream.next().await {
-            let (data,) = next_row_res.map_err(|e| Error::Backend(e.to_string()))?;
+            let (data,) = next_row_res.map_err(|err| Error::Backend(err.to_string()))?;
             Ok(Some(deserialize_value(&data)?))
         } else {
             Ok(None)
@@ -326,15 +332,15 @@ impl SessionStore for ScyllaStore {
     async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error> {
         let mut rows_stream = self
             .session
-            .execute_iter(self.get_all_stmt.clone(), (session_id.to_string(),))
+            .execute_iter(self.get_all_stmt.clone(), (session_id.as_str(),))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?
+            .map_err(|err| Error::Backend(err.to_string()))?
             .rows_stream::<(String, Vec<u8>)>()
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
 
         let mut map = HashMap::new();
         while let Some(next_row_res) = rows_stream.next().await {
-            let (field, value) = next_row_res.map_err(|e| Error::Backend(e.to_string()))?;
+            let (field, value) = next_row_res.map_err(|err| Error::Backend(err.to_string()))?;
             map.insert(field, value);
         }
 
@@ -413,20 +419,17 @@ impl SessionStore for ScyllaStore {
     ) -> Result<bool, Error> {
         let mut rows_stream = self
             .session
-            .execute_iter(
-                self.get_all_meta_stmt.clone(),
-                (old_session_id.to_string(),),
-            )
+            .execute_iter(self.get_all_meta_stmt.clone(), (old_session_id.as_str(),))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?
+            .map_err(|err| Error::Backend(err.to_string()))?
             .rows_stream::<(String, Vec<u8>, Option<i64>, Option<i32>)>()
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
 
         let mut affected = false;
 
         while let Some(next_row_res) = rows_stream.next().await {
             let (field, value, hot_cache_ttl, ttl) =
-                next_row_res.map_err(|e| Error::Backend(e.to_string()))?;
+                next_row_res.map_err(|err| Error::Backend(err.to_string()))?;
             affected = true;
 
             if let Some(ttl_val) = ttl {
@@ -434,7 +437,7 @@ impl SessionStore for ScyllaStore {
                     .execute_unpaged(
                         &self.insert_with_ttl_stmt,
                         (
-                            new_session_id.to_string(),
+                            new_session_id.as_str(),
                             field,
                             value,
                             hot_cache_ttl,
@@ -442,15 +445,15 @@ impl SessionStore for ScyllaStore {
                         ),
                     )
                     .await
-                    .map_err(|e| Error::Backend(e.to_string()))?;
+                    .map_err(|err| Error::Backend(err.to_string()))?;
             } else {
                 self.session
                     .execute_unpaged(
                         &self.insert_no_ttl_stmt,
-                        (new_session_id.to_string(), field, value, hot_cache_ttl),
+                        (new_session_id.as_str(), field, value, hot_cache_ttl),
                     )
                     .await
-                    .map_err(|e| Error::Backend(e.to_string()))?;
+                    .map_err(|err| Error::Backend(err.to_string()))?;
             }
         }
 
@@ -463,18 +466,18 @@ impl SessionStore for ScyllaStore {
 
     async fn remove(&self, session_id: &Id, field: &str) -> Result<i64, Error> {
         self.session
-            .execute_unpaged(&self.remove_stmt, (session_id.to_string(), field))
+            .execute_unpaged(&self.remove_stmt, (session_id.as_str(), field))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
 
         self.get_session_ttl(session_id).await
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
         self.session
-            .execute_unpaged(&self.delete_stmt, (session_id.to_string(),))
+            .execute_unpaged(&self.delete_stmt, (session_id.as_str(),))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
 
         Ok(true)
     }
@@ -486,17 +489,17 @@ impl SessionStore for ScyllaStore {
 
         let mut rows_stream = self
             .session
-            .execute_iter(self.get_all_meta_stmt.clone(), (session_id.to_string(),))
+            .execute_iter(self.get_all_meta_stmt.clone(), (session_id.as_str(),))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?
+            .map_err(|err| Error::Backend(err.to_string()))?
             .rows_stream::<(String, Vec<u8>, Option<i64>, Option<i32>)>()
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
 
         let mut affected = false;
 
         while let Some(next_row_res) = rows_stream.next().await {
             let (field, value, hot_cache_ttl, _) =
-                next_row_res.map_err(|e| Error::Backend(e.to_string()))?;
+                next_row_res.map_err(|err| Error::Backend(err.to_string()))?;
             affected = true;
 
             if ttl_secs > 0 {
@@ -512,15 +515,15 @@ impl SessionStore for ScyllaStore {
                         ),
                     )
                     .await
-                    .map_err(|e| Error::Backend(e.to_string()))?;
+                    .map_err(|err| Error::Backend(err.to_string()))?;
             } else {
                 self.session
                     .execute_unpaged(
                         &self.insert_no_ttl_stmt,
-                        (session_id.to_string(), field, value, hot_cache_ttl),
+                        (session_id.as_str(), field, value, hot_cache_ttl),
                     )
                     .await
-                    .map_err(|e| Error::Backend(e.to_string()))?;
+                    .map_err(|err| Error::Backend(err.to_string()))?;
             }
         }
 
@@ -536,18 +539,18 @@ impl crate::store::LayeredColdStore for ScyllaStore {
     ) -> Result<Option<(SessionMap, HashMap<String, Option<i64>>)>, Error> {
         let mut rows_stream = self
             .session
-            .execute_iter(self.get_all_meta_stmt.clone(), (session_id.to_string(),))
+            .execute_iter(self.get_all_meta_stmt.clone(), (session_id.as_str(),))
             .await
-            .map_err(|e| Error::Backend(e.to_string()))?
+            .map_err(|err| Error::Backend(err.to_string()))?
             .rows_stream::<(String, Vec<u8>, Option<i64>, Option<i32>)>()
-            .map_err(|e| Error::Backend(e.to_string()))?;
+            .map_err(|err| Error::Backend(err.to_string()))?;
 
         let mut session_map = HashMap::new();
         let mut meta_map = HashMap::new();
 
         while let Some(next_row_res) = rows_stream.next().await {
             let (field, value, mut hot_cache_ttl, ttl) =
-                next_row_res.map_err(|e| Error::Backend(e.to_string()))?;
+                next_row_res.map_err(|err| Error::Backend(err.to_string()))?;
 
             session_map.insert(field.clone(), value);
 

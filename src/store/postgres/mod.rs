@@ -216,8 +216,8 @@ impl PostgresStore {
             self.expiry_table_name
         );
         let result = sqlx::query(&query)
-            .bind(new_session_id.to_string())
-            .bind(old_session_id.to_string())
+            .bind(new_session_id.as_str())
+            .bind(old_session_id.as_str())
             .execute(executor)
             .await?;
         Ok(result.rows_affected() > 0)
@@ -291,7 +291,7 @@ impl PostgresStore {
         );
 
         let ttl: i64 = sqlx::query_scalar(&query)
-            .bind(session_id.to_string())
+            .bind(session_id.as_str())
             .bind(field)
             .fetch_one(executor)
             .await?;
@@ -376,7 +376,7 @@ impl PostgresStore {
         );
 
         let qs = sqlx::query_scalar(&query)
-            .bind(session_id.to_string())
+            .bind(session_id.as_str())
             .bind(field)
             .bind(value_bytes)
             .bind(hot_cache_ttl)
@@ -420,7 +420,7 @@ impl SessionStore for PostgresStore {
         );
 
         let result: Option<(Vec<u8>,)> = sqlx::query_as(&query)
-            .bind(session_id.to_string())
+            .bind(session_id.as_str())
             .bind(field)
             .fetch_optional(&self.pool)
             .await?;
@@ -446,7 +446,7 @@ impl SessionStore for PostgresStore {
         );
 
         let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(&query)
-            .bind(session_id.to_string())
+            .bind(session_id.as_str())
             .fetch_all(&self.pool)
             .await?;
 
@@ -534,7 +534,7 @@ impl SessionStore for PostgresStore {
             table = self.expiry_table_name
         );
         let result = sqlx::query(&query)
-            .bind(session_id.to_string())
+            .bind(session_id.as_str())
             .execute(&self.pool)
             .await?;
 
@@ -582,7 +582,7 @@ impl SessionStore for PostgresStore {
         );
 
         let rows_affected: i64 = sqlx::query_scalar(&query)
-            .bind(session_id.to_string())
+            .bind(session_id.as_str())
             .bind(ttl_secs_f64)
             .fetch_one(&self.pool)
             .await?;
@@ -617,7 +617,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
         );
 
         let rows: Vec<(String, Vec<u8>, Option<i64>, i64)> = sqlx::query_as(&query)
-            .bind(session_id.to_string())
+            .bind(session_id.as_str())
             .fetch_all(&self.pool)
             .await?;
 

@@ -1,6 +1,6 @@
+use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
-use base64::{DecodeError, Engine};
 use rand::Rng;
 use rand::prelude::StdRng;
 use serde::{Deserialize, Serialize};
@@ -14,46 +14,59 @@ thread_local! {
 }
 
 #[derive(Copy, Clone, Eq, Hash, PartialEq, Deserialize, Serialize)]
-pub struct Id([u8; 16]);
+pub struct Id([u8; 22]);
 
 impl Default for Id {
     fn default() -> Self {
         let mut bytes = [0u8; 16];
         RNG.with(|rng| rng.borrow_mut().fill_bytes(&mut bytes));
-        Self(bytes)
+
+        let mut encoded = [0; 22];
+        let _ = BASE64_URL_SAFE_NO_PAD.encode_slice(bytes, &mut encoded);
+
+        Self(encoded)
+    }
+}
+
+impl Id {
+    /// Returns the string slice of the encoded Id.
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        str::from_utf8(&self.0).expect("Encoded Id is valid UTF-8")
     }
 }
 
 impl Display for Id {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut encoded = [0; 22];
-        BASE64_URL_SAFE_NO_PAD
-            .encode_slice(self.0, &mut encoded)
-            .expect("Encoded ID must be exactly 22 bytes");
-        let encoded = str::from_utf8(&encoded).expect("Encoded ID must be valid UTF-8");
-
-        f.write_str(encoded)
+        f.write_str(self.as_str())
     }
 }
 
 impl FromStr for Id {
-    type Err = base64::DecodeSliceError;
+    type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut decoded = [0; 16];
-        let bytes_decoded = URL_SAFE_NO_PAD.decode_slice(s.as_bytes(), &mut decoded)?;
-        if bytes_decoded != 16 {
-            let err = DecodeError::InvalidLength(bytes_decoded);
-            return Err(base64::DecodeSliceError::DecodeError(err));
+        if s.len() != 22 {
+            return Err("Invalid ID length: must be exactly 22 characters");
         }
 
-        Ok(Self(decoded))
+        let mut decoded_buffer = [0u8; 16];
+        if URL_SAFE_NO_PAD
+            .decode_slice(s.as_bytes(), &mut decoded_buffer)
+            .is_err()
+        {
+            return Err("Invalid ID characters: must be URL-safe Base64");
+        }
+
+        let mut bytes = [0u8; 22];
+        bytes.copy_from_slice(s.as_bytes());
+        Ok(Self(bytes))
     }
 }
 
 #[cfg(feature = "redis-store")]
 impl From<&Id> for fred::types::Key {
     fn from(value: &Id) -> Self {
-        value.to_string().into()
+        value.as_str().into()
     }
 }

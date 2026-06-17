@@ -59,7 +59,7 @@ impl MemoryStore {
     }
 
     fn get_ttl(&self, session_id: &Id) -> i64 {
-        if let Some(fields) = self.data.get(&session_id.to_string()) {
+        if let Some(fields) = self.data.get(session_id.as_str()) {
             if fields.is_empty() {
                 return -2;
             }
@@ -106,7 +106,7 @@ impl SessionStore for MemoryStore {
     where
         T: Send + Sync + DeserializeOwned,
     {
-        if let Some(fields) = self.data.get(&session_id.to_string()) {
+        if let Some(fields) = self.data.get(session_id.as_str()) {
             if let Some(value) = fields.get(field) {
                 if value.expires_at.map(|e| e > Instant::now()).unwrap_or(true) {
                     return Ok(Some(deserialize_value(&value.data)?));
@@ -177,23 +177,23 @@ impl SessionStore for MemoryStore {
     {
         self.cleanup_expired();
 
-        let old_key = old_session_id.to_string();
-        let new_key = new_session_id.to_string();
+        let old_key = old_session_id.as_str();
+        let new_key = new_session_id.as_str();
 
-        if old_key != new_key && self.data.contains_key(&new_key) {
+        if old_key != new_key && self.data.contains_key(new_key) {
             return Err(Error::Backend(format!(
                 "rename failed: target session {new_session_id} already exists"
             )));
         }
 
         if key_ttl_secs == 0 {
-            self.data.remove(&old_key);
+            self.data.remove(old_key);
             return Ok(-2);
         }
 
         let mut fields = self
             .data
-            .remove(&old_key)
+            .remove(old_key)
             .map(|(_, f)| f)
             .unwrap_or_default();
 
@@ -214,7 +214,7 @@ impl SessionStore for MemoryStore {
             return Ok(-2);
         }
 
-        self.data.insert(new_key, fields);
+        self.data.insert(new_key.to_owned(), fields);
         Ok(self.get_ttl(new_session_id))
     }
 
@@ -231,7 +231,7 @@ impl SessionStore for MemoryStore {
             return Ok(false);
         }
 
-        if let Some((_, fields)) = self.data.remove(&old_session_id.to_string()) {
+        if let Some((_, fields)) = self.data.remove(old_session_id.as_str()) {
             self.data.insert(new_key, fields);
             Ok(true)
         } else {
@@ -242,12 +242,14 @@ impl SessionStore for MemoryStore {
     async fn remove(&self, session_id: &Id, field: &str) -> Result<i64, Error> {
         self.cleanup_expired();
 
-        if let Some(mut fields) = self.data.get_mut(&session_id.to_string()) {
+        let session_id_str = session_id.as_str();
+
+        if let Some(mut fields) = self.data.get_mut(session_id_str) {
             let removed = fields.remove(field).is_some();
 
             if fields.is_empty() {
                 drop(fields);
-                self.data.remove(&session_id.to_string());
+                self.data.remove(session_id_str);
                 return Ok(-2);
             }
 
@@ -265,7 +267,7 @@ impl SessionStore for MemoryStore {
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
         self.cleanup_expired();
-        Ok(self.data.remove(&session_id.to_string()).is_some())
+        Ok(self.data.remove(session_id.as_str()).is_some())
     }
 
     async fn expire(&self, session_id: &Id, seconds: i64) -> Result<bool, Error> {
@@ -273,7 +275,7 @@ impl SessionStore for MemoryStore {
             return self.delete(session_id).await;
         }
 
-        if let Some(mut fields) = self.data.get_mut(&session_id.to_string()) {
+        if let Some(mut fields) = self.data.get_mut(session_id.as_str()) {
             let new_expiry =
                 (seconds > 0).then(|| Instant::now() + Duration::from_secs(seconds as u64));
 
