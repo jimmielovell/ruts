@@ -14,7 +14,8 @@ struct StoredValue {
 /// An in-memory session store, intended for development and testing.
 ///
 /// Backed by a [`DashMap`] for concurrent access. Data is lost when the
-/// process exits; use [`RedisStore`] or [`PostgresStore`] for production.
+/// process exits; use [`RedisStore`],  [`PostgresStore`] or [`ScyllaStore`]
+/// for production.
 ///
 /// # Behavioral divergence from production stores
 ///
@@ -22,7 +23,8 @@ struct StoredValue {
 /// session-level TTL. As a consequence, the TTL returned by [`set`],
 /// [`set_and_rename`], and [`remove`] is synthesized from the maximum
 /// finite field expiry in the session, which can differ from what
-/// [`RedisStore`] or [`PostgresStore`] would return for the same call.
+/// [`RedisStore`],  [`PostgresStore`] or [`ScyllaStore`] would
+/// return for the same call.
 ///
 /// Tests that assert on the *value* of returned TTLs may pass against
 /// `MemoryStore` and fail against the production stores (or vice versa).

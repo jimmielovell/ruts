@@ -2,16 +2,44 @@ use crate::Id;
 use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize_value};
 use futures::stream::StreamExt;
 use scylla::client::session::Session as ScyllaSession;
+use scylla::statement::Consistency;
 use scylla::statement::prepared::PreparedStatement;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+#[derive(Debug, Clone)]
+enum ReplicationStrategy {
+    Simple(u8),
+    NetworkTopology(HashMap<String, u8>),
+}
+
+impl ReplicationStrategy {
+    fn as_cql(&self) -> String {
+        match self {
+            Self::Simple(rf) => {
+                format!(
+                    "{{'class': 'SimpleStrategy', 'replication_factor': {}}}",
+                    rf
+                )
+            }
+            Self::NetworkTopology(dcs) => {
+                let dcs_str = dcs
+                    .iter()
+                    .map(|(dc, rf)| format!(", '{}': {}", dc, rf))
+                    .collect::<String>();
+                format!("{{'class': 'NetworkTopologyStrategy'{}}}", dcs_str)
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct ScyllaStoreBuilder {
     session: Arc<ScyllaSession>,
     keyspace_name: String,
     table_name: String,
+    replication_strategy: ReplicationStrategy,
     create_table: bool,
 }
 
@@ -21,6 +49,7 @@ impl ScyllaStoreBuilder {
             session,
             keyspace_name: "ruts".to_string(),
             table_name: "t_sessions".to_string(),
+            replication_strategy: ReplicationStrategy::Simple(1),
             create_table: false,
         }
     }
@@ -39,6 +68,29 @@ impl ScyllaStoreBuilder {
         Ok(self)
     }
 
+    /// Configures the keyspace to use SimpleStrategy with the specified replication factor.
+    pub fn simple_strategy(mut self, replication_factor: u8) -> Self {
+        self.replication_strategy = ReplicationStrategy::Simple(replication_factor);
+        self
+    }
+
+    /// Configures the keyspace to use NetworkTopologyStrategy.
+    /// Can be chained multiple times to add multiple datacenters.
+    pub fn network_topology_strategy(
+        mut self,
+        datacenter: impl Into<String>,
+        replication_factor: u8,
+    ) -> Self {
+        if let ReplicationStrategy::NetworkTopology(ref mut dcs) = self.replication_strategy {
+            dcs.insert(datacenter.into(), replication_factor);
+        } else {
+            let mut dcs = HashMap::new();
+            dcs.insert(datacenter.into(), replication_factor);
+            self.replication_strategy = ReplicationStrategy::NetworkTopology(dcs);
+        }
+        self
+    }
+
     pub fn create_table(mut self, create: bool) -> Self {
         self.create_table = create;
         self
@@ -49,8 +101,9 @@ impl ScyllaStoreBuilder {
 
         if self.create_table {
             let ks_query = format!(
-                "create keyspace if not exists {} with replication = {{'class': 'SimpleStrategy', 'replication_factor': 1}}",
-                self.keyspace_name
+                "create keyspace if not exists {} with replication = {}",
+                self.keyspace_name,
+                self.replication_strategy.as_cql()
             );
             self.session
                 .query_unpaged(ks_query, &[])
@@ -65,7 +118,11 @@ impl ScyllaStoreBuilder {
                     value blob,
                     hot_cache_ttl bigint,
                     primary key (session_id, field)
-                );
+                ) with compaction = {{
+                    'class': 'TimeWindowCompactionStrategy',
+                    'compaction_window_unit': 'HOURS',
+                    'compaction_window_size': 1
+                }}
                 "#,
                 full_table_name
             );
@@ -75,7 +132,7 @@ impl ScyllaStoreBuilder {
                 .map_err(|err| Error::Backend(err.to_string()))?;
         }
 
-        let get_ttl_stmt = self
+        let mut get_ttl_stmt = self
             .session
             .prepare(format!(
                 "select ttl(value) from {} where session_id = ?",
@@ -83,8 +140,9 @@ impl ScyllaStoreBuilder {
             ))
             .await
             .map_err(|err| Error::Backend(err.to_string()))?;
+        get_ttl_stmt.set_consistency(Consistency::LocalQuorum);
 
-        let insert_no_ttl_stmt = self
+        let mut insert_no_ttl_stmt = self
             .session
             .prepare(format!(
                 "insert into {} (session_id, field, value, hot_cache_ttl) values (?, ?, ?, ?)",
@@ -92,8 +150,9 @@ impl ScyllaStoreBuilder {
             ))
             .await
             .map_err(|err| Error::Backend(err.to_string()))?;
+        insert_no_ttl_stmt.set_consistency(Consistency::LocalQuorum);
 
-        let insert_with_ttl_stmt = self
+        let mut insert_with_ttl_stmt = self
             .session
             .prepare(format!(
                 r#"
@@ -105,8 +164,9 @@ impl ScyllaStoreBuilder {
             ))
             .await
             .map_err(|err| Error::Backend(err.to_string()))?;
+        insert_with_ttl_stmt.set_consistency(Consistency::LocalQuorum);
 
-        let get_stmt = self
+        let mut get_stmt = self
             .session
             .prepare(format!(
                 "select value from {} where session_id = ? and field = ?",
@@ -114,8 +174,9 @@ impl ScyllaStoreBuilder {
             ))
             .await
             .map_err(|err| Error::Backend(err.to_string()))?;
+        get_stmt.set_consistency(Consistency::LocalQuorum);
 
-        let get_all_stmt = self
+        let mut get_all_stmt = self
             .session
             .prepare(format!(
                 "select field, value from {} where session_id = ?",
@@ -123,8 +184,9 @@ impl ScyllaStoreBuilder {
             ))
             .await
             .map_err(|err| Error::Backend(err.to_string()))?;
+        get_all_stmt.set_consistency(Consistency::LocalQuorum);
 
-        let get_all_meta_stmt = self
+        let mut get_all_meta_stmt = self
             .session
             .prepare(format!(
                 r#"
@@ -136,8 +198,9 @@ impl ScyllaStoreBuilder {
             ))
             .await
             .map_err(|err| Error::Backend(err.to_string()))?;
+        get_all_meta_stmt.set_consistency(Consistency::LocalQuorum);
 
-        let remove_stmt = self
+        let mut remove_stmt = self
             .session
             .prepare(format!(
                 "delete from {} where session_id = ? and field = ?",
@@ -145,8 +208,9 @@ impl ScyllaStoreBuilder {
             ))
             .await
             .map_err(|err| Error::Backend(err.to_string()))?;
+        remove_stmt.set_consistency(Consistency::LocalQuorum);
 
-        let delete_stmt = self
+        let mut delete_stmt = self
             .session
             .prepare(format!(
                 "delete from {} where session_id = ?",
@@ -154,6 +218,7 @@ impl ScyllaStoreBuilder {
             ))
             .await
             .map_err(|err| Error::Backend(err.to_string()))?;
+        delete_stmt.set_consistency(Consistency::LocalQuorum);
 
         Ok(ScyllaStore {
             session: self.session,
@@ -425,39 +490,43 @@ impl SessionStore for ScyllaStore {
             .rows_stream::<(String, Vec<u8>, Option<i64>, Option<i32>)>()
             .map_err(|err| Error::Backend(err.to_string()))?;
 
-        let mut affected = false;
-
+        let mut rows = Vec::new();
         while let Some(next_row_res) = rows_stream.next().await {
-            let (field, value, hot_cache_ttl, ttl) =
-                next_row_res.map_err(|err| Error::Backend(err.to_string()))?;
-            affected = true;
-
-            if let Some(ttl_val) = ttl {
-                self.session
-                    .execute_unpaged(
-                        &self.insert_with_ttl_stmt,
-                        (
-                            new_session_id.as_str(),
-                            field,
-                            value,
-                            hot_cache_ttl,
-                            ttl_val,
-                        ),
-                    )
-                    .await
-                    .map_err(|err| Error::Backend(err.to_string()))?;
-            } else {
-                self.session
-                    .execute_unpaged(
-                        &self.insert_no_ttl_stmt,
-                        (new_session_id.as_str(), field, value, hot_cache_ttl),
-                    )
-                    .await
-                    .map_err(|err| Error::Backend(err.to_string()))?;
-            }
+            rows.push(next_row_res.map_err(|err| Error::Backend(err.to_string()))?);
         }
 
+        let affected = !rows.is_empty();
+
+        let futures = rows
+            .into_iter()
+            .map(|(field, value, hot_cache_ttl, ttl)| async move {
+                if let Some(ttl_val) = ttl {
+                    self.session
+                        .execute_unpaged(
+                            &self.insert_with_ttl_stmt,
+                            (
+                                new_session_id.as_str(),
+                                field,
+                                value,
+                                hot_cache_ttl,
+                                ttl_val,
+                            ),
+                        )
+                        .await
+                } else {
+                    self.session
+                        .execute_unpaged(
+                            &self.insert_no_ttl_stmt,
+                            (new_session_id.as_str(), field, value, hot_cache_ttl),
+                        )
+                        .await
+                }
+            });
+
         if affected {
+            futures::future::try_join_all(futures)
+                .await
+                .map_err(|err| Error::Backend(err.to_string()))?;
             self.delete(old_session_id).await?;
         }
 
@@ -495,36 +564,43 @@ impl SessionStore for ScyllaStore {
             .rows_stream::<(String, Vec<u8>, Option<i64>, Option<i32>)>()
             .map_err(|err| Error::Backend(err.to_string()))?;
 
-        let mut affected = false;
-
+        let mut rows = Vec::new();
         while let Some(next_row_res) = rows_stream.next().await {
-            let (field, value, hot_cache_ttl, _) =
-                next_row_res.map_err(|err| Error::Backend(err.to_string()))?;
-            affected = true;
+            rows.push(next_row_res.map_err(|err| Error::Backend(err.to_string()))?);
+        }
 
-            if ttl_secs > 0 {
-                self.session
-                    .execute_unpaged(
-                        &self.insert_with_ttl_stmt,
-                        (
-                            session_id.to_string(),
-                            field,
-                            value,
-                            hot_cache_ttl,
-                            ttl_secs as i32,
-                        ),
-                    )
-                    .await
-                    .map_err(|err| Error::Backend(err.to_string()))?;
-            } else {
-                self.session
-                    .execute_unpaged(
-                        &self.insert_no_ttl_stmt,
-                        (session_id.as_str(), field, value, hot_cache_ttl),
-                    )
-                    .await
-                    .map_err(|err| Error::Backend(err.to_string()))?;
-            }
+        let affected = !rows.is_empty();
+
+        let futures = rows
+            .into_iter()
+            .map(|(field, value, hot_cache_ttl, _)| async move {
+                if ttl_secs > 0 {
+                    self.session
+                        .execute_unpaged(
+                            &self.insert_with_ttl_stmt,
+                            (
+                                session_id.as_str(),
+                                field,
+                                value,
+                                hot_cache_ttl,
+                                ttl_secs as i32,
+                            ),
+                        )
+                        .await
+                } else {
+                    self.session
+                        .execute_unpaged(
+                            &self.insert_no_ttl_stmt,
+                            (session_id.as_str(), field, value, hot_cache_ttl),
+                        )
+                        .await
+                }
+            });
+
+        if affected {
+            futures::future::try_join_all(futures)
+                .await
+                .map_err(|err| Error::Backend(err.to_string()))?;
         }
 
         Ok(affected)
