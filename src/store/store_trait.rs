@@ -43,7 +43,7 @@ impl From<bincode::error::DecodeError> for Error {
 }
 
 #[cfg(feature = "messagepack")]
-pub(crate) fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
+pub fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
     rmp_serde::to_vec(value).map_err(|e| Error::Encode(e.to_string()))
 }
 
@@ -53,7 +53,7 @@ pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, 
 }
 
 #[cfg(feature = "bincode")]
-pub(crate) fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
+pub fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
     let e = bincode::serde::encode_to_vec(value, bincode::config::standard())?;
     Ok(e)
 }

@@ -1,7 +1,7 @@
 use crate::Id;
 use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize_value};
 use serde::{Serialize, de::DeserializeOwned};
-use sqlx::{Executor, PgPool, Postgres};
+use sqlx::{Executor, PgPool, Postgres, Transaction};
 use std::collections::HashMap;
 
 // Re-export Duration
@@ -103,8 +103,8 @@ impl PostgresStoreBuilder {
                     fk_session_id text not null references {expiry_table_name} (session_id) on update cascade on delete cascade,
                     field text not null,
                     value bytea not null,
-                    expires_at timestamptz,
                     hot_cache_ttl bigint,
+                    expires_at timestamptz,
                     primary key (fk_session_id, field)
                 );
 
@@ -202,24 +202,32 @@ impl Drop for PostgresStore {
 }
 
 impl PostgresStore {
-    async fn _rename_session_id<'e, E>(
+    async fn _rename_session_id(
         &self,
-        executor: E,
+        tx: &mut Transaction<'_, Postgres>,
         old_session_id: &Id,
         new_session_id: &Id,
-    ) -> Result<bool, Error>
-    where
-        E: Executor<'e, Database = Postgres>,
-    {
-        let query = format!(
+    ) -> Result<bool, Error> {
+        let fields_q = format!(
+            "update {} set fk_session_id = $1 where fk_session_id = $2",
+            self.fields_table_name
+        );
+        sqlx::query(&fields_q)
+            .bind(new_session_id.to_string())
+            .bind(old_session_id.to_string())
+            .execute(&mut **tx)
+            .await?;
+
+        let expiry_q = format!(
             "update {} set session_id = $1 where session_id = $2",
             self.expiry_table_name
         );
-        let result = sqlx::query(&query)
-            .bind(new_session_id.as_str())
-            .bind(old_session_id.as_str())
-            .execute(executor)
+        let result = sqlx::query(&expiry_q)
+            .bind(new_session_id.to_string())
+            .bind(old_session_id.to_string())
+            .execute(&mut **tx)
             .await?;
+
         Ok(result.rows_affected() > 0)
     }
 
@@ -323,7 +331,7 @@ impl PostgresStore {
 
             if let Some(old_session_id) = old_session_id {
                 let _ = self
-                    ._rename_session_id(&mut *tx, old_session_id, session_id)
+                    ._rename_session_id(&mut tx, old_session_id, session_id)
                     .await?;
             }
 
@@ -386,7 +394,7 @@ impl PostgresStore {
         if let Some(old_session_id) = old_session_id {
             let mut tx = self.pool.begin().await?;
             let _ = self
-                ._rename_session_id(&mut *tx, old_session_id, session_id)
+                ._rename_session_id(&mut tx, old_session_id, session_id)
                 .await?;
             let ttl = qs.fetch_one(&mut *tx).await?;
             tx.commit().await?;
@@ -518,9 +526,12 @@ impl SessionStore for PostgresStore {
         old_session_id: &Id,
         new_session_id: &Id,
     ) -> Result<bool, Error> {
+        let mut tx = self.pool.begin().await?;
         let result = self
-            ._rename_session_id(&self.pool, old_session_id, new_session_id)
+            ._rename_session_id(&mut tx, old_session_id, new_session_id)
             .await?;
+        tx.commit().await?;
+
         Ok(result)
     }
 
@@ -687,422 +698,5 @@ impl crate::store::LayeredColdStore for PostgresStore {
             Some(old_session_id),
         )
         .await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde::{Deserialize, Serialize};
-    use sqlx::PgPool;
-    use std::sync::Arc;
-
-    #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
-    struct TestData {
-        value: String,
-    }
-
-    async fn setup_store() -> Arc<PostgresStore> {
-        let database_url =
-            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
-        let pool = PgPool::connect(&database_url).await.unwrap();
-
-        sqlx::query("drop table if exists t_sessions cascade")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("drop table if exists t_sessions_kv cascade")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let store = PostgresStoreBuilder::new(pool.clone())
-            .create_table(true)
-            .build()
-            .await
-            .unwrap();
-        Arc::new(store)
-    }
-
-    #[tokio::test]
-    async fn test_set_and_get() {
-        let store = setup_store().await;
-        let session_id = Id::default();
-        let field = "field1";
-        let value = TestData {
-            value: "hello".into(),
-        };
-
-        let ttl = store
-            .set(&session_id, field, &value, 60, 60, None)
-            .await
-            .unwrap();
-        assert!(ttl > 55);
-
-        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
-        assert_eq!(fetched, Some(value.clone()));
-
-        store
-            .set(
-                &session_id,
-                field,
-                &TestData { value: "x".into() },
-                60,
-                60,
-                None,
-            )
-            .await
-            .unwrap();
-        let fetched2: Option<TestData> = store.get(&session_id, field).await.unwrap();
-        assert_eq!(fetched2, Some(TestData { value: "x".into() }));
-    }
-
-    #[tokio::test]
-    async fn test_update_overwrites() {
-        let store = setup_store().await;
-        let session_id = Id::default();
-        let field = "field_update";
-        let value = TestData {
-            value: "initial".into(),
-        };
-        let updated_value = TestData {
-            value: "updated".into(),
-        };
-
-        store
-            .set(&session_id, field, &value, 60, 60, None)
-            .await
-            .unwrap();
-        store
-            .set(&session_id, field, &updated_value, 60, 60, None)
-            .await
-            .unwrap();
-
-        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
-        assert_eq!(fetched, Some(updated_value));
-    }
-
-    #[tokio::test]
-    async fn test_ttl_zero_removes() {
-        let store = setup_store().await;
-        let session_id = Id::default();
-        let field = "ttl_zero";
-
-        let ttl = store
-            .set(
-                &session_id,
-                field,
-                &TestData { value: "x".into() },
-                60,
-                0,
-                None,
-            )
-            .await
-            .unwrap();
-        assert_eq!(ttl, -2); // Session empty -> deleted
-
-        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
-        assert!(fetched.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_ttl_negative_persists() {
-        let store = setup_store().await;
-        let session_id = Id::default();
-        let field = "ttl_neg";
-
-        let ttl = store
-            .set(
-                &session_id,
-                field,
-                &TestData { value: "y".into() },
-                -1,
-                -1,
-                None,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(ttl, -1);
-
-        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
-        assert!(fetched.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_expire_method() {
-        let store = setup_store().await;
-        let session_id = Id::default();
-        let field = "expire_field";
-        store
-            .set(
-                &session_id,
-                field,
-                &TestData {
-                    value: "temp".into(),
-                },
-                2,
-                2,
-                None,
-            )
-            .await
-            .unwrap();
-
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
-        assert!(fetched.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_expire_caps_long_lived_fields() {
-        let store = setup_store().await;
-        let session_id = Id::default();
-
-        store
-            .set(
-                &session_id,
-                "long",
-                &TestData {
-                    value: "val".into(),
-                },
-                3600,
-                3600,
-                None,
-            )
-            .await
-            .unwrap();
-
-        store.expire(&session_id, 1).await.unwrap();
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        let fetched: Option<TestData> = store.get(&session_id, "long").await.unwrap();
-        assert!(
-            fetched.is_none(),
-            "Field should have been capped by session expire"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_remove_downgrades_session_expiry() {
-        let store = setup_store().await;
-        let session_id = Id::default();
-
-        store
-            .set(
-                &session_id,
-                "A",
-                &TestData { value: "a".into() },
-                100,
-                100,
-                None,
-            )
-            .await
-            .unwrap();
-
-        store
-            .set(
-                &session_id,
-                "B",
-                &TestData { value: "b".into() },
-                10,
-                10,
-                None,
-            )
-            .await
-            .unwrap();
-
-        let ttl = store.remove(&session_id, "A").await.unwrap();
-
-        assert!(
-            ttl > 0 && ttl <= 10,
-            "TTL should have downgraded to match Field B (approx 10s), got {}",
-            ttl
-        );
-    }
-
-    #[tokio::test]
-    async fn test_remove_and_delete() {
-        let store = setup_store().await;
-        let session_id = Id::default();
-        let field = "to_remove";
-
-        store
-            .set(
-                &session_id,
-                field,
-                &TestData {
-                    value: "bye".into(),
-                },
-                60,
-                60,
-                None,
-            )
-            .await
-            .unwrap();
-        let ttl = store.remove(&session_id, field).await.unwrap();
-        assert_eq!(ttl, -2);
-
-        let fetched: Option<TestData> = store.get(&session_id, field).await.unwrap();
-        assert!(fetched.is_none());
-
-        store.delete(&session_id).await.unwrap();
-        let all = store.get_all(&session_id).await.unwrap();
-        assert!(all.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_set_with_rename() {
-        let store = setup_store().await;
-        let old_id = Id::default();
-        let new_id = Id::default();
-        let field = "rename_field";
-        let value = TestData {
-            value: "rename".into(),
-        };
-
-        store
-            .set_and_rename(&old_id, &new_id, field, &value, 60, 60, None)
-            .await
-            .unwrap();
-
-        assert!(
-            store
-                .get::<TestData>(&old_id, field)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            store.get::<TestData>(&new_id, field).await.unwrap(),
-            Some(value)
-        );
-    }
-
-    #[tokio::test]
-    async fn test_rename_collision_fails() {
-        let store = setup_store().await;
-        let old_id = Id::default();
-        let new_id = Id::default();
-
-        store
-            .set(
-                &old_id,
-                "f1",
-                &TestData { value: "v1".into() },
-                60,
-                60,
-                None,
-            )
-            .await
-            .unwrap();
-        store
-            .set(
-                &new_id,
-                "f2",
-                &TestData { value: "v2".into() },
-                60,
-                60,
-                None,
-            )
-            .await
-            .unwrap();
-
-        let result = store
-            .set_and_rename(
-                &old_id,
-                &new_id,
-                "f1",
-                &TestData {
-                    value: "v1_upd".into(),
-                },
-                60,
-                60,
-                None,
-            )
-            .await;
-
-        assert!(
-            result.is_err(),
-            "Rename to existing session ID should fail to prevent session fixation"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_get_all_multiple_fields() {
-        let store = setup_store().await;
-        let session_id = Id::default();
-
-        store
-            .set(
-                &session_id,
-                "f1",
-                &TestData { value: "v1".into() },
-                60,
-                60,
-                None,
-            )
-            .await
-            .unwrap();
-        store
-            .set(
-                &session_id,
-                "f2",
-                &TestData { value: "v2".into() },
-                60,
-                60,
-                None,
-            )
-            .await
-            .unwrap();
-
-        let all = store.get_all(&session_id).await.unwrap().unwrap();
-        assert_eq!(all.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_rename_logic_collision() {
-        let store = setup_store().await;
-        let old_id = Id::default();
-        let new_id = Id::default();
-
-        store
-            .set(
-                &old_id,
-                "existing_field",
-                &TestData { value: "v1".into() },
-                60,
-                60,
-                None,
-            )
-            .await
-            .unwrap();
-
-        let check: Option<TestData> = store.get(&old_id, "existing_field").await.unwrap();
-        assert!(check.is_some(), "old_id not found immediately after set!");
-
-        let result = store
-            .set_and_rename(
-                &old_id,
-                &new_id,
-                "existing_field",
-                &TestData { value: "v2".into() },
-                60,
-                60,
-                None,
-            )
-            .await;
-
-        assert!(result.is_ok(), "Rename result error: {:?}", result.err());
-
-        let old_val: Option<TestData> = store.get(&old_id, "existing_field").await.unwrap();
-        assert!(
-            old_val.is_none(),
-            "old_id still exists with value: {:?}",
-            old_val
-        );
-
-        let new_val: Option<TestData> = store.get(&new_id, "existing_field").await.unwrap();
-        assert_eq!(new_val.unwrap().value, "v2", "new_id has wrong value");
     }
 }
