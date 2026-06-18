@@ -105,7 +105,6 @@ pub async fn run_basic_crud<S: SessionStore>(store: &S) {
 
     store.delete(&session_id).await.unwrap();
 
-    // Verify completely gone
     let all = store.get_all(&session_id).await.unwrap();
     assert!(all.is_none());
 }
@@ -175,7 +174,6 @@ pub async fn run_rename<S: SessionStore>(store: &S) {
         .await
         .unwrap();
 
-    // Standard Rename
     let renamed = store.rename_session_id(&old_id, &new_id).await.unwrap();
     assert!(renamed);
 

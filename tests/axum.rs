@@ -77,11 +77,9 @@ async fn test_regen_handler(
     let mut new_data = test_data.clone();
     new_data.f2 = "New User".to_string();
 
-    // This update should trigger the rename of the session AND set the new field
     let inserted = session.set("test2", &new_data, None, None).await.unwrap();
     assert!(inserted);
 
-    // Verify id changed and both fields exist on the NEW id
     let current_id = session.id().unwrap();
     assert_eq!(current_id.to_string(), prepared_id.to_string());
     assert_ne!(current_id.to_string(), original_id.to_string());
@@ -152,7 +150,6 @@ async fn test_session_extraction_with_existing_cookie() {
         .await
         .unwrap();
 
-    // Extract ONLY the "test_sess=xxx" portion of the Set-Cookie string for our next request
     let raw_set_cookie = response
         .headers()
         .get(SET_COOKIE)
@@ -223,7 +220,6 @@ async fn test_malformed_session_id() {
         .unwrap();
     let body_str = String::from_utf8(body.to_vec()).unwrap();
 
-    // Option::None serialized to JSON is just "null"
     assert_eq!(body_str, "null");
 }
 
