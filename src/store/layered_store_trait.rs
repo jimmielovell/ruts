@@ -1,5 +1,5 @@
 use crate::Id;
-use crate::store::{Error, SessionMap};
+use crate::store::{Error, SessionMap, Ttl};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::future::Future;
@@ -10,8 +10,8 @@ pub trait LayeredHotStore: Clone + Send + Sync + 'static {
     fn set_multiple(
         &self,
         session_id: &Id,
-        pairs: &[(&str, &[u8], Option<i64>)],
-    ) -> impl Future<Output = Result<i64, Error>> + Send;
+        pairs: &[(&str, &[u8], Ttl)],
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
 /// This trait acts as a private API, allowing the `LayeredStore` to save and
@@ -22,7 +22,7 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
     fn get_all_with_meta(
         &self,
         session_id: &Id,
-    ) -> impl Future<Output = Result<Option<(SessionMap, HashMap<String, Option<i64>>)>, Error>> + Send;
+    ) -> impl Future<Output = Result<Option<(SessionMap, HashMap<String, Ttl>)>, Error>> + Send;
 
     /// Updates a session field along with its specific caching metadata.
     fn set_with_meta<T: Serialize + Send + Sync>(
@@ -30,10 +30,9 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        hot_cache_ttl: Option<i64>,
-    ) -> impl Future<Output = Result<i64, Error>> + Send;
+        field_ttl: Ttl,
+        hot_cache_ttl: Option<Ttl>,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 
     /// Inserts a session field with rename along with its specific caching metadata.
     fn set_and_rename_with_meta<T: Serialize + Send + Sync>(
@@ -42,8 +41,7 @@ pub trait LayeredColdStore: Clone + Send + Sync + 'static {
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        hot_cache_ttl: Option<i64>,
-    ) -> impl Future<Output = Result<i64, Error>> + Send;
+        field_ttl: Ttl,
+        hot_cache_ttl: Option<Ttl>,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 }

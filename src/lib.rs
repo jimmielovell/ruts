@@ -13,7 +13,7 @@
 //! # mod docs {
 //! use axum::{Router, routing::get};
 //! use ruts::{Session, SessionLayer, CookieOptions};
-//! use ruts::store::redis::RedisStore;
+//! use ruts::store::{redis::RedisStore, Ttl};
 //! use fred::clients::Client;
 //! use std::sync::Arc;
 //! use fred::interfaces::ClientLike;
@@ -56,7 +56,7 @@
 //! async fn handler(session: Session<RedisStore<Client>>) -> String {
 //!     let count: Option<i32> = session.get("count").await.unwrap();
 //!     let new_count = count.unwrap_or(0) + 1;
-//!     session.set("count", &new_count, None, None).await.unwrap();
+//!     session.set("count", &new_count, Ttl::new(60).unwrap(), None).await.unwrap();
 //!     format!("You've visited this page {} times", new_count)
 //! }
 //! # }
@@ -69,7 +69,7 @@
 //!
 //! ```rust,no_run
 //! use ruts::Session;
-//! use ruts::store::SessionMap;
+//! use ruts::store::{SessionMap, Ttl};
 //! use ruts::store::moka::MokaStore;
 //!
 //! #[derive(serde::Deserialize)]
@@ -86,11 +86,11 @@
 //! }
 //!
 //! // Update existing data
-//! session.set("key", &"new_value", None, None).await.unwrap();
+//! session.set("key", &"new_value", Ttl::new(60).unwrap(), None).await.unwrap();
 //!
 //! // Prepare a new session ID before an insert/update to prevent session fixation
 //! let new_id = session.prepare_regenerate();
-//! session.set("key", &"value_with_new_id", None, None).await.unwrap();
+//! session.set("key", &"value_with_new_id", Ttl::new(60).unwrap(), None).await.unwrap();
 //!
 //! // Remove a single field
 //! session.remove("key").await.unwrap();
@@ -100,9 +100,6 @@
 //!
 //! // Regenerate session ID for security
 //! session.regenerate().await.unwrap();
-//!
-//! // Update the session's overall expiry time
-//! session.expire(7200).await.unwrap();
 //!
 //! // Get the current session ID
 //! let id = session.id();
@@ -172,7 +169,9 @@
 //!
 //! ## LayeredStore
 //!
-//! **Note**: Requires the `layered-store` feature alongside your chosen combination of hot and cold backend stores (e.g., `redis-store` and `postgres-store`, or `redis-store` and `scylla-store`).
+//! **Note**: Requires the `layered-store` feature alongside your chosen combination of hot
+//! and cold backend stores (e.g., `redis-store` and `postgres-store`, or `redis-store`
+//! and `scylla-store`).
 //!
 //! A composite store that layers a fast, ephemeral "hot" cache (like Redis) on top of a
 //! slower, persistent "cold" store (like Postgres or Scylla). It is designed for scenarios where
@@ -189,6 +188,8 @@
 //! use ruts::store::layered::LayeredStore;
 //! use ruts::Session;
 //!
+//! use ruts::store::Ttl;
+//!
 //! // Define a type alias for your specific layered store setup
 //! type MyLayeredStore = LayeredStore<RedisStore<Client>, PostgresStore>;
 //! type MySession = Session<MyLayeredStore>;
@@ -200,14 +201,14 @@
 //!     let user = User { id: 1 };
 //!
 //!     // This session field is valid for 1 month in the persistent store.
-//!     let long_term_expiry = 60 * 60 * 24 * 30;
+//!     let long_term_expiry = Ttl::new(60 * 60 * 24 * 30).unwrap();
 //!
 //!     // However, we only want it to live in the hot cache (Redis) for 1 hour.
-//!     let short_term_hot_cache_expiry = 60 * 60;
+//!     let short_term_hot_cache_expiry = Ttl::new(60 * 60).unwrap();
 //!
 //!     // The cold store (Postgres) will get the long-term expiry,
 //!     // but the hot store (Redis) will be capped at the shorter TTL.
-//!     session.set("user", &user, None, Some(short_term_hot_cache_expiry)).await.unwrap();
+//!     session.set("user", &user, long_term_expiry, Some(short_term_hot_cache_expiry)).await.unwrap();
 //! }
 //! # }
 //! # fn main() {}
@@ -217,7 +218,8 @@
 //! Ruts supports two serialization backends for session data storage:
 //!
 //! - [`bincode`](https://crates.io/crates/bincode) (default) - Fast, compact binary serialization.
-//! - [`rmp-serde`](https://crates.io/crates/rmp-serde) (MessagePack) - Cross-language compatible serialization.
+//! - [`rmp-serde`](https://crates.io/crates/rmp-serde) (MessagePack) - Cross-language
+//! compatible serialization.
 //!
 //! To use `MessagePack` instead of the default `bincode`, add this to your `Cargo.toml`:
 //!
@@ -307,7 +309,8 @@
 //! - Enable HTTPS in production and set `secure: true` in cookie options.
 //! - Use appropriate `SameSite` cookie settings (e.g., `Strict` or `Lax`).
 //! - Always set a session expiration time (`max_age`).
-//! - Regularly regenerate session IDs using `session.regenerate()` or `session.prepare_regenerate()`,
+//! - Regularly regenerate session IDs using `session.regenerate()` or
+//! `session.prepare_regenerate()`,
 //!   especially after a change in privilege level (like logging in).
 //! - Enable HTTP Only mode (`http_only: true`) to prevent client-side script access to the
 //!   session cookie.

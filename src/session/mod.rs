@@ -7,11 +7,11 @@ mod id;
 pub use id::Id;
 
 use crate::store;
-use crate::store::{SessionMap, SessionStore};
+use crate::store::{SessionMap, SessionStore, Ttl};
 use parking_lot::RwLock;
 use serde::{Serialize, de::DeserializeOwned};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::{result, sync::Arc};
 
 use thiserror::Error;
@@ -78,7 +78,7 @@ where
         }
     }
 
-    //// Retrieves all fields from the session store as a `SessionMap`.
+    /// Retrieves all fields from the session store as a `SessionMap`.
     ///
     /// This method performs one bulk query to the store and returns a wrapper
     /// that allows for lazy, on-demand deserialization of each field.
@@ -101,21 +101,12 @@ where
 
     /// Sets a value in the session store.
     ///
-    /// If the key doesn't exist, it will be inserted.
+    /// If the field doesn't exist, it will be inserted. Requires a strictly
+    /// positive `field_ttl_secs`.
     ///
-    /// - **-1**: Marks this field as persistent. The session key itself will also be persisted,
-    ///   making the associated cookie persistent. This does **not** alter the TTL of other fields
-    ///   in the session.
-    /// - **0**: Removes this field from the store. The session behaves as if `remove` was called
-    ///   on this field.
-    /// - **> 0**: Sets a TTL (in seconds) for this field. The session TTL is updated according to:
-    ///   - If the session key is already persistent, its TTL remains unchanged.
-    ///   - If the field TTL is less than the current session TTL, the session TTL remains unchanged.
-    ///   - If the field TTL is greater than the current session TTL, the session TTL is updated
-    ///     to match the field TTL.
-    ///
-    /// Returns `true` if the field-value pair was successfully inserted or updated, and `false` if
-    /// the operation resulted in deletion (e.g., TTL = 0 for a non-existent session).
+    /// This does **not** change the cookie's `Max-Age`: the cookie lifetime is
+    /// owned by [`CookieOptions::max_age`] and only changed explicitly via
+    /// [`Session::set_expiration`]. A field's TTL is its own concern.
     ///
     /// ## Example
     ///
@@ -123,6 +114,7 @@ where
     /// use ruts::{Session};
     /// use serde::Serialize;
     /// use ruts::store::moka::MokaStore;
+    /// use ruts::store::Ttl;
     ///
     /// #[derive(Serialize)]
     /// struct User {
@@ -133,82 +125,65 @@ where
     /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
     ///     let user = User {id: 21342365, name: String::from("Jane Doe")};
     ///
-    ///     let updated = session.set("app", &user, Some(5), None).await.unwrap();
+    ///     session.set("app", &user, Ttl::new(3600).unwrap(), None).await.unwrap();
     /// }
     /// ```
     #[tracing::instrument(
         name = "session-store: updating field",
-        skip(self, field, value, field_ttl_secs, hot_cache_ttl_secs)
+        skip(self, field, value, field_ttl, hot_cache_ttl)
     )]
     pub async fn set<T>(
         &self,
         field: &str,
         value: &T,
-        field_ttl_secs: Option<i64>,
-        #[cfg(feature = "layered-store")] hot_cache_ttl_secs: Option<i64>,
-        #[cfg(not(feature = "layered-store"))] hot_cache_ttl_secs: Option<
-            std::marker::PhantomData<()>,
-        >,
-    ) -> Result<bool>
+        field_ttl: Ttl,
+        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<Ttl>,
+        #[cfg(not(feature = "layered-store"))] hot_cache_ttl: Option<std::marker::PhantomData<()>>,
+    ) -> Result<()>
     where
         T: Send + Sync + Serialize,
     {
         let current_id = self.inner.get_or_set_id();
         let pending_id = self.inner.take_pending_id();
 
-        let default_session_ttl = self.max_age();
-        let effective_field_ttl = field_ttl_secs.unwrap_or(default_session_ttl);
-
-        let required_session_ttl = if default_session_ttl == -1 || effective_field_ttl == -1 {
-            -1
-        } else {
-            std::cmp::max(default_session_ttl, effective_field_ttl)
-        };
-
-        let max_age = match pending_id {
+        match pending_id {
             Some(new_id) => {
-                let max_age = self.inner
+                self.inner
                     .store
-                    .set_and_rename(&current_id, &new_id, field, value, required_session_ttl, effective_field_ttl, hot_cache_ttl_secs)
+                    .set_and_rename(&current_id, &new_id, field, value, field_ttl, hot_cache_ttl)
                     .await
                     .map_err(|err| {
-                        tracing::error!(err = %err, "failed to update field-value with rename in session store");
+                        tracing::error!(
+                            err = %err,
+                            "failed to update field-value with rename in session store"
+                        );
                         err
                     })?;
 
-                if max_age > -2 {
-                    *self.inner.id.write() = Some(new_id);
-                }
-                max_age
+                *self.inner.id.write() = Some(new_id);
             }
-            None => self
-                .inner
-                .store
-                .set(
-                    &current_id,
-                    field,
-                    value,
-                    required_session_ttl,
-                    effective_field_ttl,
-                    hot_cache_ttl_secs,
-                )
-                .await
-                .map_err(|err| {
-                    tracing::error!(err = %err, "failed to update field in session store");
-                    err
-                })?,
+            None => {
+                self.inner
+                    .store
+                    .set(&current_id, field, value, field_ttl, hot_cache_ttl)
+                    .await
+                    .map_err(|err| {
+                        tracing::error!(err = %err, "failed to update field in session store");
+                        err
+                    })?;
+            }
         };
 
-        if max_age > -2 {
-            self.inner.set_changed();
-            self.set_expiration(max_age);
-        }
-        Ok(max_age > -2)
+        self.inner.set_changed();
+
+        Ok(())
     }
 
     /// Removes a field along with its value from the session store.
     ///
-    /// Returns `true` if the field was successfully removed.
+    /// If this was the last live field, the session ceases to exist at the
+    /// store. The session cookie is reissued (the server remains authoritative;
+    /// a presented id with no live fields is simply treated as a fresh session).
     ///
     /// ## Example
     ///
@@ -217,34 +192,30 @@ where
     /// use ruts::store::moka::MokaStore;
     ///
     /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
-    ///     let removed = session.remove("user").await.unwrap();
+    ///     session.remove("user").await.unwrap();
     /// }
     /// ```
     #[tracing::instrument(name = "session-store: removing field", skip(self, field))]
-    pub async fn remove(&self, field: &str) -> Result<bool> {
+    pub async fn remove(&self, field: &str) -> Result<()> {
         let id = self.id().ok_or_else(|| {
             tracing::error!("session not initialized");
             Error::UnInitialized
         })?;
 
-        let max_age = self.inner.store.remove(&id, field).await.map_err(|err| {
+        self.inner.store.remove(&id, field).await.map_err(|err| {
             tracing::error!(err = %err, "failed to remove field from session store");
             err
         })?;
 
-        if max_age == -2 {
-            self.inner.set_deleted();
-        } else if max_age > -2 {
-            self.inner.set_changed();
-            self.set_expiration(max_age);
-        }
+        self.inner.set_changed();
 
-        Ok(max_age > -2)
+        Ok(())
     }
 
     /// Deletes the entire session from the store.
     ///
-    /// Returns `true` if the session was successfully deleted.
+    /// Returns `true` if the session was successfully deleted. The middleware
+    /// emits a clearing cookie (`Max-Age=0`) on the response.
     ///
     /// ## Example
     ///
@@ -274,42 +245,40 @@ where
         Ok(deleted)
     }
 
-    /// Updates the cookie's max-age and session expiry time in the store.
+    /// Extends the TTL of a specific `field` belonging to the session.
     ///
-    /// - A value of -1 persists the session.
-    /// - A value of 0 immediately expires the session and deletes it.
+    /// Returns `true` if the field existed and was active, `false` if it was
+    /// missing or expired. Requires a strictly positive `ttl_secs`.
     ///
-    /// Returns `true` if the expiry was successfully updated.
+    /// This re-TTLs the named field only; it does not touch other fields and
+    /// does not change the cookie's `Max-Age`. On success the cookie is
+    /// reissued at the configured lifetime.
     ///
     /// ## Example
     ///
     /// ```rust,no_run
     /// use ruts::{Session};
+    /// use ruts::store::Ttl;
     /// use ruts::store::moka::MokaStore;
     ///
     /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
-    ///     session.expire(30).await.unwrap();
+    ///     session.expire_field("user", Ttl::new(3600).unwrap()).await.unwrap();
     /// }
     /// ```
-    #[tracing::instrument(name = "updating session expiry", skip(self, ttl_secs))]
-    pub async fn expire(&self, ttl_secs: i64) -> Result<bool> {
-        if ttl_secs == 0 {
-            return self.delete().await;
-        }
-
+    #[tracing::instrument(name = "updating field expiry", skip(self, ttl))]
+    pub async fn expire_field(&self, field: &str, ttl: Ttl) -> Result<bool> {
         let id = self.id().ok_or_else(|| {
             tracing::error!("session not initialized");
             Error::UnInitialized
         })?;
 
-        self.set_expiration(ttl_secs);
         let expired = self
             .inner
             .store
-            .expire(&id, ttl_secs)
+            .expire_field(&id, field, ttl)
             .await
             .map_err(|err| {
-                tracing::error!(err = %err, "failed to update session expiry");
+                tracing::error!(err = %err, "failed to update field expiry");
                 err
             })?;
 
@@ -320,12 +289,13 @@ where
         Ok(expired)
     }
 
-    /// Updates the cookie max-age.
+    /// Overrides the cookie's `Max-Age` for this request cycle.
     ///
-    /// Any subsequent call to `set` or `regenerate` within this request cycle
-    /// will use this value.
-    pub fn set_expiration(&self, seconds: i64) {
-        self.inner.cookie_max_age.store(seconds, Ordering::Relaxed);
+    /// The response cookie built by the middleware will use this value instead
+    /// of [`CookieOptions::max_age`]. This is the only way a field operation's
+    /// caller influences cookie lifetime — it is never derived implicitly.
+    pub fn set_expiration(&self, seconds: u64) {
+        *self.inner.cookie_max_age.write() = Some(seconds);
     }
 
     /// Regenerates the session with a new ID.
@@ -343,7 +313,7 @@ where
     /// }
     /// ```
     ///
-    /// **Note**: This does not renew the session expiry.
+    /// **Note**: This does not renew any field's expiry.
     #[tracing::instrument(name = "regenerating session id", skip(self))]
     pub async fn regenerate(&self) -> Result<Option<Id>> {
         let old_id = self.id().ok_or_else(|| {
@@ -372,19 +342,20 @@ where
     }
 
     /// Prepares a new session ID to be used in the next store operation.
-    /// The new ID will be used to rename the current session (if it exists) when the next
-    /// set operation is performed.
+    /// The new ID will be used to rename the current session (if it exists) when
+    /// the next set operation is performed.
     ///
     /// ## Example
     ///
     /// ```rust,no_run
     /// use ruts::Session;
+    /// use ruts::store::Ttl;
     /// use ruts::store::moka::MokaStore;
     ///
     /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
     ///     let new_id = session.prepare_regenerate();
     ///     // The next set operation will use this new ID
-    ///     session.set("field", &"value", None, None).await.unwrap();
+    ///     session.set("field", &"value", Ttl::new(3600).unwrap(), None).await.unwrap();
     /// }
     /// ```
     pub fn prepare_regenerate(&self) -> Id {
@@ -401,10 +372,6 @@ where
     pub fn id(&self) -> Option<Id> {
         self.inner.get_id()
     }
-
-    fn max_age(&self) -> i64 {
-        self.inner.cookie_max_age.load(Ordering::Relaxed)
-    }
 }
 
 const SESSION_STATE_CHANGED: u8 = 1;
@@ -417,7 +384,8 @@ pub(crate) struct Inner<T: SessionStore> {
     pub(crate) state: AtomicU8,
     pub(crate) id: RwLock<Option<Id>>,
     pub(crate) pending_id: RwLock<Option<Id>>,
-    pub(crate) cookie_max_age: AtomicI64,
+    /// Cookie `Max-Age`: `Some(seconds)` persistent, `None` session cookie.
+    pub(crate) cookie_max_age: RwLock<Option<u64>>,
     pub(crate) cookie_name: Option<&'static str>,
     pub(crate) cookies: OnceLock<Cookies>,
     pub(crate) store: Arc<T>,
@@ -426,17 +394,17 @@ pub(crate) struct Inner<T: SessionStore> {
 }
 
 impl<T: SessionStore> Inner<T> {
-    pub fn new(
+    pub(crate) fn new(
         store: Arc<T>,
         cookie_name: Option<&'static str>,
-        cookie_max_age: Option<i64>,
+        cookie_max_age: Option<u64>,
         #[cfg(feature = "signed")] signing_key: Option<Arc<Key>>,
     ) -> Self {
         Self {
             state: AtomicU8::new(0),
             id: RwLock::new(None),
             pending_id: RwLock::new(None),
-            cookie_max_age: AtomicI64::new(cookie_max_age.unwrap_or(-1)),
+            cookie_max_age: RwLock::new(cookie_max_age),
             cookie_name,
             cookies: OnceLock::new(),
             store,
@@ -445,47 +413,47 @@ impl<T: SessionStore> Inner<T> {
         }
     }
 
-    pub fn is_changed(&self) -> bool {
+    pub(crate) fn is_changed(&self) -> bool {
         self.state.load(Ordering::Relaxed) == SESSION_STATE_CHANGED
     }
 
-    pub fn is_deleted(&self) -> bool {
+    pub(crate) fn is_deleted(&self) -> bool {
         self.state.load(Ordering::Relaxed) == SESSION_STATE_DELETED
     }
 
-    pub fn get_id(&self) -> Option<Id> {
+    pub(crate) fn get_id(&self) -> Option<Id> {
         *self.id.read()
     }
 
-    pub fn get_or_set_id(&self) -> Id {
+    pub(crate) fn get_or_set_id(&self) -> Id {
         *self.id.write().get_or_insert(Id::default())
     }
 
-    pub fn set_id(&self, id: Option<Id>) {
+    pub(crate) fn set_id(&self, id: Option<Id>) {
         *self.id.write() = id;
     }
 
-    pub fn set_pending_id(&self, id: Option<Id>) {
+    pub(crate) fn set_pending_id(&self, id: Option<Id>) {
         *self.pending_id.write() = id;
     }
 
-    pub fn take_pending_id(&self) -> Option<Id> {
+    pub(crate) fn take_pending_id(&self) -> Option<Id> {
         self.pending_id.write().take()
     }
 
-    pub fn set_changed(&self) {
+    pub(crate) fn set_changed(&self) {
         self.state.store(SESSION_STATE_CHANGED, Ordering::Relaxed);
     }
 
-    pub fn set_deleted(&self) {
+    pub(crate) fn set_deleted(&self) {
         self.state.store(SESSION_STATE_DELETED, Ordering::Relaxed);
     }
 
-    pub fn get_cookies(&self) -> Option<&Cookies> {
+    pub(crate) fn get_cookies(&self) -> Option<&Cookies> {
         self.cookies.get()
     }
 
-    pub fn set_cookies_if_empty(&self, cookies: Cookies) -> bool {
+    pub(crate) fn set_cookies_if_empty(&self, cookies: Cookies) -> bool {
         self.cookies.set(cookies).is_ok()
     }
 }

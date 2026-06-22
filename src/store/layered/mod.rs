@@ -1,11 +1,11 @@
 use crate::Id;
-use crate::store::{Error, LayeredColdStore, LayeredHotStore, SessionMap, SessionStore};
+use crate::store::{Error, LayeredColdStore, LayeredHotStore, SessionMap, SessionStore, Ttl};
 use serde::{Serialize, de::DeserializeOwned};
 
 /// [`LayeredStore`], a composite store that layers a fast,
 /// ephemeral "hot" cache (like Redis) on top of a slower, persistent "cold"
 /// store (like Postgres or Scylla). It is designed for scenarios where sessions can have
-/// long lifespans but should only occupy expensive cache moka when actively
+/// long lifespans but should only occupy expensive cache when actively
 /// being used thus balancing performance and durability.
 ///
 /// ## Example
@@ -17,20 +17,21 @@ use serde::{Serialize, de::DeserializeOwned};
 /// # use ruts::store::redis::RedisStore;
 /// # use ruts::store::postgres::PostgresStore;
 /// # use ruts::store::layered::LayeredStore;
+/// # use ruts::store::Ttl;
 /// # type MySession = Session<LayeredStore<RedisStore, PostgresStore>>;
 /// # #[derive(serde::Serialize)]
 /// # struct User { id: i32 }
 /// # async fn handler(session: MySession) {
 /// # let user = User { id: 1 };
 ///
-/// let long_term_expiry = 60  * 60 * 24 * 30; // valid for 1 month
+/// let long_term_expiry = Ttl::new(60 * 60 * 24 * 30).unwrap(); // valid for 1 month
 ///
 /// // However, we only want it to live in the hot cache (Redis) for 1 hour.
-/// let short_term_hot_cache_expiry = 60 * 60;
+/// let short_term_hot_cache_expiry = Ttl::new(60 * 60).unwrap();
 ///
 /// // The cold store (Postgres) will get the long-term expiry,
 /// // but the hot store (Redis) will be capped at the shorter TTL.
-/// session.set("user", &user, Some(long_term_expiry), Some(short_term_hot_cache_expiry))
+/// session.set("user", &user, long_term_expiry, Some(short_term_hot_cache_expiry))
 ///     .await
 ///     .unwrap();
 /// # }
@@ -76,15 +77,11 @@ where
             Some(value) => Ok(Some(value)),
             None => match self.cold.get_all_with_meta(session_id).await? {
                 Some((session_map, hot_cache_ttl_map)) => {
-                    let pairs_to_cache: Vec<(&str, &[u8], Option<i64>)> = session_map
+                    let pairs_to_cache: Vec<(&str, &[u8], Ttl)> = session_map
                         .iter()
-                        .filter_map(|(key, value)| {
+                        .map(|(key, value)| {
                             let hot_cache_ttl = hot_cache_ttl_map.get(key).unwrap().to_owned();
-                            if hot_cache_ttl != Some(0) {
-                                Some((key.as_str(), value.as_slice(), hot_cache_ttl))
-                            } else {
-                                None
-                            }
+                            (key.as_str(), value.as_slice(), hot_cache_ttl)
                         })
                         .collect();
 
@@ -102,15 +99,11 @@ where
     async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error> {
         match self.cold.get_all_with_meta(session_id).await? {
             Some((session_map, hot_cache_ttl_map)) => {
-                let pairs_to_cache: Vec<(&str, &[u8], Option<i64>)> = session_map
+                let pairs_to_cache: Vec<(&str, &[u8], Ttl)> = session_map
                     .iter()
-                    .filter_map(|(key, value)| {
+                    .map(|(key, value)| {
                         let hot_cache_ttl = hot_cache_ttl_map.get(key).unwrap().to_owned();
-                        if hot_cache_ttl != Some(0) {
-                            Some((key.as_str(), value.as_slice(), hot_cache_ttl))
-                        } else {
-                            None
-                        }
+                        (key.as_str(), value.as_slice(), hot_cache_ttl)
                     })
                     .collect();
 
@@ -129,28 +122,23 @@ where
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        hot_cache_ttl_secs: Option<i64>,
-    ) -> Result<i64, Error>
+        field_ttl: Ttl,
+        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<Ttl>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
+    ) -> Result<(), Error>
     where
         T: Send + Sync + Serialize,
     {
-        let hot_cache_ttl = hot_cache_ttl_secs.unwrap_or(field_ttl_secs);
-        let (_, cold_ttl) = tokio::try_join!(
+        let hot_cache_ttl = hot_cache_ttl.unwrap_or(field_ttl);
+
+        tokio::try_join!(
             self.hot
-                .set(session_id, field, value, hot_cache_ttl, hot_cache_ttl, None),
-            self.cold.set_with_meta(
-                session_id,
-                field,
-                value,
-                key_ttl_secs,
-                field_ttl_secs,
-                Some(hot_cache_ttl)
-            ),
+                .set(session_id, field, value, hot_cache_ttl, Some(hot_cache_ttl)),
+            self.cold
+                .set_with_meta(session_id, field, value, field_ttl, Some(hot_cache_ttl)),
         )?;
 
-        Ok(cold_ttl)
+        Ok(())
     }
 
     async fn set_and_rename<T>(
@@ -159,36 +147,34 @@ where
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        hot_cache_ttl_secs: Option<i64>,
-    ) -> Result<i64, Error>
+        field_ttl: Ttl,
+        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<Ttl>,
+        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
+    ) -> Result<(), Error>
     where
         T: Send + Sync + Serialize,
     {
-        let hot_cache_ttl = hot_cache_ttl_secs.unwrap_or(field_ttl_secs);
-        let (_, cold_ttl) = tokio::try_join!(
+        let hot_cache_ttl = hot_cache_ttl.unwrap_or(field_ttl);
+        tokio::try_join!(
             self.hot.set_and_rename(
                 old_session_id,
                 new_session_id,
                 field,
                 value,
                 hot_cache_ttl,
-                hot_cache_ttl,
-                None
+                Some(hot_cache_ttl)
             ),
             self.cold.set_and_rename_with_meta(
                 old_session_id,
                 new_session_id,
                 field,
                 value,
-                key_ttl_secs,
-                field_ttl_secs,
+                field_ttl,
                 Some(hot_cache_ttl)
             ),
         )?;
 
-        Ok(cold_ttl)
+        Ok(())
     }
 
     async fn rename_session_id(
@@ -203,251 +189,28 @@ where
         Ok(hot_result && cold_result)
     }
 
-    async fn remove(&self, session_id: &Id, field: &str) -> Result<i64, Error> {
-        let (_, cold_ttl) = tokio::try_join!(
+    async fn remove(&self, session_id: &Id, field: &str) -> Result<(), Error> {
+        tokio::try_join!(
             self.hot.remove(session_id, field),
             self.cold.remove(session_id, field),
         )?;
 
-        Ok(cold_ttl)
+        Ok(())
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
         let (hot_deleted, cold_deleted) =
             tokio::try_join!(self.hot.delete(session_id), self.cold.delete(session_id),)?;
-        Ok(hot_deleted && cold_deleted)
+
+        Ok(hot_deleted || cold_deleted)
     }
 
-    async fn expire(&self, session_id: &Id, seconds: i64) -> Result<bool, Error> {
+    async fn expire_field(&self, session_id: &Id, field: &str, ttl: Ttl) -> Result<bool, Error> {
         let (hot_expired, cold_expired) = tokio::try_join!(
-            self.hot.expire(session_id, seconds),
-            self.cold.expire(session_id, seconds),
+            self.hot.expire_field(session_id, field, ttl),
+            self.cold.expire_field(session_id, field, ttl),
         )?;
-        Ok(hot_expired && cold_expired)
-    }
-}
 
-#[cfg(test)]
-mod tests {
-
-    #[cfg(all(feature = "redis-store", feature = "postgres-store"))]
-    mod postgres_tests {
-        use crate::Id;
-        use crate::store::SessionStore;
-        use crate::store::layered::LayeredStore;
-        use crate::store::postgres::{PostgresStore, PostgresStoreBuilder};
-        use crate::store::redis::RedisStore;
-        use fred::{clients::Client, interfaces::*};
-        use serde::{Deserialize, Serialize};
-        use sqlx::PgPool;
-        use std::{sync::Arc, time::Duration};
-
-        #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-        struct TestUser {
-            pub id: i64,
-            pub name: String,
-        }
-
-        fn create_test_user() -> TestUser {
-            TestUser {
-                id: 1,
-                name: "Test User".to_string(),
-            }
-        }
-
-        async fn setup_store() -> LayeredStore<RedisStore<Client>, PostgresStore> {
-            let database_url =
-                std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for tests");
-            let pool = PgPool::connect(&database_url).await.unwrap();
-
-            sqlx::query("drop table if exists t_sessions cascade")
-                .execute(&pool)
-                .await
-                .unwrap();
-            sqlx::query("drop table if exists t_sessions_kv cascade")
-                .execute(&pool)
-                .await
-                .unwrap();
-
-            let cold_store = PostgresStoreBuilder::new(pool.clone())
-                .create_table(true)
-                .build()
-                .await
-                .unwrap();
-
-            let client = Client::default();
-            client.init().await.unwrap();
-            let hot_store = RedisStore::new(Arc::new(client.clone())).await.unwrap();
-
-            LayeredStore::new(hot_store, cold_store)
-        }
-
-        #[tokio::test]
-        async fn test_layered_cache() {
-            let store = setup_store().await;
-            let session_id = Id::default();
-            let test_user = create_test_user();
-
-            store
-                .set(&session_id, "user", &test_user, 3600, 3600, Some(1))
-                .await
-                .unwrap();
-
-            // Immediately get the value. This should be a cache HIT.
-            let user_from_hit: TestUser = store
-                .get(&session_id, "user")
-                .await
-                .unwrap()
-                .expect("Should get value from hot cache");
-            assert_eq!(user_from_hit, test_user);
-
-            // Wait for the hot cache entry to expire.
-            tokio::time::sleep(Duration::from_secs(2)).await;
-
-            // Get the value again. This should be a cache MISS, which triggers a
-            // read from the cold store and automatically warms the cache.
-            let user_from_miss: TestUser = store
-                .get(&session_id, "user")
-                .await
-                .unwrap()
-                .expect("Should fetch from cold store after cache expiry");
-            assert_eq!(user_from_miss, test_user);
-        }
-
-        #[tokio::test]
-        async fn test_layered_delete() {
-            let store = setup_store().await;
-            let session_id = Id::default();
-            let test_user = create_test_user();
-
-            store
-                .set(&session_id, "user", &test_user, 3600, 3600, None)
-                .await
-                .unwrap();
-            assert!(
-                store
-                    .get::<TestUser>(&session_id, "user")
-                    .await
-                    .unwrap()
-                    .is_some()
-            );
-
-            store.delete(&session_id).await.unwrap();
-
-            assert!(
-                store
-                    .get::<TestUser>(&session_id, "user")
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
-        }
-    }
-
-    #[cfg(all(feature = "redis-store", feature = "scylla-store"))]
-    mod scylla_tests {
-        use crate::Id;
-        use crate::store::SessionStore;
-        use crate::store::layered::LayeredStore;
-        use crate::store::redis::RedisStore;
-        use crate::store::scylla::{ScyllaStore, ScyllaStoreBuilder};
-        use fred::{clients::Client, interfaces::*};
-        use scylla::client::session_builder::SessionBuilder;
-        use serde::{Deserialize, Serialize};
-        use std::{sync::Arc, time::Duration};
-
-        #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-        struct TestUser {
-            pub id: i64,
-            pub name: String,
-        }
-
-        fn create_test_user() -> TestUser {
-            TestUser {
-                id: 1,
-                name: "Test User".to_string(),
-            }
-        }
-
-        async fn setup_store() -> LayeredStore<RedisStore<Client>, ScyllaStore> {
-            let uri = std::env::var("SCYLLA_URI").unwrap_or_else(|_| "127.0.0.1:9042".to_string());
-            let session = SessionBuilder::new().known_node(uri).build().await.unwrap();
-            let session = Arc::new(session);
-
-            let cold_store = ScyllaStoreBuilder::new(session.clone())
-                .keyspace_name("ruts_layered_test")
-                .unwrap()
-                .create_table(true)
-                .build()
-                .await
-                .unwrap();
-
-            let _ = session
-                .query_unpaged("truncate table ruts_layered_test.t_sessions", &[])
-                .await;
-
-            let client = Client::default();
-            client.init().await.unwrap();
-            let hot_store = RedisStore::new(Arc::new(client.clone())).await.unwrap();
-
-            LayeredStore::new(hot_store, cold_store)
-        }
-
-        #[tokio::test]
-        async fn test_layered_cache() {
-            let store = setup_store().await;
-            let session_id = Id::default();
-            let test_user = create_test_user();
-
-            store
-                .set(&session_id, "user", &test_user, 3600, 3600, Some(1))
-                .await
-                .unwrap();
-
-            let user_from_hit: TestUser = store
-                .get(&session_id, "user")
-                .await
-                .unwrap()
-                .expect("Should get value from hot cache");
-            assert_eq!(user_from_hit, test_user);
-
-            tokio::time::sleep(Duration::from_secs(2)).await;
-
-            let user_from_miss: TestUser = store
-                .get(&session_id, "user")
-                .await
-                .unwrap()
-                .expect("Should fetch from cold store after cache expiry");
-            assert_eq!(user_from_miss, test_user);
-        }
-
-        #[tokio::test]
-        async fn test_layered_delete() {
-            let store = setup_store().await;
-            let session_id = Id::default();
-            let test_user = create_test_user();
-
-            store
-                .set(&session_id, "user", &test_user, 3600, 3600, None)
-                .await
-                .unwrap();
-            assert!(
-                store
-                    .get::<TestUser>(&session_id, "user")
-                    .await
-                    .unwrap()
-                    .is_some()
-            );
-
-            store.delete(&session_id).await.unwrap();
-
-            assert!(
-                store
-                    .get::<TestUser>(&session_id, "user")
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
-        }
+        Ok(hot_expired || cold_expired)
     }
 }

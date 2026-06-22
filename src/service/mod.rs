@@ -11,7 +11,6 @@ use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::task::{Context, Poll, ready};
 use tower::{Layer, Service};
 use tower_cookies::{Cookie, Cookies};
@@ -58,7 +57,7 @@ where
 
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
         let cookie_name = self.cookie_options.as_ref().map(|o| o.name);
-        let cookie_max_age = self.cookie_options.as_ref().map(|o| o.max_age);
+        let cookie_max_age = self.cookie_options.as_ref().and_then(|o| o.max_age);
 
         #[cfg(feature = "signed")]
         let inner_session = {
@@ -103,7 +102,7 @@ where
 ///         .http_only(true)
 ///         .same_site(cookie::SameSite::Lax)
 ///         .secure(true)
-///         .max_age(1 * 60)
+///         .max_age(60)
 ///         .path("/");
 /// let store = MokaStoreBuilder::new().build();
 /// let session_layer = SessionLayer::new(Arc::new(store))
@@ -177,8 +176,14 @@ where
                 this.cookie_options.as_ref(),
                 this.inner_session.get_cookies(),
             ) {
-                let cookie = Cookie::build(cookie_options.name);
-                cookies.remove(cookie.build());
+                let mut removal = Cookie::build(cookie_options.name);
+                if let Some(path) = cookie_options.path {
+                    removal = removal.path(path);
+                }
+                if let Some(domain) = cookie_options.domain {
+                    removal = removal.domain(domain);
+                }
+                cookies.remove(removal.build());
             }
         } else if this.inner_session.is_changed() {
             if let (Some(cookie_options), Some(cookies)) = (
@@ -189,7 +194,7 @@ where
                     build_cookie(
                         id,
                         cookie_options,
-                        this.inner_session.cookie_max_age.load(Ordering::Relaxed),
+                        *this.inner_session.cookie_max_age.read(),
                         cookies,
                     );
                 }
@@ -200,24 +205,29 @@ where
     }
 }
 
-fn build_cookie(id: &Id, cookie_options: &CookieOptions, cookie_max_age: i64, cookies: &Cookies) {
-    let cookie_builder = Cookie::build((cookie_options.name, id.to_string()))
+fn build_cookie(
+    id: &Id,
+    cookie_options: &CookieOptions,
+    cookie_max_age: Option<u64>,
+    cookies: &Cookies,
+) {
+    let mut cookie_builder = Cookie::build((cookie_options.name, id.to_string()))
         .secure(cookie_options.secure)
         .http_only(cookie_options.http_only)
-        .same_site(cookie_options.same_site)
-        .max_age(Duration::seconds(cookie_max_age));
+        .same_site(cookie_options.same_site);
 
-    let cookie_builder = if let Some(domain) = cookie_options.domain {
-        cookie_builder.domain(domain)
-    } else {
-        cookie_builder
-    };
+    if let Some(seconds) = cookie_max_age {
+        let seconds = seconds.min(i64::MAX as u64) as i64;
+        cookie_builder = cookie_builder.max_age(Duration::seconds(seconds));
+    }
 
-    let cookie_builder = if let Some(path) = cookie_options.path {
-        cookie_builder.path(path)
-    } else {
-        cookie_builder
-    };
+    if let Some(domain) = cookie_options.domain {
+        cookie_builder = cookie_builder.domain(domain);
+    }
+
+    if let Some(path) = cookie_options.path {
+        cookie_builder = cookie_builder.path(path);
+    }
 
     #[cfg(feature = "signed")]
     if let Some(key) = &cookie_options.signing_key {

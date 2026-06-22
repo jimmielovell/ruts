@@ -1,12 +1,17 @@
 use crate::Id;
-use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize_value};
+use crate::store::{Error, SessionMap, SessionStore, Ttl, deserialize_value, serialize_value};
 use futures::stream::StreamExt;
 use scylla::client::session::Session as ScyllaSession;
-use scylla::statement::Consistency;
 use scylla::statement::prepared::PreparedStatement;
+use scylla::statement::{Consistency, SerialConsistency};
+use scylla::value::{CqlValue, Row};
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+fn backend_error<E: std::fmt::Display>(e: E) -> Error {
+    Error::Backend(e.to_string())
+}
 
 #[derive(Debug, Clone)]
 enum ReplicationStrategy {
@@ -68,14 +73,11 @@ impl ScyllaStoreBuilder {
         Ok(self)
     }
 
-    /// Configures the keyspace to use SimpleStrategy with the specified replication factor.
     pub fn simple_strategy(mut self, replication_factor: u8) -> Self {
         self.replication_strategy = ReplicationStrategy::Simple(replication_factor);
         self
     }
 
-    /// Configures the keyspace to use NetworkTopologyStrategy.
-    /// Can be chained multiple times to add multiple datacenters.
     pub fn network_topology_strategy(
         mut self,
         datacenter: impl Into<String>,
@@ -97,141 +99,101 @@ impl ScyllaStoreBuilder {
     }
 
     pub async fn build(self) -> Result<ScyllaStore, Error> {
-        let full_table_name = format!("{}.{}", self.keyspace_name, self.table_name);
+        let kv = format!("{}.{}", self.keyspace_name, self.table_name);
 
         if self.create_table {
-            let ks_query = format!(
-                "create keyspace if not exists {} with replication = {}",
-                self.keyspace_name,
-                self.replication_strategy.as_cql()
-            );
             self.session
-                .query_unpaged(ks_query, &[])
+                .query_unpaged(
+                    format!(
+                        "create keyspace if not exists {} with replication = {}",
+                        self.keyspace_name,
+                        self.replication_strategy.as_cql()
+                    ),
+                    (),
+                )
                 .await
-                .map_err(|err| Error::Backend(err.to_string()))?;
+                .map_err(backend_error)?;
 
-            let table_query = format!(
-                r#"
-                create table if not exists {} (
-                    session_id text,
-                    field text,
-                    value blob,
-                    hot_cache_ttl bigint,
-                    primary key (session_id, field)
-                ) with compaction = {{
-                    'class': 'TimeWindowCompactionStrategy',
-                    'compaction_window_unit': 'HOURS',
-                    'compaction_window_size': 1
-                }}
-                "#,
-                full_table_name
-            );
             self.session
-                .query_unpaged(table_query, &[])
+                .query_unpaged(
+                    format!(
+                        "create table if not exists {kv} (
+                            session_id text,
+                            field text,
+                            value blob,
+                            hot_cache_ttl bigint,
+                            primary key (session_id, field)
+                        ) with compaction = {{'class': 'LeveledCompactionStrategy'}}"
+                    ),
+                    (),
+                )
                 .await
-                .map_err(|err| Error::Backend(err.to_string()))?;
+                .map_err(backend_error)?;
         }
 
-        let mut get_ttl_stmt = self
-            .session
-            .prepare(format!(
-                "select ttl(value) from {} where session_id = ?",
-                full_table_name
-            ))
-            .await
-            .map_err(|err| Error::Backend(err.to_string()))?;
-        get_ttl_stmt.set_consistency(Consistency::LocalQuorum);
+        let session = self.session.clone();
+        let prepare_stmt = |cql: String, serial: bool| {
+            let session = session.clone();
+            async move {
+                let mut st = session.prepare(cql).await.map_err(backend_error)?;
+                st.set_consistency(Consistency::LocalQuorum);
+                if serial {
+                    st.set_serial_consistency(Some(SerialConsistency::LocalSerial));
+                }
+                Ok::<_, Error>(st)
+            }
+        };
 
-        let mut insert_no_ttl_stmt = self
-            .session
-            .prepare(format!(
-                "insert into {} (session_id, field, value, hot_cache_ttl) values (?, ?, ?, ?)",
-                full_table_name
-            ))
-            .await
-            .map_err(|err| Error::Backend(err.to_string()))?;
-        insert_no_ttl_stmt.set_consistency(Consistency::LocalQuorum);
-
-        let mut insert_with_ttl_stmt = self
-            .session
-            .prepare(format!(
-                r#"
-                insert into {} (session_id, field, value, hot_cache_ttl)
-                values (?, ?, ?, ?)
-                using ttl ?
-                "#,
-                full_table_name
-            ))
-            .await
-            .map_err(|err| Error::Backend(err.to_string()))?;
-        insert_with_ttl_stmt.set_consistency(Consistency::LocalQuorum);
-
-        let mut get_stmt = self
-            .session
-            .prepare(format!(
-                "select value from {} where session_id = ? and field = ?",
-                full_table_name
-            ))
-            .await
-            .map_err(|err| Error::Backend(err.to_string()))?;
-        get_stmt.set_consistency(Consistency::LocalQuorum);
-
-        let mut get_all_stmt = self
-            .session
-            .prepare(format!(
-                "select field, value from {} where session_id = ?",
-                full_table_name
-            ))
-            .await
-            .map_err(|err| Error::Backend(err.to_string()))?;
-        get_all_stmt.set_consistency(Consistency::LocalQuorum);
-
-        let mut get_all_meta_stmt = self
-            .session
-            .prepare(format!(
-                r#"
-                select field, value, hot_cache_ttl, ttl(value)
-                from {}
-                where session_id = ?
-                "#,
-                full_table_name
-            ))
-            .await
-            .map_err(|err| Error::Backend(err.to_string()))?;
-        get_all_meta_stmt.set_consistency(Consistency::LocalQuorum);
-
-        let mut remove_stmt = self
-            .session
-            .prepare(format!(
-                "delete from {} where session_id = ? and field = ?",
-                full_table_name
-            ))
-            .await
-            .map_err(|err| Error::Backend(err.to_string()))?;
-        remove_stmt.set_consistency(Consistency::LocalQuorum);
-
-        let mut delete_stmt = self
-            .session
-            .prepare(format!(
-                "delete from {} where session_id = ?",
-                full_table_name
-            ))
-            .await
-            .map_err(|err| Error::Backend(err.to_string()))?;
-        delete_stmt.set_consistency(Consistency::LocalQuorum);
-
-        Ok(ScyllaStore {
+        let store = ScyllaStore {
             session: self.session,
-            table_name: full_table_name,
-            get_ttl_stmt,
-            insert_no_ttl_stmt,
-            insert_with_ttl_stmt,
-            get_stmt,
-            get_all_stmt,
-            get_all_meta_stmt,
-            remove_stmt,
-            delete_stmt,
-        })
+            get_stmt: prepare_stmt(
+                format!("select value from {kv} where session_id = ? and field = ?"),
+                false,
+            )
+                .await?,
+            get_all_stmt: prepare_stmt(
+                format!("select field, value from {kv} where session_id = ?"),
+                false,
+            )
+                .await?,
+            get_all_meta_stmt: prepare_stmt(
+                format!("select field, value, hot_cache_ttl, ttl(value) from {kv} where session_id = ?"),
+                false,
+            )
+                .await?,
+            get_field_meta_stmt: prepare_stmt(
+                format!("select value, hot_cache_ttl from {kv} where session_id = ? and field = ?"),
+                false,
+            )
+                .await?,
+            exists_stmt: prepare_stmt(
+                format!("select field from {kv} where session_id = ? limit 1"),
+                false,
+            )
+                .await?,
+            insert_with_ttl_stmt: prepare_stmt(
+                format!("insert into {kv} (session_id, field, value, hot_cache_ttl) values (?, ?, ?, ?) using ttl ?"),
+                false,
+            )
+                .await?,
+            expire_field_stmt: prepare_stmt(
+                format!("update {kv} using ttl ? set value = ?, hot_cache_ttl = ? where session_id = ? and field = ? if exists"),
+                true,
+            )
+                .await?,
+            remove_stmt: prepare_stmt(
+                format!("delete from {kv} where session_id = ? and field = ?"),
+                false,
+            )
+                .await?,
+            del_partition_stmt: prepare_stmt(
+                format!("delete from {kv} where session_id = ?"),
+                false,
+            )
+                .await?,
+        };
+
+        Ok(store)
     }
 }
 
@@ -256,50 +218,114 @@ fn validate_identifier(name: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// A ScyllaDB-backed session store.
+///
+/// One table, one row per field, each row carrying its own native TTL. A
+/// session exists exactly as long as it has at least one live field row; there
+/// is no session-level marker or lifetime. Reads hit the single table and rely
+/// on Scylla to reap expired rows. TTLs are always finite and positive; a field
+/// is removed only via [`remove`](ScyllaStore::remove).
 #[derive(Clone)]
 pub struct ScyllaStore {
     session: Arc<ScyllaSession>,
-    table_name: String,
-    get_ttl_stmt: PreparedStatement,
-    insert_no_ttl_stmt: PreparedStatement,
-    insert_with_ttl_stmt: PreparedStatement,
     get_stmt: PreparedStatement,
     get_all_stmt: PreparedStatement,
     get_all_meta_stmt: PreparedStatement,
+    get_field_meta_stmt: PreparedStatement,
+    exists_stmt: PreparedStatement,
+    insert_with_ttl_stmt: PreparedStatement,
+    expire_field_stmt: PreparedStatement,
     remove_stmt: PreparedStatement,
-    delete_stmt: PreparedStatement,
+    del_partition_stmt: PreparedStatement,
 }
 
 impl ScyllaStore {
-    async fn get_session_ttl(&self, session_id: &Id) -> Result<i64, Error> {
-        let mut rows_stream = self
+    /// Reads the `[applied]` flag of a lightweight transaction.
+    fn lwt_applied(qr: scylla::response::query_result::QueryResult) -> Result<bool, Error> {
+        let row = qr
+            .into_rows_result()
+            .map_err(backend_error)?
+            .first_row::<Row>()
+            .map_err(backend_error)?;
+        match row.columns.first() {
+            Some(Some(CqlValue::Boolean(applied))) => Ok(*applied),
+            _ => Ok(false),
+        }
+    }
+
+    /// Best-effort existence check on a session (one row is enough). Used as the
+    /// rename collision guard and to report `delete`'s affected flag; it is
+    /// inherently TOCTOU and not a substitute for an atomic guarantee.
+    async fn session_exists(&self, sid: &str) -> Result<bool, Error> {
+        let mut stream = self
             .session
-            .execute_iter(self.get_ttl_stmt.clone(), (session_id.as_str(),))
+            .execute_iter(self.exists_stmt.clone(), (sid,))
             .await
-            .map_err(|err| Error::Backend(err.to_string()))?
-            .rows_stream::<(Option<i32>,)>()
-            .map_err(|err| Error::Backend(err.to_string()))?;
+            .map_err(backend_error)?
+            .rows_stream::<(String,)>()
+            .map_err(backend_error)?;
+        Ok(stream
+            .next()
+            .await
+            .transpose()
+            .map_err(backend_error)?
+            .is_some())
+    }
 
-        let mut max_ttl: i64 = -2;
-        let mut has_rows = false;
-        let mut has_persistent = false;
+    /// Copies every field of `old` onto `new` (preserving remaining TTLs) and
+    /// deletes `old`. Returns `false` if `old` has no live fields. Returns
+    /// `Err` if `new` already exists (session-fixation guard, best-effort).
+    /// The copy/delete is not atomic across partitions.
+    async fn rename_inner(&self, old: &Id, new: &Id) -> Result<bool, Error> {
+        if old == new {
+            return self.session_exists(new.as_str()).await;
+        }
+        let old_sid = old.as_str();
+        let new_sid = new.as_str();
 
-        while let Some(next_row_res) = rows_stream.next().await {
-            has_rows = true;
-            let (ttl,) = next_row_res.map_err(|err| Error::Backend(err.to_string()))?;
-            match ttl {
-                Some(ttl) => max_ttl = max_ttl.max(ttl as i64),
-                None => has_persistent = true,
-            }
+        let rows = self.read_all_meta(old_sid).await?;
+        if rows.is_empty() {
+            return Ok(false);
         }
 
-        if !has_rows {
-            Ok(-2)
-        } else if has_persistent {
-            Ok(-1)
-        } else {
-            Ok(max_ttl)
+        if self.session_exists(new_sid).await? {
+            return Ok(false);
         }
+
+        let copies = rows.into_iter().map(|(field, value, hot, ttl)| async move {
+            self.session
+                .execute_unpaged(
+                    &self.insert_with_ttl_stmt,
+                    (new_sid, field, value, hot, ttl),
+                )
+                .await
+                .map_err(backend_error)
+        });
+        futures::future::try_join_all(copies).await?;
+
+        self.session
+            .execute_unpaged(&self.del_partition_stmt, (old_sid,))
+            .await
+            .map_err(backend_error)?;
+        Ok(true)
+    }
+
+    async fn read_all_meta(
+        &self,
+        sid: &str,
+    ) -> Result<Vec<(String, Vec<u8>, Option<i64>, i32)>, Error> {
+        let mut stream = self
+            .session
+            .execute_iter(self.get_all_meta_stmt.clone(), (sid,))
+            .await
+            .map_err(backend_error)?
+            .rows_stream::<(String, Vec<u8>, Option<i64>, i32)>()
+            .map_err(backend_error)?;
+        let mut rows = Vec::new();
+        while let Some(row) = stream.next().await {
+            rows.push(row.map_err(backend_error)?);
+        }
+        Ok(rows)
     }
 
     async fn _upsert<T>(
@@ -307,69 +333,35 @@ impl ScyllaStore {
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        hot_cache_ttl: Option<i64>,
+        field_ttl: Ttl,
+        hot_cache_ttl: Option<Ttl>,
         old_session_id: Option<&Id>,
-    ) -> Result<i64, Error>
+    ) -> Result<(), Error>
     where
         T: Send + Sync + Serialize,
     {
-        if key_ttl_secs == 0 {
-            self.delete(session_id).await?;
-            return Ok(-2);
-        }
-
-        if field_ttl_secs == 0 {
-            if let Some(old_id) = old_session_id {
-                self.rename_session_id(old_id, session_id).await?;
-            }
-            let ttl = self.remove(session_id, field).await?;
-            return Ok(ttl);
-        }
-
-        if let Some(old_id) = old_session_id {
-            self.rename_session_id(old_id, session_id).await?;
+        if let Some(old) = old_session_id {
+            self.rename_inner(old, session_id).await?;
         }
 
         let value_bytes = serialize_value(value)?;
-        let mut computed_hot_cache_ttl = hot_cache_ttl;
+        let hot_cache_ttl = hot_cache_ttl.map(|h| h.min(field_ttl));
 
-        if field_ttl_secs > 0 {
-            computed_hot_cache_ttl = computed_hot_cache_ttl.map(|h| h.min(field_ttl_secs));
-        }
+        self.session
+            .execute_unpaged(
+                &self.insert_with_ttl_stmt,
+                (
+                    session_id.as_str(),
+                    field,
+                    value_bytes,
+                    hot_cache_ttl.map(i64::from),
+                    i32::from(field_ttl),
+                ),
+            )
+            .await
+            .map_err(backend_error)?;
 
-        if field_ttl_secs == -1 {
-            self.session
-                .execute_unpaged(
-                    &self.insert_no_ttl_stmt,
-                    (
-                        session_id.as_str(),
-                        field,
-                        value_bytes,
-                        computed_hot_cache_ttl,
-                    ),
-                )
-                .await
-                .map_err(|err| Error::Backend(err.to_string()))?;
-        } else {
-            let ttl_i32 = field_ttl_secs.clamp(1, i32::MAX as i64) as i32;
-            self.session
-                .execute_unpaged(
-                    &self.insert_with_ttl_stmt,
-                    (
-                        session_id.as_str(),
-                        field,
-                        value_bytes,
-                        computed_hot_cache_ttl,
-                        ttl_i32,
-                    ),
-                )
-                .await
-                .map_err(|err| Error::Backend(err.to_string()))?;
-        }
-
-        self.get_session_ttl(session_id).await
+        Ok(())
     }
 }
 
@@ -378,41 +370,38 @@ impl SessionStore for ScyllaStore {
     where
         T: Send + Sync + DeserializeOwned,
     {
-        let mut rows_stream = self
+        let mut stream = self
             .session
             .execute_iter(self.get_stmt.clone(), (session_id.as_str(), field))
             .await
-            .map_err(|err| Error::Backend(err.to_string()))?
+            .map_err(backend_error)?
             .rows_stream::<(Vec<u8>,)>()
-            .map_err(|err| Error::Backend(err.to_string()))?;
-
-        if let Some(next_row_res) = rows_stream.next().await {
-            let (data,) = next_row_res.map_err(|err| Error::Backend(err.to_string()))?;
-            Ok(Some(deserialize_value(&data)?))
-        } else {
-            Ok(None)
+            .map_err(backend_error)?;
+        match stream.next().await {
+            Some(row) => {
+                let (data,) = row.map_err(backend_error)?;
+                Ok(Some(deserialize_value(&data)?))
+            }
+            None => Ok(None),
         }
     }
 
     async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error> {
-        let mut rows_stream = self
+        let mut stream = self
             .session
             .execute_iter(self.get_all_stmt.clone(), (session_id.as_str(),))
             .await
-            .map_err(|err| Error::Backend(err.to_string()))?
+            .map_err(backend_error)?
             .rows_stream::<(String, Vec<u8>)>()
-            .map_err(|err| Error::Backend(err.to_string()))?;
-
+            .map_err(backend_error)?;
         let mut map = HashMap::new();
-        while let Some(next_row_res) = rows_stream.next().await {
-            let (field, value) = next_row_res.map_err(|err| Error::Backend(err.to_string()))?;
+        while let Some(row) = stream.next().await {
+            let (field, value) = row.map_err(backend_error)?;
             map.insert(field, value);
         }
-
         if map.is_empty() {
             return Ok(None);
         }
-
         Ok(Some(SessionMap::new(map)))
     }
 
@@ -421,29 +410,20 @@ impl SessionStore for ScyllaStore {
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<i64>,
+        field_ttl: Ttl,
+        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<Ttl>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-    ) -> Result<i64, Error>
+    ) -> Result<(), Error>
     where
         T: Send + Sync + Serialize,
     {
         #[cfg(feature = "layered-store")]
         let hot_ttl = hot_cache_ttl;
         #[cfg(not(feature = "layered-store"))]
-        let hot_ttl: Option<i64> = None;
+        let hot_ttl: Option<Ttl> = None;
 
-        self._upsert(
-            session_id,
-            field,
-            value,
-            key_ttl_secs,
-            field_ttl_secs,
-            hot_ttl,
-            None,
-        )
-        .await
+        self._upsert(session_id, field, value, field_ttl, hot_ttl, None)
+            .await
     }
 
     async fn set_and_rename<T>(
@@ -452,25 +432,23 @@ impl SessionStore for ScyllaStore {
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<i64>,
+        field_ttl: Ttl,
+        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<Ttl>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-    ) -> Result<i64, Error>
+    ) -> Result<(), Error>
     where
         T: Send + Sync + Serialize,
     {
         #[cfg(feature = "layered-store")]
         let hot_ttl = hot_cache_ttl;
         #[cfg(not(feature = "layered-store"))]
-        let hot_ttl: Option<i64> = None;
+        let hot_ttl: Option<Ttl> = None;
 
         self._upsert(
             new_session_id,
             field,
             value,
-            key_ttl_secs,
-            field_ttl_secs,
+            field_ttl,
             hot_ttl,
             Some(old_session_id),
         )
@@ -482,128 +460,56 @@ impl SessionStore for ScyllaStore {
         old_session_id: &Id,
         new_session_id: &Id,
     ) -> Result<bool, Error> {
-        let mut rows_stream = self
-            .session
-            .execute_iter(self.get_all_meta_stmt.clone(), (old_session_id.as_str(),))
-            .await
-            .map_err(|err| Error::Backend(err.to_string()))?
-            .rows_stream::<(String, Vec<u8>, Option<i64>, Option<i32>)>()
-            .map_err(|err| Error::Backend(err.to_string()))?;
-
-        let mut rows = Vec::new();
-        while let Some(next_row_res) = rows_stream.next().await {
-            rows.push(next_row_res.map_err(|err| Error::Backend(err.to_string()))?);
-        }
-
-        let affected = !rows.is_empty();
-
-        let futures = rows
-            .into_iter()
-            .map(|(field, value, hot_cache_ttl, ttl)| async move {
-                if let Some(ttl_val) = ttl {
-                    self.session
-                        .execute_unpaged(
-                            &self.insert_with_ttl_stmt,
-                            (
-                                new_session_id.as_str(),
-                                field,
-                                value,
-                                hot_cache_ttl,
-                                ttl_val,
-                            ),
-                        )
-                        .await
-                } else {
-                    self.session
-                        .execute_unpaged(
-                            &self.insert_no_ttl_stmt,
-                            (new_session_id.as_str(), field, value, hot_cache_ttl),
-                        )
-                        .await
-                }
-            });
-
-        if affected {
-            futures::future::try_join_all(futures)
-                .await
-                .map_err(|err| Error::Backend(err.to_string()))?;
-            self.delete(old_session_id).await?;
-        }
-
-        Ok(affected)
+        self.rename_inner(old_session_id, new_session_id).await
     }
 
-    async fn remove(&self, session_id: &Id, field: &str) -> Result<i64, Error> {
+    async fn remove(&self, session_id: &Id, field: &str) -> Result<(), Error> {
         self.session
             .execute_unpaged(&self.remove_stmt, (session_id.as_str(), field))
             .await
-            .map_err(|err| Error::Backend(err.to_string()))?;
-
-        self.get_session_ttl(session_id).await
+            .map_err(backend_error)?;
+        Ok(())
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
+        let sid = session_id.as_str();
+        let existed = self.session_exists(sid).await?;
         self.session
-            .execute_unpaged(&self.delete_stmt, (session_id.as_str(),))
+            .execute_unpaged(&self.del_partition_stmt, (sid,))
             .await
-            .map_err(|err| Error::Backend(err.to_string()))?;
-
-        Ok(true)
+            .map_err(backend_error)?;
+        Ok(existed)
     }
 
-    async fn expire(&self, session_id: &Id, ttl_secs: i64) -> Result<bool, Error> {
-        if ttl_secs == 0 {
-            return self.delete(session_id).await;
-        }
+    async fn expire_field(&self, session_id: &Id, field: &str, ttl: Ttl) -> Result<bool, Error> {
+        let sid = session_id.as_str();
 
-        let mut rows_stream = self
+        // Read the current value/hot-ttl so we can re-apply the TTL to the value
+        // cell (CQL has no in-place TTL refresh).
+        let mut stream = self
             .session
-            .execute_iter(self.get_all_meta_stmt.clone(), (session_id.as_str(),))
+            .execute_iter(self.get_field_meta_stmt.clone(), (sid, field))
             .await
-            .map_err(|err| Error::Backend(err.to_string()))?
-            .rows_stream::<(String, Vec<u8>, Option<i64>, Option<i32>)>()
-            .map_err(|err| Error::Backend(err.to_string()))?;
+            .map_err(backend_error)?
+            .rows_stream::<(Vec<u8>, Option<i64>)>()
+            .map_err(backend_error)?;
 
-        let mut rows = Vec::new();
-        while let Some(next_row_res) = rows_stream.next().await {
-            rows.push(next_row_res.map_err(|err| Error::Backend(err.to_string()))?);
-        }
+        let Some(row) = stream.next().await else {
+            return Ok(false);
+        };
+        let (value, hot_cache_ttl) = row.map_err(backend_error)?;
 
-        let affected = !rows.is_empty();
-
-        let futures = rows
-            .into_iter()
-            .map(|(field, value, hot_cache_ttl, _)| async move {
-                if ttl_secs > 0 {
-                    self.session
-                        .execute_unpaged(
-                            &self.insert_with_ttl_stmt,
-                            (
-                                session_id.as_str(),
-                                field,
-                                value,
-                                hot_cache_ttl,
-                                ttl_secs as i32,
-                            ),
-                        )
-                        .await
-                } else {
-                    self.session
-                        .execute_unpaged(
-                            &self.insert_no_ttl_stmt,
-                            (session_id.as_str(), field, value, hot_cache_ttl),
-                        )
-                        .await
-                }
-            });
-
-        if affected {
-            futures::future::try_join_all(futures)
-                .await
-                .map_err(|err| Error::Backend(err.to_string()))?;
-        }
-
-        Ok(affected)
+        // IF EXISTS guards the window between read and write: if the field
+        // lapsed in between, the conditional update does not resurrect it.
+        let qr = self
+            .session
+            .execute_unpaged(
+                &self.expire_field_stmt,
+                (i32::from(ttl), value, hot_cache_ttl, sid, field),
+            )
+            .await
+            .map_err(backend_error)?;
+        Self::lwt_applied(qr)
     }
 }
 
@@ -612,40 +518,24 @@ impl crate::store::LayeredColdStore for ScyllaStore {
     async fn get_all_with_meta(
         &self,
         session_id: &Id,
-    ) -> Result<Option<(SessionMap, HashMap<String, Option<i64>>)>, Error> {
-        let mut rows_stream = self
-            .session
-            .execute_iter(self.get_all_meta_stmt.clone(), (session_id.as_str(),))
-            .await
-            .map_err(|err| Error::Backend(err.to_string()))?
-            .rows_stream::<(String, Vec<u8>, Option<i64>, Option<i32>)>()
-            .map_err(|err| Error::Backend(err.to_string()))?;
+    ) -> Result<Option<(SessionMap, HashMap<String, Ttl>)>, Error> {
+        let rows = self.read_all_meta(session_id.as_str()).await?;
 
         let mut session_map = HashMap::new();
         let mut meta_map = HashMap::new();
-
-        while let Some(next_row_res) = rows_stream.next().await {
-            let (field, value, mut hot_cache_ttl, ttl) =
-                next_row_res.map_err(|err| Error::Backend(err.to_string()))?;
-
+        for (field, value, hot_cache_ttl, ttl) in rows {
             session_map.insert(field.clone(), value);
 
-            let ttl_i64 = ttl.map(|t| t as i64).unwrap_or(-1);
-
-            if ttl_i64 > -1 {
-                hot_cache_ttl = hot_cache_ttl.or(Some(ttl_i64));
-                hot_cache_ttl = hot_cache_ttl.min(Some(ttl_i64));
-            }
-
-            if ttl_i64 > 0 {
-                meta_map.insert(field, hot_cache_ttl);
-            }
+            let hot = hot_cache_ttl
+                .filter(|t| *t >= 0)
+                .unwrap_or(ttl as i64)
+                .min(ttl as i64);
+            meta_map.insert(field, Ttl::new(hot)?);
         }
 
         if session_map.is_empty() {
             return Ok(None);
         }
-
         Ok(Some((SessionMap::new(session_map), meta_map)))
     }
 
@@ -654,20 +544,11 @@ impl crate::store::LayeredColdStore for ScyllaStore {
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        hot_cache_ttl_secs: Option<i64>,
-    ) -> Result<i64, Error> {
-        self._upsert(
-            session_id,
-            field,
-            value,
-            key_ttl_secs,
-            field_ttl_secs,
-            hot_cache_ttl_secs,
-            None,
-        )
-        .await
+        field_ttl: Ttl,
+        hot_cache_ttl: Option<Ttl>,
+    ) -> Result<(), Error> {
+        self._upsert(session_id, field, value, field_ttl, hot_cache_ttl, None)
+            .await
     }
 
     async fn set_and_rename_with_meta<T: Serialize + Send + Sync>(
@@ -676,17 +557,15 @@ impl crate::store::LayeredColdStore for ScyllaStore {
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        hot_cache_ttl_secs: Option<i64>,
-    ) -> Result<i64, Error> {
+        field_ttl: Ttl,
+        hot_cache_ttl: Option<Ttl>,
+    ) -> Result<(), Error> {
         self._upsert(
             new_session_id,
             field,
             value,
-            key_ttl_secs,
-            field_ttl_secs,
-            hot_cache_ttl_secs,
+            field_ttl,
+            hot_cache_ttl,
             Some(old_session_id),
         )
         .await

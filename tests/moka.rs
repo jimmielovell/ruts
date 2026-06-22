@@ -8,4 +8,5 @@ async fn setup_store() -> Arc<ruts::store::moka::MokaStore> {
 }
 
 define_session_store_tests!(setup_store);
+define_session_store_timing_tests!(setup_store);
 define_layered_hot_store_tests!(setup_store);

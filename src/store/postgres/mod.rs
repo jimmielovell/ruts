@@ -1,16 +1,14 @@
 use crate::Id;
-use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize_value};
+use crate::store::{Error, SessionMap, SessionStore, Ttl, deserialize_value, serialize_value};
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::{Executor, PgPool, Postgres, Transaction};
 use std::collections::HashMap;
 
-// Re-export Duration
 pub use std::time::Duration;
 
 /// A builder for creating a `PostgresStore`.
 ///
 /// This allows for customizing the table and schema names for session storage.
-#[derive(Debug)]
 pub struct PostgresStoreBuilder {
     pool: PgPool,
     table_name: String,
@@ -66,16 +64,10 @@ impl PostgresStoreBuilder {
 
     /// Builds the `PostgresStore`, creating the schema and table if they don't exist.
     pub async fn build(self) -> Result<PostgresStore, sqlx::Error> {
-        let (expiry_table_name, fields_table_name) = if let Some(schema) = &self.schema_name {
-            (
-                format!("\"{}\".\"{}\"", schema, self.table_name),
-                format!("\"{}\".\"{}_kv\"", schema, self.table_name),
-            )
+        let table_name = if let Some(schema) = &self.schema_name {
+            format!("\"{}\".\"{}\"", schema, self.table_name)
         } else {
-            (
-                format!("\"{}\"", self.table_name),
-                format!("\"{}_kv\"", self.table_name),
-            )
+            format!("\"{}\"", self.table_name)
         };
 
         if self.create_table {
@@ -87,56 +79,32 @@ impl PostgresStoreBuilder {
 
             sqlx::raw_sql(&format!(
                 r#"
-                create table if not exists {expiry_table_name} (
-                    session_id text primary key,
-                    expires_at timestamptz
-                );
-                create index if not exists idx_sessions_expires_at on {expiry_table_name}(expires_at);
-                "#
-            ))
-                .execute(&self.pool)
-                .await?;
-
-            sqlx::raw_sql(&format!(
-                r#"
-                create table if not exists {fields_table_name} (
-                    fk_session_id text not null references {expiry_table_name} (session_id) on update cascade on delete cascade,
+                create table if not exists {table_name} (
+                    session_id text not null,
                     field text not null,
                     value bytea not null,
                     hot_cache_ttl bigint,
-                    expires_at timestamptz,
-                    primary key (fk_session_id, field)
+                    expires_at timestamptz not null,
+                    primary key (session_id, field)
                 );
 
-                -- for looking up fields by session
-                create index if not exists idx_fields_session_id on {fields_table_name}(fk_session_id);
-                -- for field-level cleanup
-                create index if not exists idx_fields_expires_at on {fields_table_name}(expires_at);
+                create index if not exists idx_sessions_session_id on {table_name}(session_id);
+                create index if not exists idx_sessions_expires_at on {table_name}(expires_at);
                 "#
             ))
-                .execute(&self.pool)
-                .await?;
+            .execute(&self.pool)
+            .await?;
         }
 
         let pool = self.pool.clone();
-        let e_table = expiry_table_name.clone();
-        let f_table = fields_table_name.clone();
+        let t_name = table_name.clone();
         let interval = self.cleanup_interval.unwrap_or(Duration::from_secs(60 * 5));
 
         let cleanup_task = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-            let query = format!(
-                r#"
-                with expired_sessions as (
-                    delete from {e_table}
-                    where expires_at is not null and expires_at < now()
-                )
-                delete from {f_table}
-                where expires_at is not null and expires_at < now()
-                "#
-            );
+            let query = format!("delete from {t_name} where expires_at < now()");
 
             loop {
                 ticker.tick().await;
@@ -146,8 +114,7 @@ impl PostgresStoreBuilder {
 
         Ok(PostgresStore {
             pool: self.pool,
-            expiry_table_name,
-            fields_table_name,
+            table_name,
             cleanup_task: Some(cleanup_task),
         })
     }
@@ -177,8 +144,7 @@ fn validate_identifier(name: &str) -> Result<(), Error> {
 /// A Postgres-backed session store.
 pub struct PostgresStore {
     pool: PgPool,
-    expiry_table_name: String,
-    fields_table_name: String,
+    table_name: String,
     cleanup_task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -186,9 +152,8 @@ impl Clone for PostgresStore {
     fn clone(&self) -> Self {
         Self {
             pool: self.pool.clone(),
-            expiry_table_name: self.expiry_table_name.clone(),
-            fields_table_name: self.fields_table_name.clone(),
-            cleanup_task: None, // only the original owns the task
+            table_name: self.table_name.clone(),
+            cleanup_task: None,
         }
     }
 }
@@ -208,103 +173,46 @@ impl PostgresStore {
         old_session_id: &Id,
         new_session_id: &Id,
     ) -> Result<bool, Error> {
-        let fields_q = format!(
-            "update {} set fk_session_id = $1 where fk_session_id = $2",
-            self.fields_table_name
-        );
-        sqlx::query(&fields_q)
-            .bind(new_session_id.to_string())
-            .bind(old_session_id.to_string())
-            .execute(&mut **tx)
-            .await?;
+        let exists: bool = sqlx::query_scalar(&format!(
+            "select exists(select 1 from {} where session_id = $1)",
+            self.table_name
+        ))
+        .bind(new_session_id.as_str())
+        .fetch_one(&mut **tx)
+        .await?;
 
-        let expiry_q = format!(
+        if exists {
+            return Ok(false);
+        }
+
+        let result = sqlx::query(&format!(
             "update {} set session_id = $1 where session_id = $2",
-            self.expiry_table_name
-        );
-        let result = sqlx::query(&expiry_q)
-            .bind(new_session_id.to_string())
-            .bind(old_session_id.to_string())
-            .execute(&mut **tx)
-            .await?;
+            self.table_name
+        ))
+        .bind(new_session_id.as_str())
+        .bind(old_session_id.as_str())
+        .execute(&mut **tx)
+        .await?;
 
         Ok(result.rows_affected() > 0)
     }
 
-    async fn _remove<'e, E>(&self, executor: E, session_id: &Id, field: &str) -> Result<i64, Error>
+    async fn _remove<'e, E>(&self, executor: E, session_id: &Id, field: &str) -> Result<(), Error>
     where
         E: Executor<'e, Database = Postgres>,
     {
         let query = format!(
-            r#"
-            with
-            field_delete as (
-                delete from {fields}
-                where fk_session_id = $1 and field = $2
-                returning expires_at
-            ),
-            current_session as (
-                select expires_at
-                from {expiry}
-                where session_id = $1
-                for update
-            ),
-            session_status as (
-                select count(*) as cnt
-                from (select 1 from {fields} where fk_session_id = $1 limit 2) sub
-            ),
-            session_delete as (
-                delete from {expiry} e
-                using session_status ss
-                where e.session_id = $1
-                and ss.cnt <= 1
-                returning -2::bigint as ttl
-            ),
-            session_update as (
-                update {expiry} e
-                set expires_at = (
-                    select case
-                        when bool_or(f.expires_at is null) then null
-                        else max(f.expires_at)
-                    end
-                    from {fields} f
-                    where f.fk_session_id = e.session_id
-                    and f.field != $2
-                )
-                from field_delete fd, current_session cs, session_status ss
-                where e.session_id = $1
-                and ss.cnt > 1
-                and (
-                    fd.expires_at is null
-                    or (cs.expires_at is not null and fd.expires_at >= cs.expires_at)
-                )
-                returning
-                    case when e.expires_at is null then -1
-                    else extract(epoch from (e.expires_at - now()))::bigint
-                    end as ttl
-            )
-            select coalesce(
-                (select ttl from session_delete),
-                (select ttl from session_update),
-                (select
-                    case when expires_at is null then -1
-                    else extract(epoch from (expires_at - now()))::bigint
-                    end
-                 from current_session),
-                -2
-            )
-            "#,
-            fields = self.fields_table_name,
-            expiry = self.expiry_table_name
+            "delete from {} where session_id = $1 and field = $2",
+            self.table_name
         );
 
-        let ttl: i64 = sqlx::query_scalar(&query)
+        sqlx::query(&query)
             .bind(session_id.as_str())
             .bind(field)
-            .fetch_one(executor)
+            .execute(executor)
             .await?;
 
-        Ok(ttl)
+        Ok(())
     }
 
     async fn _upsert<T>(
@@ -312,99 +220,54 @@ impl PostgresStore {
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<i64>,
+        field_ttl: Ttl,
+        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<Ttl>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
         old_session_id: Option<&Id>,
-    ) -> Result<i64, Error>
+    ) -> Result<(), Error>
     where
         T: Send + Sync + Serialize,
     {
-        if key_ttl_secs == 0 {
-            self.delete(session_id).await?;
-            return Ok(-2);
-        }
-
-        if field_ttl_secs == 0 {
-            let mut tx = self.pool.begin().await?;
-
-            if let Some(old_session_id) = old_session_id {
-                let _ = self
-                    ._rename_session_id(&mut tx, old_session_id, session_id)
-                    .await?;
-            }
-
-            let ttl = self._remove(&self.pool, session_id, field).await?;
-            tx.commit().await?;
-            return Ok(ttl);
-        }
-
         let value_bytes = serialize_value(value)?;
 
         #[cfg(feature = "layered-store")]
-        let hot_cache_ttl = hot_cache_ttl.min(Some(field_ttl_secs));
+        let hot_cache_ttl = hot_cache_ttl.map(|h| h.min(field_ttl));
         #[cfg(not(feature = "layered-store"))]
-        let hot_cache_ttl: Option<i64> = None;
-
-        let key_ttl = (key_ttl_secs != -1).then_some(key_ttl_secs as f64);
-        let field_ttl = (field_ttl_secs != -1).then_some(field_ttl_secs as f64);
+        let hot_cache_ttl: Option<Ttl> = None;
 
         let query = format!(
             r#"
-            with
-            exsert as (
-                insert into {e_table} (session_id, expires_at)
-                values ($1, now() + make_interval(secs => $5))
-                on conflict (session_id) do update
-                set expires_at = case
-                    when {e_table}.expires_at is null or excluded.expires_at is null then null
-                    else greatest({e_table}.expires_at, excluded.expires_at)
-                end
-                returning session_id, expires_at
-            ),
-            upsert as (
-                insert into {f_table} (fk_session_id, field, value, hot_cache_ttl, expires_at)
-                select p.session_id, $2, $3, $4, now() + make_interval(secs => $6)
-                from exsert p
-                on conflict (fk_session_id, field) do update
-                set
-                    value = excluded.value,
-                    expires_at = excluded.expires_at,
-                    hot_cache_ttl = excluded.hot_cache_ttl
-            )
-            select
-                case when expires_at is null then -1
-                else extract(epoch from (expires_at - now()))::bigint
-                end
-            from exsert
+            insert into {table} (session_id, field, value, hot_cache_ttl, expires_at)
+            values ($1, $2, $3, $4, now() + make_interval(secs => $5::double precision))
+            on conflict (session_id, field) do update
+            set
+                value = excluded.value,
+                expires_at = excluded.expires_at,
+                hot_cache_ttl = excluded.hot_cache_ttl
             "#,
-            e_table = self.expiry_table_name,
-            f_table = self.fields_table_name,
+            table = self.table_name,
         );
 
-        let qs = sqlx::query_scalar(&query)
-            .bind(session_id.as_str())
-            .bind(field)
-            .bind(value_bytes)
-            .bind(hot_cache_ttl)
-            .bind(key_ttl)
-            .bind(field_ttl);
+        let mut tx = self.pool.begin().await?;
 
         if let Some(old_session_id) = old_session_id {
-            let mut tx = self.pool.begin().await?;
             let _ = self
                 ._rename_session_id(&mut tx, old_session_id, session_id)
                 .await?;
-            let ttl = qs.fetch_one(&mut *tx).await?;
-            tx.commit().await?;
-
-            return Ok(ttl);
         }
 
-        let ttl: i64 = qs.fetch_one(&self.pool).await?;
+        sqlx::query(&query)
+            .bind(session_id.as_str())
+            .bind(field)
+            .bind(value_bytes)
+            .bind(hot_cache_ttl.map(i64::from))
+            .bind(f64::from(field_ttl))
+            .execute(&mut *tx)
+            .await?;
 
-        Ok(ttl)
+        tx.commit().await?;
+
+        Ok(())
     }
 }
 
@@ -415,16 +278,13 @@ impl SessionStore for PostgresStore {
     {
         let query = format!(
             r#"
-            select f.value
-            from {fields} f
-            join {expiry} e on f.fk_session_id = e.session_id
-            where e.session_id = $1
-              and f.field = $2
-              and (e.expires_at is null or e.expires_at > now())
-              and (f.expires_at is null or f.expires_at > now())
+            select value
+            from {table}
+            where session_id = $1
+              and field = $2
+              and expires_at > now()
             "#,
-            fields = self.fields_table_name,
-            expiry = self.expiry_table_name
+            table = self.table_name
         );
 
         let result: Option<(Vec<u8>,)> = sqlx::query_as(&query)
@@ -442,15 +302,12 @@ impl SessionStore for PostgresStore {
     async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error> {
         let query = format!(
             r#"
-            select f.field, f.value
-            from {fields} f
-            join {expiry} e on f.fk_session_id = e.session_id
-            where e.session_id = $1
-              and (e.expires_at is null or e.expires_at > now())
-              and (f.expires_at is null or f.expires_at > now())
+            select field, value
+            from {table}
+            where session_id = $1
+              and expires_at > now()
             "#,
-            fields = self.fields_table_name,
-            expiry = self.expiry_table_name
+            table = self.table_name
         );
 
         let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(&query)
@@ -475,24 +332,20 @@ impl SessionStore for PostgresStore {
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        #[cfg(feature = "layered-store")] _: Option<i64>,
+        field_ttl: Ttl,
+        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<Ttl>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-    ) -> Result<i64, Error>
+    ) -> Result<(), Error>
     where
         T: Send + Sync + Serialize,
     {
-        self._upsert(
-            session_id,
-            field,
-            value,
-            key_ttl_secs,
-            field_ttl_secs,
-            None,
-            None,
-        )
-        .await
+        #[cfg(feature = "layered-store")]
+        let hot_ttl = hot_cache_ttl;
+        #[cfg(not(feature = "layered-store"))]
+        let hot_ttl: Option<Ttl> = None;
+
+        self._upsert(session_id, field, value, field_ttl, hot_ttl, None)
+            .await
     }
 
     async fn set_and_rename<T>(
@@ -501,21 +354,24 @@ impl SessionStore for PostgresStore {
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        #[cfg(feature = "layered-store")] _: Option<i64>,
+        field_ttl: Ttl,
+        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<Ttl>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-    ) -> Result<i64, Error>
+    ) -> Result<(), Error>
     where
         T: Send + Sync + Serialize,
     {
+        #[cfg(feature = "layered-store")]
+        let hot_ttl = hot_cache_ttl;
+        #[cfg(not(feature = "layered-store"))]
+        let hot_ttl: Option<Ttl> = None;
+
         self._upsert(
             new_session_id,
             field,
             value,
-            key_ttl_secs,
-            field_ttl_secs,
-            None,
+            field_ttl,
+            hot_ttl,
             Some(old_session_id),
         )
         .await
@@ -535,14 +391,14 @@ impl SessionStore for PostgresStore {
         Ok(result)
     }
 
-    async fn remove(&self, session_id: &Id, field: &str) -> Result<i64, Error> {
+    async fn remove(&self, session_id: &Id, field: &str) -> Result<(), Error> {
         self._remove(&self.pool, session_id, field).await
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
         let query = format!(
             "delete from {table} where session_id = $1",
-            table = self.expiry_table_name
+            table = self.table_name
         );
         let result = sqlx::query(&query)
             .bind(session_id.as_str())
@@ -552,53 +408,26 @@ impl SessionStore for PostgresStore {
         Ok(result.rows_affected() > 0)
     }
 
-    async fn expire(&self, session_id: &Id, ttl_secs: i64) -> Result<bool, Error> {
-        if ttl_secs == 0 {
-            return self.delete(session_id).await;
-        }
-
-        let ttl_secs_f64 = ttl_secs as f64;
-
+    async fn expire_field(&self, session_id: &Id, field: &str, ttl: Ttl) -> Result<bool, Error> {
         let query = format!(
             r#"
-            with
-            target as (
-                select case
-                    when $2 < 0 then null
-                    else (now() + make_interval(secs => $2))
-                end as new_expiry
-            ),
-            session_update as (
-                update {expiry}
-                set expires_at = target.new_expiry
-                from target
-                where session_id = $1
-                    and (expires_at is null or expires_at > now())
-                returning 1
-            ),
-            field_update as (
-                update {fields}
-                set expires_at = target.new_expiry
-                from target, session_update
-                where fk_session_id = $1
-                    and (
-                        target.new_expiry is null
-                        or (expires_at is not null and expires_at > target.new_expiry)
-                    )
-            )
-            select count(*) from session_update
+            update {table}
+            set expires_at = now() + make_interval(secs => $3::double precision)
+            where session_id = $1
+              and field = $2
+              and expires_at > now()
             "#,
-            expiry = self.expiry_table_name,
-            fields = self.fields_table_name
+            table = self.table_name
         );
 
-        let rows_affected: i64 = sqlx::query_scalar(&query)
+        let result = sqlx::query(&query)
             .bind(session_id.as_str())
-            .bind(ttl_secs_f64)
-            .fetch_one(&self.pool)
+            .bind(field)
+            .bind(f64::from(ttl))
+            .execute(&self.pool)
             .await?;
 
-        Ok(rows_affected > 0)
+        Ok(result.rows_affected() > 0)
     }
 }
 
@@ -607,24 +436,19 @@ impl crate::store::LayeredColdStore for PostgresStore {
     async fn get_all_with_meta(
         &self,
         session_id: &Id,
-    ) -> Result<Option<(SessionMap, HashMap<String, Option<i64>>)>, Error> {
+    ) -> Result<Option<(SessionMap, HashMap<String, Ttl>)>, Error> {
         let query = format!(
             r#"
-            select 
-                f.field,
-                f.value, 
-                f.hot_cache_ttl,
-                case when f.expires_at is null then -1
-                    else extract(epoch from (f.expires_at - now()))::bigint
-                end as ttl
-            from {fields} f
-            join {expiry} e on f.fk_session_id = e.session_id
-            where e.session_id = $1
-              and (e.expires_at is null or e.expires_at > now())
-              and (f.expires_at is null or f.expires_at > now())
+            select
+                field,
+                value,
+                hot_cache_ttl,
+                extract(epoch from (expires_at - now()))::bigint as ttl
+            from {table}
+            where session_id = $1
+              and expires_at > now()
             "#,
-            fields = self.fields_table_name,
-            expiry = self.expiry_table_name
+            table = self.table_name
         );
 
         let rows: Vec<(String, Vec<u8>, Option<i64>, i64)> = sqlx::query_as(&query)
@@ -638,15 +462,13 @@ impl crate::store::LayeredColdStore for PostgresStore {
 
         let mut session_map = HashMap::with_capacity(rows.len());
         let mut meta_map = HashMap::new();
-        for (field, value, mut hot_cache_ttl, ttl) in rows {
-            session_map.insert(field.clone(), value);
-            if ttl > -1 {
-                hot_cache_ttl = hot_cache_ttl.or(Some(ttl));
-                hot_cache_ttl = hot_cache_ttl.min(Some(ttl));
-            }
 
-            if ttl > 0 {
-                meta_map.insert(field, hot_cache_ttl);
+        for (field, value, hot_cache_ttl, ttl) in rows {
+            session_map.insert(field.clone(), value);
+            let hot = hot_cache_ttl.filter(|t| *t >= 0).unwrap_or(ttl).min(ttl);
+
+            if hot > 0 {
+                meta_map.insert(field, Ttl::new(hot)?);
             }
         }
 
@@ -662,20 +484,11 @@ impl crate::store::LayeredColdStore for PostgresStore {
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        hot_cache_ttl_secs: Option<i64>,
-    ) -> Result<i64, Error> {
-        self._upsert(
-            session_id,
-            field,
-            value,
-            key_ttl_secs,
-            field_ttl_secs,
-            hot_cache_ttl_secs,
-            None,
-        )
-        .await
+        field_ttl: Ttl,
+        hot_cache_ttl: Option<Ttl>,
+    ) -> Result<(), Error> {
+        self._upsert(session_id, field, value, field_ttl, hot_cache_ttl, None)
+            .await
     }
 
     async fn set_and_rename_with_meta<T: Serialize + Send + Sync>(
@@ -684,17 +497,15 @@ impl crate::store::LayeredColdStore for PostgresStore {
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        hot_cache_ttl_secs: Option<i64>,
-    ) -> Result<i64, Error> {
+        field_ttl: Ttl,
+        hot_cache_ttl: Option<Ttl>,
+    ) -> Result<(), Error> {
         self._upsert(
             new_session_id,
             field,
             value,
-            key_ttl_secs,
-            field_ttl_secs,
-            hot_cache_ttl_secs,
+            field_ttl,
+            hot_cache_ttl,
             Some(old_session_id),
         )
         .await

@@ -1,5 +1,5 @@
 use crate::Id;
-use crate::store::{Error, SessionMap, SessionStore, deserialize_value, serialize_value};
+use crate::store::{Error, SessionMap, SessionStore, Ttl, deserialize_value, serialize_value};
 use moka::future::Cache;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
@@ -10,10 +10,10 @@ use tokio::sync::RwLock;
 #[derive(Debug, Clone)]
 struct StoredValue {
     data: Vec<u8>,
-    expires_at: Option<Instant>,
+    expires_at: Instant,
 }
 
-/// A highly concurrent, thread-safe in-moka session store backed by `moka`.
+/// A highly concurrent, thread-safe in-memory session store backed by `moka`.
 ///
 /// Ideal for production use cases where a local, fast cache is required,
 /// or as a `HotStore` in a `LayeredStore` topology.
@@ -81,49 +81,6 @@ impl MokaStore {
     pub fn builder() -> MokaStoreBuilder {
         MokaStoreBuilder::new()
     }
-
-    async fn get_ttl(&self, session_id: &Id) -> i64 {
-        if let Some(fields_lock) = self.data.get(session_id.as_str()).await {
-            let fields = fields_lock.read().await;
-            if fields.is_empty() {
-                return -2;
-            }
-
-            let mut max_finite = None;
-            let now = Instant::now();
-
-            for val in fields.values() {
-                match val.expires_at {
-                    None => return -1,
-                    Some(exp) => {
-                        if exp > now {
-                            match max_finite {
-                                None => max_finite = Some(exp),
-                                Some(current) if exp > current => max_finite = Some(exp),
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-
-            match max_finite {
-                Some(exp) => exp.duration_since(now).as_secs() as i64,
-                None => -2,
-            }
-        } else {
-            -2
-        }
-    }
-}
-
-fn determine_expiry(key_ttl_secs: i64, field_ttl_secs: i64) -> Option<Instant> {
-    let ttl = match (key_ttl_secs, field_ttl_secs) {
-        (-1, -1) => return None,
-        (-1, t) | (t, -1) => t,
-        (a, b) => a.min(b),
-    };
-    (ttl > 0).then(|| Instant::now() + Duration::from_secs(ttl as u64))
 }
 
 impl SessionStore for MokaStore {
@@ -134,7 +91,7 @@ impl SessionStore for MokaStore {
         if let Some(fields_lock) = self.data.get(session_id.as_str()).await {
             let fields = fields_lock.read().await;
             if let Some(value) = fields.get(field) {
-                if value.expires_at.map(|e| e > Instant::now()).unwrap_or(true) {
+                if value.expires_at > Instant::now() {
                     return Ok(Some(deserialize_value(&value.data)?));
                 }
             }
@@ -153,7 +110,7 @@ impl SessionStore for MokaStore {
             let mut map = HashMap::new();
 
             for (k, v) in fields.iter() {
-                if v.expires_at.map(|e| e > now).unwrap_or(true) {
+                if v.expires_at > now {
                     map.insert(k.clone(), v.data.clone());
                 }
             }
@@ -172,25 +129,14 @@ impl SessionStore for MokaStore {
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        #[cfg(feature = "layered-store")] _: Option<i64>,
+        field_ttl_secs: Ttl,
+        #[cfg(feature = "layered-store")] _: Option<Ttl>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-    ) -> Result<i64, Error>
+    ) -> Result<(), Error>
     where
         T: Send + Sync + Serialize,
     {
-        if key_ttl_secs == 0 {
-            self.delete(session_id).await?;
-            return Ok(-2);
-        }
-        if field_ttl_secs == 0 {
-            return self.remove(session_id, field).await;
-        }
-
-        let expires_at = determine_expiry(key_ttl_secs, field_ttl_secs);
         let data_bytes = serialize_value(value)?;
-
         let fields_lock = self
             .data
             .get_with(session_id.to_string(), async {
@@ -199,21 +145,19 @@ impl SessionStore for MokaStore {
             .await;
 
         let mut fields = fields_lock.write().await;
-
         let now = Instant::now();
-        fields.retain(|_, v| v.expires_at.map(|e| e > now).unwrap_or(true));
+
+        fields.retain(|_, v| v.expires_at > now);
 
         fields.insert(
             field.to_string(),
             StoredValue {
                 data: data_bytes,
-                expires_at,
+                expires_at: now + Duration::from_secs(field_ttl_secs.into()),
             },
         );
 
-        drop(fields);
-
-        Ok(self.get_ttl(session_id).await)
+        Ok(())
     }
 
     async fn set_and_rename<T>(
@@ -222,11 +166,10 @@ impl SessionStore for MokaStore {
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        #[cfg(feature = "layered-store")] _: Option<i64>,
+        field_ttl: Ttl,
+        #[cfg(feature = "layered-store")] _: Option<Ttl>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-    ) -> Result<i64, Error>
+    ) -> Result<(), Error>
     where
         T: Send + Sync + Serialize,
     {
@@ -239,11 +182,6 @@ impl SessionStore for MokaStore {
             )));
         }
 
-        if key_ttl_secs == 0 {
-            self.data.invalidate(old_key).await;
-            return Ok(-2);
-        }
-
         let fields_lock = if let Some(lock) = self.data.get(old_key).await {
             self.data.invalidate(old_key).await;
             lock
@@ -252,32 +190,26 @@ impl SessionStore for MokaStore {
         };
 
         let mut fields = fields_lock.write().await;
-
         let now = Instant::now();
-        fields.retain(|_, v| v.expires_at.map(|e| e > now).unwrap_or(true));
 
-        if field_ttl_secs == 0 {
-            fields.remove(field);
-        } else {
-            let expires_at = determine_expiry(key_ttl_secs, field_ttl_secs);
-            fields.insert(
-                field.to_string(),
-                StoredValue {
-                    data: serialize_value(value)?,
-                    expires_at,
-                },
-            );
-        }
+        fields.retain(|_, v| v.expires_at > now);
+
+        fields.insert(
+            field.to_string(),
+            StoredValue {
+                data: serialize_value(value)?,
+                expires_at: now + Duration::from_secs(field_ttl.into()),
+            },
+        );
 
         let is_empty = fields.is_empty();
         drop(fields);
 
-        if is_empty {
-            return Ok(-2);
+        if !is_empty {
+            self.data.insert(new_key.to_string(), fields_lock).await;
         }
 
-        self.data.insert(new_key.to_string(), fields_lock).await;
-        Ok(self.get_ttl(new_session_id).await)
+        Ok(())
     }
 
     async fn rename_session_id(
@@ -301,31 +233,23 @@ impl SessionStore for MokaStore {
         }
     }
 
-    async fn remove(&self, session_id: &Id, field: &str) -> Result<i64, Error> {
+    async fn remove(&self, session_id: &Id, field: &str) -> Result<(), Error> {
         let session_id_str = session_id.as_str();
 
         if let Some(fields_lock) = self.data.get(session_id_str).await {
             let mut fields = fields_lock.write().await;
-
             let now = Instant::now();
-            fields.retain(|_, v| v.expires_at.map(|e| e > now).unwrap_or(true));
 
-            let removed = fields.remove(field).is_some();
+            fields.retain(|_, v| v.expires_at > now);
+            fields.remove(field);
 
             if fields.is_empty() {
                 drop(fields);
                 self.data.invalidate(session_id_str).await;
-                return Ok(-2);
             }
-
-            drop(fields);
-            if removed {
-                return Ok(self.get_ttl(session_id).await);
-            }
-            return Ok(self.get_ttl(session_id).await);
         }
 
-        Ok(-2)
+        Ok(())
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
@@ -338,28 +262,20 @@ impl SessionStore for MokaStore {
         }
     }
 
-    async fn expire(&self, session_id: &Id, seconds: i64) -> Result<bool, Error> {
-        if seconds == 0 {
-            return self.delete(session_id).await;
-        }
-
+    async fn expire_field(&self, session_id: &Id, field: &str, ttl: Ttl) -> Result<bool, Error> {
         if let Some(fields_lock) = self.data.get(session_id.as_str()).await {
             let mut fields = fields_lock.write().await;
-            let new_expiry =
-                (seconds > 0).then(|| Instant::now() + Duration::from_secs(seconds as u64));
+            let now = Instant::now();
 
-            for value in fields.values_mut() {
-                value.expires_at = match (new_expiry, value.expires_at) {
-                    (None, _) => None,
-                    (Some(_), None) => value.expires_at,
-                    (Some(new), Some(cur)) if cur > new => Some(new),
-                    _ => value.expires_at,
-                };
+            if let Some(value) = fields.get_mut(field) {
+                if value.expires_at > now {
+                    value.expires_at = now + Duration::from_secs(ttl.into());
+                    return Ok(true);
+                }
             }
-            Ok(true)
-        } else {
-            Ok(false)
         }
+
+        Ok(false)
     }
 }
 
@@ -368,8 +284,8 @@ impl crate::store::LayeredHotStore for MokaStore {
     async fn set_multiple(
         &self,
         session_id: &Id,
-        pairs: &[(&str, &[u8], Option<i64>)],
-    ) -> Result<i64, Error> {
+        pairs: &[(&str, &[u8], Ttl)],
+    ) -> Result<(), Error> {
         let session_id_str = session_id.as_str();
 
         let fields_lock = self
@@ -380,24 +296,20 @@ impl crate::store::LayeredHotStore for MokaStore {
             .await;
 
         let mut fields = fields_lock.write().await;
-
         let now = Instant::now();
-        fields.retain(|_, v| v.expires_at.map(|e| e > now).unwrap_or(true));
 
-        for (field, data, cache_ttl) in pairs {
-            let expires_at =
-                cache_ttl.and_then(|ttl| (ttl > 0).then(|| now + Duration::from_secs(ttl as u64)));
+        fields.retain(|_, v| v.expires_at > now);
 
+        for (field, data, field_ttl) in pairs {
             fields.insert(
                 field.to_string(),
                 StoredValue {
                     data: data.to_vec(),
-                    expires_at,
+                    expires_at: now + Duration::from_secs((*field_ttl).into()),
                 },
             );
         }
 
-        drop(fields);
-        Ok(self.get_ttl(session_id).await)
+        Ok(())
     }
 }

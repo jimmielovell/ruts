@@ -70,7 +70,7 @@ use ruts::Session;
 use ruts::store::SessionMap;
 use ruts::store::memory::MemoryStore;
 
-[derive(serde::Deserialize)]
+#[derive(serde::Deserialize)]
 struct User;
 
 async fn handler(session: Session<MemoryStore>) {
