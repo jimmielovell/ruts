@@ -228,6 +228,13 @@
 //! ruts = { version = "0.10.1", default-features = false, features = ["axum", "messagepack"] }
 //! ```
 //!
+//! Cargo features are additive, so enabling `messagepack` without turning the
+//! defaults off leaves `bincode` enabled too. `messagepack` takes precedence and
+//! `bincode` is unused.
+//!
+//! The two formats are not wire-compatible. Switching backends on a store that
+//! already holds sessions invalidates every field in it.
+//!
 //! ## Cookie Configuration
 //!
 //! ```rust

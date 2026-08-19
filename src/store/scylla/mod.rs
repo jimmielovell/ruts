@@ -526,10 +526,14 @@ impl crate::store::LayeredColdStore for ScyllaStore {
         for (field, value, hot_cache_ttl, ttl) in rows {
             session_map.insert(field.clone(), value);
 
+            // Clamp to 1s: `ttl(value)` reports 0 for a field with under a
+            // second left, and `Ttl` rejects 0 — which would fail the whole
+            // session read over one nearly-expired field.
             let hot = hot_cache_ttl
                 .filter(|t| *t >= 0)
                 .unwrap_or(ttl as i64)
-                .min(ttl as i64);
+                .min(ttl as i64)
+                .max(1);
             meta_map.insert(field, Ttl::new(hot)?);
         }
 

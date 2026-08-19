@@ -42,6 +42,12 @@ impl From<bincode::error::DecodeError> for Error {
     }
 }
 
+#[cfg(not(any(feature = "bincode", feature = "messagepack")))]
+compile_error!(
+    "ruts needs a serialization backend: enable either the `bincode` (default) or \
+     `messagepack` feature"
+);
+
 #[cfg(feature = "messagepack")]
 pub fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
     rmp_serde::to_vec(value).map_err(|e| Error::Encode(e.to_string()))
@@ -52,13 +58,13 @@ pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, 
     rmp_serde::from_slice(value).map_err(|e| Error::Decode(e.to_string()))
 }
 
-#[cfg(feature = "bincode")]
+#[cfg(all(feature = "bincode", not(feature = "messagepack")))]
 pub fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
     let e = bincode::serde::encode_to_vec(value, bincode::config::standard())?;
     Ok(e)
 }
 
-#[cfg(feature = "bincode")]
+#[cfg(all(feature = "bincode", not(feature = "messagepack")))]
 pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, Error> {
     let (d, _) = bincode::serde::decode_from_slice(value, bincode::config::standard())?;
     Ok(d)

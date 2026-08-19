@@ -221,19 +221,14 @@ impl PostgresStore {
         field: &str,
         value: &T,
         field_ttl: Ttl,
-        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<Ttl>,
-        #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
+        hot_cache_ttl: Option<Ttl>,
         old_session_id: Option<&Id>,
     ) -> Result<(), Error>
     where
         T: Send + Sync + Serialize,
     {
         let value_bytes = serialize_value(value)?;
-
-        #[cfg(feature = "layered-store")]
         let hot_cache_ttl = hot_cache_ttl.map(|h| h.min(field_ttl));
-        #[cfg(not(feature = "layered-store"))]
-        let hot_cache_ttl: Option<Ttl> = None;
 
         let query = format!(
             r#"
@@ -465,11 +460,17 @@ impl crate::store::LayeredColdStore for PostgresStore {
 
         for (field, value, hot_cache_ttl, ttl) in rows {
             session_map.insert(field.clone(), value);
-            let hot = hot_cache_ttl.filter(|t| *t >= 0).unwrap_or(ttl).min(ttl);
 
-            if hot > 0 {
-                meta_map.insert(field, Ttl::new(hot)?);
-            }
+            // `ttl` truncates toward zero, so a field with under a second left
+            // reports 0 while still being live. Clamp to 1s rather than skip:
+            // `Ttl` rejects 0, and leaving the field out of `meta_map` while it
+            // stays in `session_map` desyncs the two maps.
+            let hot = hot_cache_ttl
+                .filter(|t| *t >= 0)
+                .unwrap_or(ttl)
+                .min(ttl)
+                .max(1);
+            meta_map.insert(field, Ttl::new(hot)?);
         }
 
         if session_map.is_empty() {

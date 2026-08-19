@@ -38,9 +38,13 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       # https://twitter.com/jonhoo/status/1571290371124260865
+      # The postgres/redis/scylla test targets declare `required-features`, so
+      # leaving those features off skips them here; the `integration` job runs
+      # them against real servers.
       - name: cargo test --locked
-        run: cargo test --locked --all-features --all-targets
+        run: cargo test --locked --features axum,bincode,signed,moka-store,layered-store --all-targets
       # https://github.com/rust-lang/cargo/issues/6669
+      # Doc tests never open a connection, so they can run at --all-features.
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
   minimal:
@@ -81,7 +85,7 @@ jobs:
       - name: cargo update -Zminimal-versions
         run: cargo +nightly update -Zminimal-versions
       - name: cargo test
-        run: cargo test --locked --all-features --all-targets
+        run: cargo test --locked --features axum,bincode,signed,moka-store,layered-store --all-targets
   os-check:
     # run cargo test on mac and windows
     runs-on: ${{ matrix.os }}
@@ -106,7 +110,76 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       - name: cargo test
-        run: cargo test --locked --all-features --all-targets
+        run: cargo test --locked --features axum,bincode,signed,moka-store,layered-store --all-targets
+  integration:
+    # Runs the store test suites that need a live server. Everything else runs
+    # without one; see the `required` job.
+    runs-on: ubuntu-latest
+    name: ubuntu / stable / integration
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ruts_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        # 7.4+ is required: RedisStore uses HEXPIRE for field-level TTLs.
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      # ScyllaDB is started by hand rather than as a service container: it needs
+      # CMD arguments to fit inside a CI runner, and service containers cannot
+      # override an image's command. Pin this to the version you deploy.
+      - name: Start ScyllaDB
+        run: |
+          docker run -d --name scylla -p 9042:9042 scylladb/scylla:6.2 \
+            --smp 1 --memory 1G --overprovisioned 1 --developer-mode 1 \
+            --skip-wait-for-gossip-to-settle 0
+      - name: Wait for ScyllaDB
+        run: |
+          for _ in $(seq 1 60); do
+            if docker exec scylla cqlsh -e 'describe keyspaces' >/dev/null 2>&1; then
+              echo "ScyllaDB is ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "ScyllaDB did not become ready within 5 minutes"
+          docker logs scylla
+          exit 1
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+      # --test-threads=1 because every store's `setup_store()` resets shared
+      # server state (drop table / flushall / truncate), so tests in one binary
+      # would otherwise clobber each other.
+      - name: cargo test --locked --all-features
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/ruts_test
+          SCYLLA_URI: 127.0.0.1:9042
+        run: cargo test --locked --all-features --all-targets -- --test-threads=1
+      - name: ScyllaDB logs
+        if: failure()
+        run: docker logs scylla
   coverage:
     # use llvm-cov to build and collect coverage and outputs in a format that
     # is compatible with codecov.io
@@ -145,7 +218,7 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       - name: cargo llvm-cov
-        run: cargo llvm-cov --locked --all-features --lcov --output-path lcov.info
+        run: cargo llvm-cov --locked --features axum,bincode,signed,moka-store,layered-store --lcov --output-path lcov.info
       - name: Record Rust version
         run: echo "RUST=$(rustc --version)" >> "$GITHUB_ENV"
       - name: Upload to codecov.io

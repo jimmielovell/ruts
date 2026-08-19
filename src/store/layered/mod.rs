@@ -1,6 +1,25 @@
 use crate::Id;
 use crate::store::{Error, LayeredColdStore, LayeredHotStore, SessionMap, SessionStore, Ttl};
 use serde::{Serialize, de::DeserializeOwned};
+use std::collections::HashMap;
+
+/// Pairs each field with the hot-cache TTL the cold store reported for it.
+///
+/// A field missing from `hot_cache_ttl_map` is skipped rather than unwrapped:
+/// the two maps are built together and should always agree, but a desync here
+/// used to panic in the request path.
+fn cacheable_pairs<'a>(
+    session_map: &'a SessionMap,
+    hot_cache_ttl_map: &HashMap<String, Ttl>,
+) -> Vec<(&'a str, &'a [u8], Ttl)> {
+    session_map
+        .iter()
+        .filter_map(|(field, value)| {
+            let hot_cache_ttl = *hot_cache_ttl_map.get(field)?;
+            Some((field.as_str(), value.as_slice(), hot_cache_ttl))
+        })
+        .collect()
+}
 
 /// [`LayeredStore`], a composite store that layers a fast,
 /// ephemeral "hot" cache (like Redis) on top of a slower, persistent "cold"
@@ -77,13 +96,7 @@ where
             Some(value) => Ok(Some(value)),
             None => match self.cold.get_all_with_meta(session_id).await? {
                 Some((session_map, hot_cache_ttl_map)) => {
-                    let pairs_to_cache: Vec<(&str, &[u8], Ttl)> = session_map
-                        .iter()
-                        .map(|(key, value)| {
-                            let hot_cache_ttl = hot_cache_ttl_map.get(key).unwrap().to_owned();
-                            (key.as_str(), value.as_slice(), hot_cache_ttl)
-                        })
-                        .collect();
+                    let pairs_to_cache = cacheable_pairs(&session_map, &hot_cache_ttl_map);
 
                     if !pairs_to_cache.is_empty() {
                         self.hot.set_multiple(session_id, &pairs_to_cache).await?;
@@ -99,13 +112,7 @@ where
     async fn get_all(&self, session_id: &Id) -> Result<Option<SessionMap>, Error> {
         match self.cold.get_all_with_meta(session_id).await? {
             Some((session_map, hot_cache_ttl_map)) => {
-                let pairs_to_cache: Vec<(&str, &[u8], Ttl)> = session_map
-                    .iter()
-                    .map(|(key, value)| {
-                        let hot_cache_ttl = hot_cache_ttl_map.get(key).unwrap().to_owned();
-                        (key.as_str(), value.as_slice(), hot_cache_ttl)
-                    })
-                    .collect();
+                let pairs_to_cache = cacheable_pairs(&session_map, &hot_cache_ttl_map);
 
                 if !pairs_to_cache.is_empty() {
                     self.hot.set_multiple(session_id, &pairs_to_cache).await?;
@@ -212,5 +219,30 @@ where
         )?;
 
         Ok(hot_expired || cold_expired)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A field present in the session map but missing from the meta map used to
+    /// panic here, taking down the request. It should be skipped instead.
+    #[test]
+    fn cacheable_pairs_skips_fields_missing_from_meta() {
+        let mut fields = HashMap::new();
+        fields.insert("present".to_string(), vec![1u8, 2, 3]);
+        fields.insert("absent_from_meta".to_string(), vec![4u8, 5]);
+        let session_map = SessionMap::new(fields);
+
+        let mut meta = HashMap::new();
+        meta.insert("present".to_string(), Ttl::new(30).unwrap());
+
+        let pairs = cacheable_pairs(&session_map, &meta);
+
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, "present");
+        assert_eq!(pairs[0].1, &[1u8, 2, 3]);
+        assert_eq!(pairs[0].2, Ttl::new(30).unwrap());
     }
 }
