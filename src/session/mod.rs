@@ -372,6 +372,11 @@ where
     pub fn id(&self) -> Option<Id> {
         self.inner.get_id()
     }
+
+    /// Returns the cookie max_age, if it exists.
+    pub fn cookie_max_age(&self) -> Option<u64> {
+        self.inner.get_cookie_max_age()
+    }
 }
 
 const SESSION_STATE_CHANGED: u8 = 1;
@@ -455,5 +460,9 @@ impl<T: SessionStore> Inner<T> {
 
     pub(crate) fn set_cookies_if_empty(&self, cookies: Cookies) -> bool {
         self.cookies.set(cookies).is_ok()
+    }
+
+    pub(crate) fn get_cookie_max_age(&self) -> Option<u64> {
+        *self.cookie_max_age.read()
     }
 }
