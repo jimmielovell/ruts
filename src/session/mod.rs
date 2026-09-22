@@ -104,8 +104,10 @@ where
 
     /// Sets a value in the session store.
     ///
-    /// If the field doesn't exist, it will be inserted. Requires a strictly
-    /// positive `field_ttl_secs`.
+    /// If the field doesn't exist, it will be inserted.
+    ///
+    /// A `field_ttl` of [`Ttl::ZERO`] means the value must not be stored: the
+    /// field is removed if it was there, and nothing is written in its place.
     ///
     /// This does **not** change the cookie's `Max-Age`: the cookie lifetime is
     /// owned by [`CookieOptions::max_age`] and only changed explicitly via
@@ -251,7 +253,8 @@ where
     /// Extends the TTL of a specific `field` belonging to the session.
     ///
     /// Returns `true` if the field existed and was active, `false` if it was
-    /// missing or expired. Requires a strictly positive `ttl_secs`.
+    /// missing or expired. A `ttl` of [`Ttl::ZERO`] removes the field instead
+    /// of extending it, and still reports whether it was there to remove.
     ///
     /// This re-TTLs the named field only; it does not touch other fields and
     /// does not change the cookie's `Max-Age`. On success the cookie is

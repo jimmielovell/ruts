@@ -227,6 +227,21 @@ impl PostgresStore {
     where
         T: Send + Sync + Serialize,
     {
+        if field_ttl.is_zero() {
+            let mut tx = self.pool.begin().await?;
+
+            if let Some(old_session_id) = old_session_id {
+                let _ = self
+                    ._rename_session_id(&mut tx, old_session_id, session_id)
+                    .await?;
+            }
+
+            self._remove(&mut *tx, session_id, field).await?;
+            tx.commit().await?;
+
+            return Ok(());
+        }
+
         let value_bytes = serialize_value(value)?;
         let hot_cache_ttl = hot_cache_ttl.map(|h| h.min(field_ttl));
 
@@ -461,16 +476,13 @@ impl crate::store::LayeredColdStore for PostgresStore {
         for (field, value, hot_cache_ttl, ttl) in rows {
             session_map.insert(field.clone(), value);
 
-            // `ttl` truncates toward zero, so a field with under a second left
-            // reports 0 while still being live. Clamp to 1s rather than skip:
-            // `Ttl` rejects 0, and leaving the field out of `meta_map` while it
-            // stays in `session_map` desyncs the two maps.
-            let hot = hot_cache_ttl
+            let hot_ttl = hot_cache_ttl
                 .filter(|t| *t >= 0)
                 .unwrap_or(ttl)
                 .min(ttl)
-                .max(1);
-            meta_map.insert(field, Ttl::new(hot)?);
+                .max(0);
+
+            meta_map.insert(field, Ttl::new(hot_ttl)?);
         }
 
         if session_map.is_empty() {

@@ -136,6 +136,11 @@ impl SessionStore for MokaStore {
     where
         T: Send + Sync + Serialize,
     {
+        if field_ttl_secs.is_zero() {
+            let _ = self.remove(session_id, field).await?;
+            return Ok(());
+        }
+
         let data_bytes = serialize_value(value)?;
         let fields_lock = self
             .data
@@ -182,11 +187,13 @@ impl SessionStore for MokaStore {
             )));
         }
 
-        let fields_lock = if let Some(lock) = self.data.get(old_key).await {
-            self.data.invalidate(old_key).await;
-            lock
-        } else {
-            Arc::new(RwLock::new(HashMap::new()))
+        let fields_lock = match self.data.get(old_key).await {
+            Some(lock) => {
+                self.data.invalidate(old_key).await;
+                lock
+            }
+            None if field_ttl.is_zero() => return Ok(()),
+            None => Arc::new(RwLock::new(HashMap::new())),
         };
 
         let mut fields = fields_lock.write().await;
@@ -194,13 +201,17 @@ impl SessionStore for MokaStore {
 
         fields.retain(|_, v| v.expires_at > now);
 
-        fields.insert(
-            field.to_string(),
-            StoredValue {
-                data: serialize_value(value)?,
-                expires_at: now + Duration::from_secs(field_ttl.into()),
-            },
-        );
+        if field_ttl.is_zero() {
+            fields.remove(field);
+        } else {
+            fields.insert(
+                field.to_string(),
+                StoredValue {
+                    data: serialize_value(value)?,
+                    expires_at: now + Duration::from_secs(field_ttl.into()),
+                },
+            );
+        }
 
         let is_empty = fields.is_empty();
         drop(fields);
@@ -269,6 +280,17 @@ impl SessionStore for MokaStore {
 
             if let Some(value) = fields.get_mut(field) {
                 if value.expires_at > now {
+                    if ttl.is_zero() {
+                        fields.remove(field);
+
+                        if fields.is_empty() {
+                            drop(fields);
+                            self.data.invalidate(session_id.as_str()).await;
+                        }
+
+                        return Ok(true);
+                    }
+
                     value.expires_at = now + Duration::from_secs(ttl.into());
                     return Ok(true);
                 }
@@ -301,6 +323,10 @@ impl crate::store::LayeredHotStore for MokaStore {
         fields.retain(|_, v| v.expires_at > now);
 
         for (field, data, field_ttl) in pairs {
+            if field_ttl.is_zero() {
+                continue;
+            }
+
             fields.insert(
                 field.to_string(),
                 StoredValue {

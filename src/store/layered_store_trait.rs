@@ -7,6 +7,12 @@ use std::future::Future;
 /// This trait acts as a private API, allowing the `LayeredStore` to store multiple
 /// (field, value, cache_ttl) triplets in a single round-trip.
 pub trait LayeredHotStore: Clone + Send + Sync + 'static {
+    /// Caches each triplet under `session_id`.
+    ///
+    /// A pair whose TTL is [`Ttl::ZERO`] is skipped rather than cached: that is
+    /// the cold store marking a field as one the hot tier should not hold.
+    /// `LayeredStore` filters those out before calling, so skipping here only
+    /// catches a stray — cheaper than failing a session read over it.
     fn set_multiple(
         &self,
         session_id: &Id,
@@ -19,6 +25,10 @@ pub trait LayeredHotStore: Clone + Send + Sync + 'static {
 /// public `SessionStore` trait.
 pub trait LayeredColdStore: Clone + Send + Sync + 'static {
     /// Retrieves all session fields and their corresponding hot_cache_ttl.
+    ///
+    /// The two maps must carry the same keys: every field returned needs an
+    /// entry, and a field the hot tier should not hold is reported with
+    /// [`Ttl::ZERO`] rather than left out.
     fn get_all_with_meta(
         &self,
         session_id: &Id,

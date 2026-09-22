@@ -8,6 +8,10 @@ use std::collections::HashMap;
 /// A field missing from `hot_cache_ttl_map` is skipped rather than unwrapped:
 /// the two maps are built together and should always agree, but a desync here
 /// used to panic in the request path.
+///
+/// A field whose hot TTL is [`Ttl::ZERO`] is skipped too — that is the cold
+/// store saying "never cache this", either because it was written that way or
+/// because the field has less than a second left to live.
 fn cacheable_pairs<'a>(
     session_map: &'a SessionMap,
     hot_cache_ttl_map: &HashMap<String, Ttl>,
@@ -16,6 +20,9 @@ fn cacheable_pairs<'a>(
         .iter()
         .filter_map(|(field, value)| {
             let hot_cache_ttl = *hot_cache_ttl_map.get(field)?;
+            if hot_cache_ttl.is_zero() {
+                return None;
+            }
             Some((field.as_str(), value.as_slice(), hot_cache_ttl))
         })
         .collect()
@@ -51,6 +58,14 @@ fn cacheable_pairs<'a>(
 /// // The cold store (Postgres) will get the long-term expiry,
 /// // but the hot store (Redis) will be capped at the shorter TTL.
 /// session.set("user", &user, long_term_expiry, Some(short_term_hot_cache_expiry))
+///     .await
+///     .unwrap();
+///
+/// // A hot-cache TTL of zero keeps a field out of the hot store entirely: it
+/// // is persisted in the cold store and read from there, but never cached.
+/// // Useful for fields that are written once and read once, where a cache
+/// // entry is pure overhead.
+/// session.set("idempotency-key", &user, long_term_expiry, Some(Ttl::ZERO))
 ///     .await
 ///     .unwrap();
 /// # }
@@ -226,8 +241,6 @@ where
 mod tests {
     use super::*;
 
-    /// A field present in the session map but missing from the meta map used to
-    /// panic here, taking down the request. It should be skipped instead.
     #[test]
     fn cacheable_pairs_skips_fields_missing_from_meta() {
         let mut fields = HashMap::new();
@@ -244,5 +257,22 @@ mod tests {
         assert_eq!(pairs[0].0, "present");
         assert_eq!(pairs[0].1, &[1u8, 2, 3]);
         assert_eq!(pairs[0].2, Ttl::new(30).unwrap());
+    }
+
+    #[test]
+    fn cacheable_pairs_skips_fields_the_cold_store_will_not_cache() {
+        let mut fields = HashMap::new();
+        fields.insert("cache_me".to_string(), vec![1u8]);
+        fields.insert("never_cache".to_string(), vec![2u8]);
+        let session_map = SessionMap::new(fields);
+
+        let mut meta = HashMap::new();
+        meta.insert("cache_me".to_string(), Ttl::new(30).unwrap());
+        meta.insert("never_cache".to_string(), Ttl::ZERO);
+
+        let pairs = cacheable_pairs(&session_map, &meta);
+
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, "cache_me");
     }
 }

@@ -74,19 +74,30 @@ pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, 
 pub struct Ttl(i32);
 
 impl Ttl {
+    /// Instructs the store to not store this value.
+    ///
+    /// Writing a field with this TTL removes it from the store if it already
+    /// existed and defers persisting it.
+    pub const ZERO: Ttl = Ttl(0);
+
     pub fn new(secs: i64) -> Result<Self, Error> {
-        if secs <= 0 || secs > i32::MAX as i64 {
+        if secs < 0 || secs > i32::MAX as i64 {
             return Err(Error::Backend(format!(
-                "invalid ttl {secs}: must be 1..={}",
+                "invalid ttl {secs}: must be 0..={}",
                 i32::MAX
             )));
         }
         Ok(Ttl(secs as i32))
     }
 
-    /// The validated TTL in seconds (always `1..=i32::MAX`).
+    /// The validated TTL in seconds (always `0..=i32::MAX`).
     pub const fn get(self) -> i32 {
         self.0
+    }
+
+    /// Whether this TTL is [`Ttl::ZERO`].
+    pub const fn is_zero(self) -> bool {
+        self.0 == 0
     }
 }
 
@@ -160,6 +171,10 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
     ) -> impl Future<Output = Result<Option<SessionMap>, Error>> + Send;
 
     /// Sets a `field` stored at `session_id` to the new `value` using a field-specific TTL.
+    ///
+    /// A `field_ttl` of [`Ttl::ZERO`] means the value must not be stored: the
+    /// field is removed if it exists, the new value is never written, and no
+    /// session is established for it.
     fn set<T>(
         &self,
         session_id: &Id,
@@ -174,6 +189,9 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
 
     /// Updates a `field` stored at `session_id` to the new `value` and renames
     /// the session ID from `old_session_id` to `new_session_id`.
+    ///
+    /// A `field_ttl` of [`Ttl::ZERO`] still renames the session, but drops the
+    /// field from it rather than storing the value.
     #[allow(clippy::too_many_arguments)]
     fn set_and_rename<T>(
         &self,
