@@ -6,7 +6,15 @@ use ruts::store::redis::RedisStore;
 use std::sync::Arc;
 
 async fn setup_store() -> Arc<RedisStore<Client>> {
-    let client = Client::default();
+    // Configurable because this suite calls FLUSHALL: pointing it at the wrong
+    // instance wipes that instance.
+    let client = match std::env::var("REDIS_URL") {
+        Ok(url) => {
+            let config = fred::types::config::Config::from_url(&url).unwrap();
+            Client::new(config, None, None, None)
+        }
+        Err(_) => Client::default(),
+    };
     let _ = client.connect();
     client.wait_for_connect().await.unwrap();
 

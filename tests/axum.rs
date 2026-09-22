@@ -75,6 +75,22 @@ pub async fn run_session_operations<S: SessionStore>(session: &Session<S>) {
     let retrieved_new: Option<TestData> = session.get("test").await.unwrap();
     assert_eq!(retrieved_new.unwrap(), new_data);
 
+    // `remove` reports what it removed, the same as the store beneath it.
+    assert!(
+        session.remove("test").await.unwrap(),
+        "removing a field that is there must report true"
+    );
+    assert!(session.get::<TestData>("test").await.unwrap().is_none());
+    assert!(
+        !session.remove("test").await.unwrap(),
+        "removing it again must report false"
+    );
+
+    session
+        .set("test", &new_data, Ttl::new(3600).unwrap(), None)
+        .await
+        .unwrap();
+
     assert!(session.delete().await.unwrap());
     assert!(session.get::<TestData>("test").await.unwrap().is_none());
 }

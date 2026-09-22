@@ -76,6 +76,11 @@ path = "tests/moka.rs"
 required-features = ["moka-store"]
 
 [[test]]
+name = "layered"
+path = "tests/layered.rs"
+required-features = ["layered-store", "redis-store", "postgres-store"]
+
+[[test]]
 name = "postgres"
 path = "tests/postgres.rs"
 required-features = ["postgres-store"]
