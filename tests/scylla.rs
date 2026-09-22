@@ -9,6 +9,12 @@ async fn setup_store() -> Arc<ruts::store::scylla::ScyllaStore> {
     let session = SessionBuilder::new().known_node(uri).build().await.unwrap();
     let session = Arc::new(session);
 
+    for table in ["ruts_test.t_test", "ruts_test.t_test_ids"] {
+        let _ = session
+            .query_unpaged(format!("drop table if exists {table}"), &[])
+            .await;
+    }
+
     let store = ScyllaStoreBuilder::new(session.clone())
         .keyspace_name("ruts_test")
         .unwrap()
@@ -19,13 +25,9 @@ async fn setup_store() -> Arc<ruts::store::scylla::ScyllaStore> {
         .await
         .unwrap();
 
-    // Truncate before returning cleanly for tests
-    let _ = session
-        .query_unpaged("truncate table ruts_test.t_test", &[])
-        .await;
-
     Arc::new(store)
 }
 
 define_session_store_tests!(setup_store);
+define_session_store_timing_tests!(setup_store);
 define_layered_cold_store_tests!(setup_store);
