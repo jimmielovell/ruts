@@ -211,13 +211,17 @@ where
         Ok(hot_result && cold_result)
     }
 
-    async fn remove(&self, session_id: &Id, field: &str) -> Result<(), Error> {
-        tokio::try_join!(
+    async fn remove(&self, session_id: &Id, field: &str) -> Result<bool, Error> {
+        // Both tiers drop it; the cold store answers. A field can be absent
+        // from the hot tier and still be there — evicted, never cached, or
+        // lapsed early — so only the cold store knows whether there was
+        // anything to remove.
+        let (_, removed) = tokio::try_join!(
             self.hot.remove(session_id, field),
             self.cold.remove(session_id, field),
         )?;
 
-        Ok(())
+        Ok(removed)
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {

@@ -469,12 +469,35 @@ impl SessionStore for ScyllaStore {
         Ok(true)
     }
 
-    async fn remove(&self, session_id: &Id, field: &str) -> Result<(), Error> {
+    async fn remove(&self, session_id: &Id, field: &str) -> Result<bool, Error> {
         let Some(mapping_id) = self.get_mapping_id(session_id).await? else {
-            return Ok(());
+            return Ok(false);
         };
 
-        self.db_delete_field(mapping_id.as_str(), field).await
+        let exists = {
+            let mut stream = self
+                .session
+                .execute_iter(self.select_field_stmt.clone(), (mapping_id.as_str(), field))
+                .await
+                .map_err(backend_error)?
+                .rows_stream::<(Vec<u8>,)>()
+                .map_err(backend_error)?;
+
+            stream
+                .next()
+                .await
+                .transpose()
+                .map_err(backend_error)?
+                .is_some()
+        };
+
+        if !exists {
+            return Ok(false);
+        }
+
+        self.db_delete_field(mapping_id.as_str(), field).await?;
+
+        Ok(true)
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
@@ -508,19 +531,7 @@ impl SessionStore for ScyllaStore {
         };
 
         if ttl.is_zero() {
-            // Zero means "do not keep this": drop the field rather than
-            // rewriting it, which under `using ttl 0` would make it immortal.
-            if self
-                .db_select_field_value_ttl(mapping_id.as_str(), field)
-                .await?
-                .is_none()
-            {
-                return Ok(false);
-            }
-
-            self.db_delete_field(mapping_id.as_str(), field).await?;
-
-            return Ok(true);
+            return self.remove(session_id, field).await;
         }
 
         for _ in 0..EXPIRE_FIELD_MAX_ATTEMPTS {

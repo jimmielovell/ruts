@@ -186,6 +186,9 @@ where
 
     /// Removes a field along with its value from the session store.
     ///
+    /// Returns `true` if the field was there to remove, `false` if it was
+    /// missing or had already lapsed.
+    ///
     /// If this was the last live field, the session ceases to exist at the
     /// store. The session cookie is reissued (the server remains authoritative;
     /// a presented id with no live fields is simply treated as a fresh session).
@@ -201,20 +204,20 @@ where
     /// }
     /// ```
     #[tracing::instrument(name = "session-store: removing field", skip(self, field))]
-    pub async fn remove(&self, field: &str) -> Result<()> {
+    pub async fn remove(&self, field: &str) -> Result<bool> {
         let id = self.id().ok_or_else(|| {
             tracing::error!("session not initialized");
             Error::UnInitialized
         })?;
 
-        self.inner.store.remove(&id, field).await.map_err(|err| {
+        let removed = self.inner.store.remove(&id, field).await.map_err(|err| {
             tracing::error!(err = %err, "failed to remove field from session store");
             err
         })?;
 
         self.inner.set_changed();
 
-        Ok(())
+        Ok(removed)
     }
 
     /// Deletes the entire session from the store.

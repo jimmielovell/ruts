@@ -244,23 +244,24 @@ impl SessionStore for MokaStore {
         }
     }
 
-    async fn remove(&self, session_id: &Id, field: &str) -> Result<(), Error> {
-        let session_id_str = session_id.as_str();
+    async fn remove(&self, session_id: &Id, field: &str) -> Result<bool, Error> {
+        let cookie_id = session_id.as_str();
+        let mut removed = false;
 
-        if let Some(fields_lock) = self.data.get(session_id_str).await {
+        if let Some(fields_lock) = self.data.get(cookie_id).await {
             let mut fields = fields_lock.write().await;
             let now = Instant::now();
 
             fields.retain(|_, v| v.expires_at > now);
-            fields.remove(field);
+            removed |= fields.remove(field).is_some();
 
             if fields.is_empty() {
                 drop(fields);
-                self.data.invalidate(session_id_str).await;
+                self.data.invalidate(cookie_id).await;
             }
         }
 
-        Ok(())
+        Ok(removed)
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {

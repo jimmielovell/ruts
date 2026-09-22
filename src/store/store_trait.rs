@@ -220,14 +220,16 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         &self,
         session_id: &Id,
         field: &str,
-    ) -> impl Future<Output = Result<(), Error>> + Send;
+    ) -> impl Future<Output = Result<bool, Error>> + Send;
 
     /// Deletes all `field`s along with their `value`s stored in the `session_id`.
     fn delete(&self, session_id: &Id) -> impl Future<Output = Result<bool, Error>> + Send;
 
     /// Extends the TTL of a specific `field` belonging to `session_id`.
     /// Returns `true` if the field existed and was active, `false` if it was missing or expired.
-    /// Returns an error if `ttl` is 0.
+    ///
+    /// A `ttl` of [`Ttl::ZERO`] removes the field instead of extending it, and
+    /// reports whether it was there to remove.
     fn expire_field(
         &self,
         session_id: &Id,

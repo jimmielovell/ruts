@@ -164,9 +164,9 @@ where
         Ok(result == 1)
     }
 
-    async fn remove(&self, session_id: &Id, field: &str) -> Result<(), Error> {
-        let _: () = self.client.hdel(session_id, field).await?;
-        Ok(())
+    async fn remove(&self, session_id: &Id, field: &str) -> Result<bool, Error> {
+        let removed: bool = self.client.hdel(session_id, field).await?;
+        Ok(removed)
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {

@@ -65,7 +65,7 @@ impl PostgresStore {
         Ok(result.rows_affected() > 0)
     }
 
-    async fn _remove<'e, E>(&self, executor: E, session_id: &Id, field: &str) -> Result<(), Error>
+    async fn _remove<'e, E>(&self, executor: E, session_id: &Id, field: &str) -> Result<bool, Error>
     where
         E: Executor<'e, Database = Postgres>,
     {
@@ -74,13 +74,13 @@ impl PostgresStore {
             self.table_name
         );
 
-        sqlx::query(&query)
+        let result = sqlx::query(&query)
             .bind(session_id.as_str())
             .bind(field)
             .execute(executor)
             .await?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     async fn _upsert<T>(
@@ -269,8 +269,24 @@ impl SessionStore for PostgresStore {
         Ok(result)
     }
 
-    async fn remove(&self, session_id: &Id, field: &str) -> Result<(), Error> {
-        self._remove(&self.pool, session_id, field).await
+    async fn remove(&self, session_id: &Id, field: &str) -> Result<bool, Error> {
+        let query = format!(
+            r#"
+            delete from {table}
+            where session_id = $1
+              and field = $2
+            returning expires_at > now() as was_live
+            "#,
+            table = self.table_name
+        );
+
+        let row: Option<(bool,)> = sqlx::query_as(&query)
+            .bind(session_id.as_str())
+            .bind(field)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        Ok(matches!(row, Some((true,))))
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
@@ -287,6 +303,10 @@ impl SessionStore for PostgresStore {
     }
 
     async fn expire_field(&self, session_id: &Id, field: &str, ttl: Ttl) -> Result<bool, Error> {
+        if ttl.is_zero() {
+            return self.remove(session_id, field).await;
+        }
+
         let query = format!(
             r#"
             update {table}
