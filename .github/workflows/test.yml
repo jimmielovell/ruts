@@ -175,6 +175,7 @@ jobs:
       - name: cargo test --locked --all-features
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/ruts_test
+          REDIS_URL: redis://127.0.0.1:6379
           SCYLLA_URI: 127.0.0.1:9042
         run: cargo test --locked --all-features --all-targets -- --test-threads=1
       - name: ScyllaDB logs
