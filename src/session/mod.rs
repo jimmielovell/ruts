@@ -5,6 +5,9 @@ pub use cookie_options::CookieOptions;
 
 mod id;
 pub use id::Id;
+// Only the Scylla store indirects a presented id to a stored one.
+#[cfg(feature = "scylla-store")]
+pub(crate) use id::MappingId;
 
 use crate::store;
 use crate::store::{SessionMap, SessionStore, Ttl};
@@ -321,7 +324,7 @@ where
             Error::UnInitialized
         })?;
 
-        let new_id = Id::default();
+        let new_id = Id::default().with_max_age(self.inner.get_cookie_max_age());
         let renamed = self
             .inner
             .store
@@ -333,7 +336,7 @@ where
             })?;
 
         if renamed {
-            *self.inner.id.write() = Some(new_id);
+            *self.inner.id.write() = Some(new_id.clone());
             self.inner.set_changed();
             return Ok(Some(new_id));
         }
@@ -362,8 +365,8 @@ where
         if self.id().is_none() {
             self.inner.get_or_set_id()
         } else {
-            let new_id = Id::default();
-            self.inner.set_pending_id(Some(new_id));
+            let new_id = Id::default().with_max_age(self.inner.get_cookie_max_age());
+            self.inner.set_pending_id(Some(new_id.clone()));
             new_id
         }
     }
@@ -426,12 +429,24 @@ impl<T: SessionStore> Inner<T> {
         self.state.load(Ordering::Relaxed) == SESSION_STATE_DELETED
     }
 
+    /// The session id, stamped with the cookie lifetime currently in force.
+    ///
+    /// Stamping happens here rather than where the id is stored so that
+    /// [`Session::set_expiration`] is picked up by anything that reads the id
+    /// afterwards. A store is only ever handed an `Id`, so this is how the
+    /// cookie's `max_age` reaches one that needs it.
     pub(crate) fn get_id(&self) -> Option<Id> {
-        *self.id.read()
+        let max_age = self.get_cookie_max_age();
+        self.id.read().clone().map(|id| id.with_max_age(max_age))
     }
 
     pub(crate) fn get_or_set_id(&self) -> Id {
-        *self.id.write().get_or_insert(Id::default())
+        let max_age = self.get_cookie_max_age();
+        self.id
+            .write()
+            .get_or_insert(Id::default())
+            .clone()
+            .with_max_age(max_age)
     }
 
     pub(crate) fn set_id(&self, id: Option<Id>) {
