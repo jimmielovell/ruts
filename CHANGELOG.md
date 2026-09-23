@@ -5,7 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.11.0] - Unreleased
+## [0.11.1] - Unreleased
+
+### Fixed
+
+- Items that only one feature uses are now compiled out with it instead of built
+  and warned about: `MappingId` and the mapping cell on `Id` (`scylla-store`),
+  `Session::new` and the extractor's fields on `Inner` (`axum`, `signed`),
+  `SessionMap::new` (any backend store), and Scylla's all-fields-with-meta
+  statement (`layered-store`).
+- The `axum` test target declares its `required-features`; it was built in
+  configurations without `moka-store`, where it could not compile.
+
+### Performance
+
+- Without `scylla-store`, `Id` no longer carries or allocates an
+  `Arc<RwLock<..>>` for the mapping cell.
+- Without `layered-store`, `ScyllaStore` no longer prepares a statement at
+  startup that nothing can execute.
+
+## [0.11.0] - 2026-09-23
 
 ### Added
 

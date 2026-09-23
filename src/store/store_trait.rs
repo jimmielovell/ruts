@@ -129,6 +129,15 @@ impl From<Ttl> for f64 {
 pub struct SessionMap(HashMap<String, Vec<u8>>);
 
 impl SessionMap {
+    /// Only a store builds one of these.
+    #[cfg(any(
+        feature = "redis-store",
+        feature = "postgres-store",
+        feature = "moka-store",
+        feature = "scylla-store",
+        // The layered store's own unit tests build one directly.
+        all(test, feature = "layered-store"),
+    ))]
     pub(crate) fn new(map: HashMap<String, Vec<u8>>) -> Self {
         Self(map)
     }

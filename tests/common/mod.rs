@@ -1,3 +1,6 @@
+// Each test binary pulls in this module and uses a subset of it.
+#![allow(dead_code)]
+
 use ruts::Id;
 use ruts::store::{Error, SessionStore, Ttl};
 use serde::{Deserialize, Serialize};
