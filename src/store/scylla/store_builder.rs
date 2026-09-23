@@ -196,6 +196,11 @@ impl ScyllaStoreBuilder {
                 false,
             )
                 .await?,
+            select_field_exists_stmt: prepare_stmt(
+                format!("select field from {data} where mapping_id = ? and field = ?"),
+                false,
+            )
+                .await?,
             select_all_stmt: prepare_stmt(
                 format!("select field, value from {data} where mapping_id = ?"),
                 false,

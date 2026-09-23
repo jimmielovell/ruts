@@ -20,19 +20,17 @@ fn backend_error<E: std::fmt::Display>(err: E) -> Error {
     Error::Backend(err.to_string())
 }
 
-/// How long a mapping row should live for `id`.
-fn mapping_ttl(id: &Id, field_ttl: Ttl) -> i32 {
-    match id.max_age() {
-        Some(secs) => secs.min(i32::MAX as u64) as i32,
-        None => i32::from(field_ttl),
-    }
+/// Scylla rejects a TTL past 20 years rather than capping it.
+const MAX_TTL_SECS: u64 = 630_720_000;
+
+fn capped(secs: u64) -> i32 {
+    secs.min(MAX_TTL_SECS) as i32
 }
 
-fn set_mapping_id(old: &Id, new: &Id, internal: MappingId) {
-    if let Ok(parsed) = internal.as_str().parse::<Id>() {
-        new.set_mapping_id(&parsed);
-    }
-    old.clear_mapping_id();
+/// The cookie's lifetime when it has one, else `fallback`. Never zero: CQL
+/// reads `using ttl 0` as "no expiry".
+fn mapping_ttl(id: &Id, fallback: u64) -> i32 {
+    capped(id.max_age().unwrap_or(fallback).max(1))
 }
 
 /// A ScyllaDB-backed session store.
@@ -43,6 +41,7 @@ pub struct ScyllaStore {
     insert_mapping_id_stmt: PreparedStatement,
     delete_all_stmt: PreparedStatement,
     select_field_stmt: PreparedStatement,
+    select_field_exists_stmt: PreparedStatement,
     select_all_stmt: PreparedStatement,
     #[cfg(feature = "layered-store")]
     select_all_with_meta_stmt: PreparedStatement,
@@ -55,30 +54,30 @@ pub struct ScyllaStore {
 
 impl ScyllaStore {
     async fn get_mapping_id(&self, id: &Id) -> Result<Option<MappingId>, Error> {
-        if let Some(internal) = id.mapping_id() {
-            return Ok(Some(internal));
+        if let Some(mapping_id) = id.mapping_id() {
+            return Ok(Some(mapping_id));
         }
 
         match self.db_get_mapping_id(id.as_str()).await? {
-            Some((internal, _)) => Ok(Some(id.set_mapping_id(&internal))),
+            Some((mapping_id, _)) => Ok(Some(id.set_mapping_id(mapping_id))),
             None => Ok(None),
         }
     }
 
     async fn get_or_create_mapping_id(&self, id: &Id) -> Result<MappingId, Error> {
         match self.get_mapping_id(id).await? {
-            Some(internal) => Ok(internal),
-            None => Ok(id.set_mapping_id(&Id::default())),
+            Some(mapping_id) => Ok(mapping_id),
+            None => Ok(id.set_mapping_id(MappingId::random())),
         }
     }
 
     async fn db_get_mapping_id(
         &self,
-        public_id_part: &str,
-    ) -> Result<Option<(Id, Option<i32>)>, Error> {
+        cookie_id: &str,
+    ) -> Result<Option<(MappingId, Option<i32>)>, Error> {
         let mut stream = self
             .session
-            .execute_iter(self.select_mapping_id_stmt.clone(), (public_id_part,))
+            .execute_iter(self.select_mapping_id_stmt.clone(), (cookie_id,))
             .await
             .map_err(backend_error)?
             .rows_stream::<(String, Option<i32>)>()
@@ -87,27 +86,12 @@ impl ScyllaStore {
         let Some(row) = stream.next().await else {
             return Ok(None);
         };
-        let (internal, ttl) = row.map_err(backend_error)?;
+        let (mapping_id, ttl) = row.map_err(backend_error)?;
 
-        internal
-            .parse::<Id>()
-            .map(|internal| Some((internal, ttl)))
-            .map_err(|err| Error::Backend(format!("stored internal id is malformed: {err:?}")))
-    }
-
-    async fn db_get_mapping_row_ttl(&self, old: &Id, new: &Id) -> Result<i32, Error> {
-        if let Some(secs) = new.max_age() {
-            return Ok(secs.min(i32::MAX as u64) as i32);
-        }
-
-        let ttl = self
-            .db_get_mapping_id(old.as_str())
-            .await?
-            .and_then(|(_, remaining)| remaining)
-            .unwrap_or(0);
-
-        // `USING TTL 0` means "no expiry" in CQL.
-        Ok(ttl.max(1))
+        mapping_id
+            .parse::<MappingId>()
+            .map(|mapping_id| Some((mapping_id, ttl)))
+            .map_err(|err| Error::Backend(format!("stored mapping id is malformed: {err:?}")))
     }
 
     async fn db_insert_mapping_id(
@@ -152,32 +136,101 @@ impl ScyllaStore {
         (batch, values)
     }
 
-    async fn rename_and_remove_field(&self, old: &Id, new: &Id, field: &str) -> Result<(), Error> {
-        let Some(mapping_id) = self.get_mapping_id(old).await? else {
-            return Ok(());
+    async fn db_write<T>(
+        &self,
+        id: &Id,
+        field: &str,
+        value: &T,
+        field_ttl: Ttl,
+        hot_cache_ttl: Option<Ttl>,
+    ) -> Result<(), Error>
+    where
+        T: Send + Sync + Serialize,
+    {
+        if field_ttl.is_zero() {
+            let Some(mapping_id) = self.get_mapping_id(id).await? else {
+                return Ok(());
+            };
+
+            return self.db_delete_field(mapping_id.as_str(), field).await;
+        }
+
+        let mapping_id = self.get_or_create_mapping_id(id).await?;
+
+        if let Err(err) = tokio::try_join!(
+            self.db_insert_mapping_id(id, mapping_id, mapping_ttl(id, field_ttl.into())),
+            self.db_insert_field_value(mapping_id, field, value, field_ttl, hot_cache_ttl),
+        ) {
+            id.clear_mapping_id();
+            return Err(err);
+        }
+
+        Ok(())
+    }
+
+    async fn db_rename_and_write<T>(
+        &self,
+        old: &Id,
+        new: &Id,
+        field: &str,
+        value: &T,
+        field_ttl: Ttl,
+        hot_cache_ttl: Option<Ttl>,
+    ) -> Result<(), Error>
+    where
+        T: Send + Sync + Serialize,
+    {
+        let (existing, b) = tokio::try_join!(
+            self.db_get_mapping_id(old.as_str()),
+            self.db_get_mapping_id(new.as_str())
+        )?;
+        let rotate = old != new && b.is_none();
+
+        let Some((mapping_id, remaining_ttl)) = existing else {
+            old.clear_mapping_id();
+            let target = if rotate { new } else { old };
+
+            return self
+                .db_write(target, field, value, field_ttl, hot_cache_ttl)
+                .await;
         };
 
-        let rename = old != new && self.db_get_mapping_id(new.as_str()).await?.is_none();
-        if rename {
-            let mapping_row_ttl = self.db_get_mapping_row_ttl(old, new).await?;
-            let (mut batch, mut values) =
-                self.build_db_rename_id_batch(old, new, mapping_id, mapping_row_ttl);
+        if !rotate {
+            old.set_mapping_id(mapping_id);
 
+            return self
+                .db_write(old, field, value, field_ttl, hot_cache_ttl)
+                .await;
+        }
+
+        let carried = remaining_ttl.unwrap_or(0).max(i32::from(field_ttl)) as u64;
+        let (mut batch, mut values) =
+            self.build_db_rename_id_batch(old, new, mapping_id, mapping_ttl(new, carried));
+
+        if field_ttl.is_zero() {
             batch.append_statement(self.delete_field_stmt.clone());
             values.push(vec![
                 Some(CqlValue::Text(mapping_id.as_str().to_string())),
                 Some(CqlValue::Text(field.to_string())),
             ]);
-
-            self.session
-                .batch(&batch, values)
-                .await
-                .map_err(backend_error)?;
-
-            set_mapping_id(old, new, mapping_id);
         } else {
-            self.db_delete_field(mapping_id.as_str(), field).await?;
+            batch.append_statement(self.insert_with_ttl_stmt.clone());
+            values.push(vec![
+                Some(CqlValue::Text(mapping_id.as_str().to_string())),
+                Some(CqlValue::Text(field.to_string())),
+                Some(CqlValue::Blob(serialize_value(value)?)),
+                hot_cache_ttl.map(|hot| CqlValue::BigInt(i64::from(hot.min(field_ttl)))),
+                Some(CqlValue::Int(capped(field_ttl.into()))),
+            ]);
         }
+
+        self.session
+            .batch(&batch, values)
+            .await
+            .map_err(backend_error)?;
+
+        new.set_mapping_id(mapping_id);
+        old.clear_mapping_id();
 
         Ok(())
     }
@@ -201,6 +254,23 @@ impl ScyllaStore {
         }
 
         Ok(rows)
+    }
+
+    async fn db_field_exists(&self, mapping_id: &str, field: &str) -> Result<bool, Error> {
+        let mut stream = self
+            .session
+            .execute_iter(self.select_field_exists_stmt.clone(), (mapping_id, field))
+            .await
+            .map_err(backend_error)?
+            .rows_stream::<(String,)>()
+            .map_err(backend_error)?;
+
+        Ok(stream
+            .next()
+            .await
+            .transpose()
+            .map_err(backend_error)?
+            .is_some())
     }
 
     async fn db_delete_field(&self, mapping_id: &str, field: &str) -> Result<(), Error> {
@@ -256,7 +326,7 @@ impl ScyllaStore {
                     field,
                     value_bytes,
                     hot_cache_ttl.map(i64::from),
-                    i32::from(field_ttl),
+                    capped(field_ttl.into()),
                 ),
             )
             .await
@@ -335,22 +405,8 @@ impl SessionStore for ScyllaStore {
         #[cfg(not(feature = "layered-store"))]
         let hot_ttl: Option<Ttl> = None;
 
-        if field_ttl.is_zero() {
-            let Some(mapping_id) = self.get_mapping_id(session_id).await? else {
-                return Ok(());
-            };
-
-            return self.db_delete_field(mapping_id.as_str(), field).await;
-        }
-
-        let mapping_id = self.get_or_create_mapping_id(session_id).await?;
-
-        tokio::try_join!(
-            self.db_insert_mapping_id(session_id, mapping_id, mapping_ttl(session_id, field_ttl)),
-            self.db_insert_field_value(mapping_id, field, value, field_ttl, hot_ttl),
-        )?;
-
-        Ok(())
+        self.db_write(session_id, field, value, field_ttl, hot_ttl)
+            .await
     }
 
     async fn set_and_rename<T>(
@@ -371,62 +427,15 @@ impl SessionStore for ScyllaStore {
         #[cfg(not(feature = "layered-store"))]
         let hot_ttl: Option<Ttl> = None;
 
-        if field_ttl.is_zero() {
-            return self
-                .rename_and_remove_field(old_session_id, new_session_id, field)
-                .await;
-        }
-
-        let mapping_id = self.get_or_create_mapping_id(old_session_id).await?;
-
-        let should_rename = old_session_id != new_session_id
-            && self
-                .db_get_mapping_id(new_session_id.as_str())
-                .await?
-                .is_none();
-
-        if should_rename {
-            let (mut batch, mut values) = self.build_db_rename_id_batch(
-                old_session_id,
-                new_session_id,
-                mapping_id,
-                mapping_ttl(new_session_id, field_ttl),
-            );
-
-            let value_bytes = serialize_value(value)?;
-
-            let hot_cache_ttl = hot_ttl
-                .map(|h| h.min(field_ttl))
-                .map(|h| CqlValue::BigInt(i64::from(h)));
-
-            batch.append_statement(self.insert_with_ttl_stmt.clone());
-            values.push(vec![
-                Some(CqlValue::Text(mapping_id.as_str().to_string())),
-                Some(CqlValue::Text(field.to_string())),
-                Some(CqlValue::Blob(value_bytes)),
-                hot_cache_ttl,
-                Some(CqlValue::Int(i32::from(field_ttl))),
-            ]);
-
-            self.session
-                .batch(&batch, values)
-                .await
-                .map_err(backend_error)?;
-
-            set_mapping_id(old_session_id, new_session_id, mapping_id);
-        } else {
-            self.db_insert_mapping_id(
-                old_session_id,
-                mapping_id,
-                mapping_ttl(old_session_id, field_ttl),
-            )
-            .await?;
-
-            self.db_insert_field_value(mapping_id, field, value, field_ttl, hot_ttl)
-                .await?;
-        }
-
-        Ok(())
+        self.db_rename_and_write(
+            old_session_id,
+            new_session_id,
+            field,
+            value,
+            field_ttl,
+            hot_ttl,
+        )
+        .await
     }
 
     async fn rename_session_id(
@@ -434,7 +443,9 @@ impl SessionStore for ScyllaStore {
         old_session_id: &Id,
         new_session_id: &Id,
     ) -> Result<bool, Error> {
-        let Some(mapping_id) = self.get_mapping_id(old_session_id).await? else {
+        let Some((mapping_id, remaining)) = self.db_get_mapping_id(old_session_id.as_str()).await?
+        else {
+            old_session_id.clear_mapping_id();
             return Ok(false);
         };
 
@@ -450,15 +461,11 @@ impl SessionStore for ScyllaStore {
             return Ok(false);
         }
 
-        let mapping_row_ttl = self
-            .db_get_mapping_row_ttl(old_session_id, new_session_id)
-            .await?;
-
         let (batch, values) = self.build_db_rename_id_batch(
             old_session_id,
             new_session_id,
             mapping_id,
-            mapping_row_ttl,
+            mapping_ttl(new_session_id, remaining.unwrap_or(0) as u64),
         );
 
         self.session
@@ -466,7 +473,8 @@ impl SessionStore for ScyllaStore {
             .await
             .map_err(backend_error)?;
 
-        set_mapping_id(old_session_id, new_session_id, mapping_id);
+        new_session_id.set_mapping_id(mapping_id);
+        old_session_id.clear_mapping_id();
 
         Ok(true)
     }
@@ -476,24 +484,7 @@ impl SessionStore for ScyllaStore {
             return Ok(false);
         };
 
-        let exists = {
-            let mut stream = self
-                .session
-                .execute_iter(self.select_field_stmt.clone(), (mapping_id.as_str(), field))
-                .await
-                .map_err(backend_error)?
-                .rows_stream::<(Vec<u8>,)>()
-                .map_err(backend_error)?;
-
-            stream
-                .next()
-                .await
-                .transpose()
-                .map_err(backend_error)?
-                .is_some()
-        };
-
-        if !exists {
+        if !self.db_field_exists(mapping_id.as_str(), field).await? {
             return Ok(false);
         }
 
@@ -503,7 +494,8 @@ impl SessionStore for ScyllaStore {
     }
 
     async fn delete(&self, session_id: &Id) -> Result<bool, Error> {
-        let Some(mapping_id) = self.get_mapping_id(session_id).await? else {
+        let Some((mapping_id, _)) = self.db_get_mapping_id(session_id.as_str()).await? else {
+            session_id.clear_mapping_id();
             return Ok(false);
         };
 
@@ -549,7 +541,7 @@ impl SessionStore for ScyllaStore {
                 .execute_unpaged(
                     &self.expire_field_stmt,
                     (
-                        i32::from(ttl),
+                        capped(ttl.into()),
                         value.as_slice(),
                         hot_cache_ttl,
                         mapping_id.as_str(),
@@ -571,8 +563,12 @@ impl SessionStore for ScyllaStore {
             };
 
             if is_lwt_applied {
-                self.db_insert_mapping_id(session_id, mapping_id, mapping_ttl(session_id, ttl))
-                    .await?;
+                self.db_insert_mapping_id(
+                    session_id,
+                    mapping_id,
+                    mapping_ttl(session_id, ttl.into()),
+                )
+                .await?;
                 return Ok(true);
             }
         }
@@ -629,14 +625,8 @@ impl crate::store::LayeredColdStore for ScyllaStore {
         field_ttl: Ttl,
         hot_cache_ttl: Option<Ttl>,
     ) -> Result<(), Error> {
-        let mapping_id = self.get_or_create_mapping_id(session_id).await?;
-
-        tokio::try_join!(
-            self.db_insert_mapping_id(session_id, mapping_id, mapping_ttl(session_id, field_ttl)),
-            self.db_insert_field_value(mapping_id, field, value, field_ttl, hot_cache_ttl),
-        )?;
-
-        Ok(())
+        self.db_write(session_id, field, value, field_ttl, hot_cache_ttl)
+            .await
     }
 
     async fn set_and_rename_with_meta<T: Serialize + Send + Sync>(
@@ -648,37 +638,47 @@ impl crate::store::LayeredColdStore for ScyllaStore {
         field_ttl: Ttl,
         hot_cache_ttl: Option<Ttl>,
     ) -> Result<(), Error> {
-        let mapping_id = self.get_or_create_mapping_id(old_session_id).await?;
+        self.db_rename_and_write(
+            old_session_id,
+            new_session_id,
+            field,
+            value,
+            field_ttl,
+            hot_cache_ttl,
+        )
+        .await
+    }
+}
 
-        let rotate = old_session_id != new_session_id
-            && self
-                .db_get_mapping_id(new_session_id.as_str())
-                .await?
-                .is_none();
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        if rotate {
-            let (batch, values) = self.build_db_rename_id_batch(
-                old_session_id,
-                new_session_id,
-                mapping_id,
-                mapping_ttl(new_session_id, field_ttl),
-            );
-            self.session
-                .batch(&batch, values)
-                .await
-                .map_err(backend_error)?;
+    #[test]
+    fn a_mapping_row_gets_a_lifetime_the_clause_can_express() {
+        let immediate = Id::default().with_max_age(Some(0));
+        assert_eq!(mapping_ttl(&immediate, 60), 1);
 
-            set_mapping_id(old_session_id, new_session_id, mapping_id);
-        } else {
-            self.db_insert_mapping_id(
-                old_session_id,
-                mapping_id,
-                mapping_ttl(old_session_id, field_ttl),
-            )
-            .await?;
-        }
+        let forever = Id::default().with_max_age(Some(u64::MAX));
+        assert_eq!(mapping_ttl(&forever, 60), MAX_TTL_SECS as i32);
 
-        self.db_insert_field_value(mapping_id, field, value, field_ttl, hot_cache_ttl)
-            .await
+        let ordinary = Id::default().with_max_age(Some(600));
+        assert_eq!(mapping_ttl(&ordinary, 60), 600);
+    }
+
+    #[test]
+    fn a_session_cookie_borrows_the_fallback() {
+        let session_cookie = Id::default();
+
+        assert_eq!(mapping_ttl(&session_cookie, 60), 60);
+        assert_eq!(mapping_ttl(&session_cookie, 0), 1);
+        assert_eq!(mapping_ttl(&session_cookie, u64::MAX), MAX_TTL_SECS as i32);
+    }
+
+    #[test]
+    fn a_field_ttl_is_held_to_what_scylla_accepts() {
+        assert_eq!(capped(60), 60);
+        assert_eq!(capped(0), 0);
+        assert_eq!(capped(i32::MAX as u64), MAX_TTL_SECS as i32);
     }
 }

@@ -400,7 +400,7 @@ where
         if self.id().is_none() {
             self.inner.get_or_set_id()
         } else {
-            let new_id = Id::default().with_max_age(self.inner.get_cookie_max_age());
+            let new_id = Id::default();
             self.inner.set_pending_id(Some(new_id.clone()));
             new_id
         }
@@ -486,7 +486,7 @@ impl<T: SessionStore> Inner<T> {
         let max_age = self.get_cookie_max_age();
         self.id
             .write()
-            .get_or_insert(Id::default())
+            .get_or_insert_with(Id::default)
             .clone()
             .with_max_age(max_age)
     }
@@ -501,7 +501,11 @@ impl<T: SessionStore> Inner<T> {
     }
 
     pub(crate) fn take_pending_id(&self) -> Option<Id> {
-        self.pending_id.write().take()
+        let max_age = self.get_cookie_max_age();
+        self.pending_id
+            .write()
+            .take()
+            .map(|id| id.with_max_age(max_age))
     }
 
     pub(crate) fn set_changed(&self) {
