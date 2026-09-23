@@ -9,64 +9,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`Id::internal_id` and `Id::set_internal_id`:** let a store record and read where
-  a session's data lives, separately from the value the client presents. The
-  public value — `as_str`, `Display`, `FromStr`, serialization, equality,
-  hashing — is unchanged and byte-compatible with previous versions, so stores
-  that do not indirect are unaffected and no call site changes. The internal
-  value never reaches the cookie or serialization, and cannot be parsed from a
-  string, so a client can neither learn one nor supply one.
-- **ScyllaDB Backend:** Introduced `ScyllaStore` and `ScyllaStoreBuilder` (gated behind the new `scylla-store` feature) for highly scalable, wide-column session storage.
-- **Layered Scylla Support:** The `layered-store` now fully supports pairing a fast cache (e.g., Redis) with `ScyllaStore` as the cold persistent tier.
-- **`Ttl::ZERO` — "do not store this value":** `Ttl::new(0)` is accepted again and
-  now means the same thing in every backend. Writing a field with it removes the
-  field instead of persisting it, and never leaves the old value behind;
-  `set_and_rename` still performs the rotation and only drops the field;
-  `expire_field` removes the field rather than extending it, reporting whether
-  it was there to remove; and nothing — no session, no mapping row, no cache
-  entry — is established to hold a value that is being discarded.
-  `Ttl::is_zero` tests for it.
-- **Opting a field out of the hot cache:** in a `LayeredStore`, a `hot_cache_ttl`
-  of `Ttl::ZERO` keeps a field out of the hot store entirely — it is persisted
-  and read from the cold store but never cached, on the write or on the cache
-  warming that follows a later read. Useful for write-once/read-once fields
-  where a cache entry is pure overhead.
-- **`LayeredStore` conformance tests:** the composite store is now covered by the
-  shared `SessionStore` suite plus layered-specific tests, against a real Redis
-  and Postgres. It previously had no integration coverage of its own.
+- `ScyllaStore` and `ScyllaStoreBuilder`, behind the new `scylla-store` feature.
+- `MokaStore` and `MokaStoreBuilder`, behind the new `moka-store` feature.
+- `LayeredStore` can now pair a hot store with `ScyllaStore` as the cold tier.
+- `Ttl::ZERO`: writing a field with it removes the field instead of storing it,
+  and never leaves the old value behind. `Ttl::is_zero` tests for it.
+- A `hot_cache_ttl` of `Ttl::ZERO` keeps a field out of the hot store entirely,
+  persisted and read from the cold store, never cached, including on warming.
+- `Session::expire_field`, to extend one field's TTL.
+- `Session::cookie_max_age`, to read the cookie lifetime in effect.
+- A conformance suite every backend runs, plus integration coverage for
+  `LayeredStore`, which had none.
 
 ### Breaking
 
-- **`Id` is no longer `Copy`:** it now carries an optional *internal* value behind a shared write-once cell, so a store that indirects can resolve a presented id once. Sharing requires a reference count, which `Copy` cannot
-  express. `Id` remains `Clone`, and cloning is 22 bytes plus a refcount bump.
-  Code that relied on implicit copies (`let a = id; let b = id;`) needs a
-  `.clone()`; code that passes `&Id`, which is nearly all of it, is unaffected.
-- **Decoupled Layered Store Features:** The `layered-store` feature no longer automatically pulls in `redis-store` and `postgres-store`. Consumers must now explicitly declare their desired backend combination in their `Cargo.toml` (e.g., `features = ["layered-store", "redis-store", "scylla-store"]`). This prevents combinatorial explosion of feature flags.
-- **`remove` reports what it removed:** `SessionStore::remove` and
-  `Session::remove` now return `Result<bool>` instead of `Result<()>` — `true`
-  when the field was there to remove, `false` when it was missing or had already
-  lapsed. Every backend answers about what was *live*: a Postgres row past its
-  `expires_at` that the cleanup task has not swept yet reports `false`, and is
-  reclaimed anyway. Call sites that ignore the result are unaffected.
-- **`Id` Struct Memory Layout:** The internal representation of the `Id` struct was changed from raw random bytes (`[u8; 16]`) to pre-computed Base64 bytes (`[u8; 22]`). *Note: This will break `bincode` deserialization for any existing active sessions that serialize the `Id` struct directly.*
+- TTLs are now a validated `Ttl` (`0..=i32::MAX` seconds) instead of `Option<i64>`
+  seconds, and there is no "never expires" any more.
+- `Session::set` returns `Result<()>`; `SessionStore` methods return `Result<()>`
+  or `Result<bool>` rather than the session TTL as `Result<i64>`.
+- `SessionStore::remove` returns `Result<bool>`. `Session::remove` still returns
+  `Result<bool>`, but it now means "the field was there to remove" rather than
+  "the session still exists".
+- `Session::expire` is gone: use `expire_field` for a field, `set_expiration` for
+  the cookie. `set_expiration` takes a `u64`.
+- `Id` is no longer `Copy`. It carries a write-once mapping id behind a shared
+  cell so a store can resolve a presented id once; it stays `Clone`, and `&Id`
+  call sites are unaffected.
+- `Id` is stored as 22 base64 bytes instead of 16 raw bytes, which breaks
+  `bincode` round-trips of a serialized `Id`.
+- `layered-store` no longer pulls in `redis-store` and `postgres-store`; declare
+  the combination you want.
+- `MemoryStore` is removed in favour of `MokaStore`.
+- `messagepack` takes precedence when both serialization features are enabled.
 
 ### Performance
 
-- **Zero-Allocation Session IDs:** The new `Id` struct memory layout allows `Id::as_str()` to return a string slice without generating heap allocations, drastically reducing allocation overhead during database queries and HTTP request cycles.
+- `Id::as_str` returns a slice without allocating.
+- Scylla rotations re-point a single mapping row instead of rewriting every
+  field, and batch the accompanying write into the same round trip.
 
 ### Fixed
 
-- **`ScyllaStore` and a zero TTL:** `using ttl 0` means "never expires" in CQL, so
-  a zero TTL used to make a field — and the row that resolves the session —
-  permanent, the exact opposite of every other backend. Zero now deletes.
-- **`MokaStore::set_and_rename` phantom sessions:** a field written with a zero
-  TTL left an already-expired entry behind, which kept the session alive in the
-  cache: `delete` reported it as present and a later rename onto that id failed
-  as a collision. Nothing is stored now, so nothing lingers.
-- **`PostgresStore` and a zero TTL:** the value used to be written into the table
-  with an already-elapsed `expires_at` — invisible to reads, but the bytes sat
-  on disk until the cleanup task swept them. The field is deleted instead.
-- **Doctest Compilation:** Fixed an issue where `rustdoc` tests would fail to compile when specific backend features (like `redis-store` or `postgres-store`) were excluded from the build.
+- `LayeredStore::get` and `get_all` no longer panic when the cold store reports a
+  field without cache metadata; cold stores now report metadata for every field
+  they return, a field in its last second included.
+- `ScyllaStore` with a zero TTL made a field permanent.
+- `MokaStore::set_and_rename` with a zero TTL left a dead entry behind that kept
+  the session alive and made a later rename onto that id fail as a collision.
+- `PostgresStore` with a zero TTL wrote an already-expired row instead of
+  deleting, and `remove` reported a lapsed row as removed.
+- `postgres-store` builds without `layered-store`.
 
 ## [0.10.0] - 2026-05-18
 
