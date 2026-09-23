@@ -52,6 +52,7 @@ pub struct ScyllaStore {
     insert_mapping_id_stmt: PreparedStatement,
     delete_all_stmt: PreparedStatement,
     select_field_stmt: PreparedStatement,
+    select_field_exists_stmt: PreparedStatement,
     select_all_stmt: PreparedStatement,
     #[cfg(feature = "layered-store")]
     select_all_with_meta_stmt: PreparedStatement,
@@ -209,6 +210,23 @@ impl ScyllaStore {
         }
 
         Ok(rows)
+    }
+
+    async fn db_field_exists(&self, mapping_id: &str, field: &str) -> Result<bool, Error> {
+        let mut stream = self
+            .session
+            .execute_iter(self.select_field_exists_stmt.clone(), (mapping_id, field))
+            .await
+            .map_err(backend_error)?
+            .rows_stream::<(String,)>()
+            .map_err(backend_error)?;
+
+        Ok(stream
+            .next()
+            .await
+            .transpose()
+            .map_err(backend_error)?
+            .is_some())
     }
 
     async fn db_delete_field(&self, mapping_id: &str, field: &str) -> Result<(), Error> {
@@ -484,24 +502,7 @@ impl SessionStore for ScyllaStore {
             return Ok(false);
         };
 
-        let exists = {
-            let mut stream = self
-                .session
-                .execute_iter(self.select_field_stmt.clone(), (mapping_id.as_str(), field))
-                .await
-                .map_err(backend_error)?
-                .rows_stream::<(Vec<u8>,)>()
-                .map_err(backend_error)?;
-
-            stream
-                .next()
-                .await
-                .transpose()
-                .map_err(backend_error)?
-                .is_some()
-        };
-
-        if !exists {
+        if !self.db_field_exists(mapping_id.as_str(), field).await? {
             return Ok(false);
         }
 
