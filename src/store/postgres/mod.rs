@@ -35,7 +35,7 @@ impl Drop for PostgresStore {
 }
 
 impl PostgresStore {
-    async fn _rename_session_id(
+    async fn db_rename_session_id(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         old_session_id: &Id,
@@ -65,7 +65,12 @@ impl PostgresStore {
         Ok(result.rows_affected() > 0)
     }
 
-    async fn _remove<'e, E>(&self, executor: E, session_id: &Id, field: &str) -> Result<bool, Error>
+    async fn db_remove<'e, E>(
+        &self,
+        executor: E,
+        session_id: &Id,
+        field: &str,
+    ) -> Result<bool, Error>
     where
         E: Executor<'e, Database = Postgres>,
     {
@@ -83,7 +88,7 @@ impl PostgresStore {
         Ok(result.rows_affected() > 0)
     }
 
-    async fn _upsert<T>(
+    async fn db_upsert<T>(
         &self,
         session_id: &Id,
         field: &str,
@@ -100,11 +105,11 @@ impl PostgresStore {
 
             if let Some(old_session_id) = old_session_id {
                 let _ = self
-                    ._rename_session_id(&mut tx, old_session_id, session_id)
+                    .db_rename_session_id(&mut tx, old_session_id, session_id)
                     .await?;
             }
 
-            self._remove(&mut *tx, session_id, field).await?;
+            self.db_remove(&mut *tx, session_id, field).await?;
             tx.commit().await?;
 
             return Ok(());
@@ -130,7 +135,7 @@ impl PostgresStore {
 
         if let Some(old_session_id) = old_session_id {
             let _ = self
-                ._rename_session_id(&mut tx, old_session_id, session_id)
+                .db_rename_session_id(&mut tx, old_session_id, session_id)
                 .await?;
         }
 
@@ -222,7 +227,7 @@ impl SessionStore for PostgresStore {
         #[cfg(not(feature = "layered-store"))]
         let hot_ttl: Option<Ttl> = None;
 
-        self._upsert(session_id, field, value, field_ttl, hot_ttl, None)
+        self.db_upsert(session_id, field, value, field_ttl, hot_ttl, None)
             .await
     }
 
@@ -244,7 +249,7 @@ impl SessionStore for PostgresStore {
         #[cfg(not(feature = "layered-store"))]
         let hot_ttl: Option<Ttl> = None;
 
-        self._upsert(
+        self.db_upsert(
             new_session_id,
             field,
             value,
@@ -262,7 +267,7 @@ impl SessionStore for PostgresStore {
     ) -> Result<bool, Error> {
         let mut tx = self.pool.begin().await?;
         let result = self
-            ._rename_session_id(&mut tx, old_session_id, new_session_id)
+            .db_rename_session_id(&mut tx, old_session_id, new_session_id)
             .await?;
         tx.commit().await?;
 
@@ -388,7 +393,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
         field_ttl: Ttl,
         hot_cache_ttl: Option<Ttl>,
     ) -> Result<(), Error> {
-        self._upsert(session_id, field, value, field_ttl, hot_cache_ttl, None)
+        self.db_upsert(session_id, field, value, field_ttl, hot_cache_ttl, None)
             .await
     }
 
@@ -401,7 +406,7 @@ impl crate::store::LayeredColdStore for PostgresStore {
         field_ttl: Ttl,
         hot_cache_ttl: Option<Ttl>,
     ) -> Result<(), Error> {
-        self._upsert(
+        self.db_upsert(
             new_session_id,
             field,
             value,
