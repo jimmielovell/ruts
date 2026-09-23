@@ -42,8 +42,14 @@ impl From<bincode::error::DecodeError> for Error {
     }
 }
 
+#[cfg(not(any(feature = "bincode", feature = "messagepack")))]
+compile_error!(
+    "ruts needs a serialization backend: enable either the `bincode` (default) or \
+     `messagepack` feature"
+);
+
 #[cfg(feature = "messagepack")]
-pub(crate) fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
+pub fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
     rmp_serde::to_vec(value).map_err(|e| Error::Encode(e.to_string()))
 }
 
@@ -52,16 +58,71 @@ pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, 
     rmp_serde::from_slice(value).map_err(|e| Error::Decode(e.to_string()))
 }
 
-#[cfg(feature = "bincode")]
-pub(crate) fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
+#[cfg(all(feature = "bincode", not(feature = "messagepack")))]
+pub fn serialize_value<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
     let e = bincode::serde::encode_to_vec(value, bincode::config::standard())?;
     Ok(e)
 }
 
-#[cfg(feature = "bincode")]
+#[cfg(all(feature = "bincode", not(feature = "messagepack")))]
 pub(crate) fn deserialize_value<T: DeserializeOwned>(value: &[u8]) -> Result<T, Error> {
     let (d, _) = bincode::serde::decode_from_slice(value, bincode::config::standard())?;
     Ok(d)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Ttl(i32);
+
+impl Ttl {
+    /// Instructs the store to not store this value.
+    ///
+    /// Writing a field with this TTL removes it from the store if it already
+    /// existed and defers persisting it.
+    pub const ZERO: Ttl = Ttl(0);
+
+    pub fn new(secs: i64) -> Result<Self, Error> {
+        if secs < 0 || secs > i32::MAX as i64 {
+            return Err(Error::Backend(format!(
+                "invalid ttl {secs}: must be 0..={}",
+                i32::MAX
+            )));
+        }
+        Ok(Ttl(secs as i32))
+    }
+
+    /// The validated TTL in seconds (always `0..=i32::MAX`).
+    pub const fn get(self) -> i32 {
+        self.0
+    }
+
+    /// Whether this TTL is [`Ttl::ZERO`].
+    pub const fn is_zero(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl From<Ttl> for i32 {
+    fn from(ttl: Ttl) -> i32 {
+        ttl.0
+    }
+}
+
+impl From<Ttl> for u64 {
+    fn from(t: Ttl) -> u64 {
+        t.0 as u64
+    }
+}
+
+impl From<Ttl> for i64 {
+    fn from(t: Ttl) -> i64 {
+        t.0 as i64
+    }
+}
+
+impl From<Ttl> for f64 {
+    fn from(t: Ttl) -> f64 {
+        t.0 as f64
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -72,10 +133,6 @@ impl SessionMap {
         Self(map)
     }
 
-    /// Deserializes a specific field from the session data into `T`.
-    ///
-    /// Returns `Ok(None)` if the field does not exist, `Err` if deserialization failed,
-    /// and `Ok(Some(value))` on success.
     pub fn get<T: DeserializeOwned>(&self, field: &str) -> Result<Option<T>, Error> {
         match self.0.get(field) {
             Some(bytes) => deserialize_value(bytes).map(Some),
@@ -83,12 +140,10 @@ impl SessionMap {
         }
     }
 
-    /// Returns the number of elements in the map
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
-    /// Returns true if the map contains no elements.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -115,28 +170,28 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         session_id: &Id,
     ) -> impl Future<Output = Result<Option<SessionMap>, Error>> + Send;
 
-    /// Sets a `field` stored at `session_id` to the new `value`.
+    /// Sets a `field` stored at `session_id` to the new `value` using a field-specific TTL.
     ///
-    /// Returns the new max_age of the session.
+    /// A `field_ttl` of [`Ttl::ZERO`] means the value must not be stored: the
+    /// field is removed if it exists, the new value is never written, and no
+    /// session is established for it.
     fn set<T>(
         &self,
         session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        #[cfg(feature = "layered-store")] hot_cache_ttl_secs: Option<i64>,
+        field_ttl: Ttl,
+        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<Ttl>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-    ) -> impl Future<Output = Result<i64, Error>> + Send
+    ) -> impl Future<Output = Result<(), Error>> + Send
     where
         T: Send + Sync + Serialize;
 
     /// Updates a `field` stored at `session_id` to the new `value` and renames
     /// the session ID from `old_session_id` to `new_session_id`.
     ///
-    /// If the `field` does not exist, it is set to the corresponding `value`.
-    ///
-    /// Returns the new max_age of the session if the `field` was updated.
+    /// A `field_ttl` of [`Ttl::ZERO`] still renames the session, but drops the
+    /// field from it rather than storing the value.
     #[allow(clippy::too_many_arguments)]
     fn set_and_rename<T>(
         &self,
@@ -144,17 +199,15 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
         new_session_id: &Id,
         field: &str,
         value: &T,
-        key_ttl_secs: i64,
-        field_ttl_secs: i64,
-        #[cfg(feature = "layered-store")] hot_cache_ttl_secs: Option<i64>,
+        field_ttl: Ttl,
+        #[cfg(feature = "layered-store")] hot_cache_ttl: Option<Ttl>,
         #[cfg(not(feature = "layered-store"))] _: Option<std::marker::PhantomData<()>>,
-    ) -> impl Future<Output = Result<i64, Error>> + Send
+    ) -> impl Future<Output = Result<(), Error>> + Send
     where
         T: Send + Sync + Serialize;
 
     /// Renames the `old_session_id` to `new_session_id` if the `old_session_id` exists.
-    ///
-    /// Returns an error when `old_session_id` does not exist.
+    /// Acts as session-fixation protection.
     fn rename_session_id(
         &self,
         old_session_id: &Id,
@@ -162,26 +215,25 @@ pub trait SessionStore: Clone + Send + Sync + 'static {
     ) -> impl Future<Output = Result<bool, Error>> + Send;
 
     /// Remove the `field` along with its `value` stored at `session_id`.
-    ///
-    /// Returns the `TTL` of the entire session stored at `session_id`.
-    /// - -1 if the session is persistent.
-    /// - \> 0
+    /// When the last field is removed, the session is functionally deleted.
     fn remove(
         &self,
         session_id: &Id,
         field: &str,
-    ) -> impl Future<Output = Result<i64, Error>> + Send;
+    ) -> impl Future<Output = Result<bool, Error>> + Send;
 
-    /// Deletes all `field`s along with its `value`s stored in the `session_id`.
+    /// Deletes all `field`s along with their `value`s stored in the `session_id`.
     fn delete(&self, session_id: &Id) -> impl Future<Output = Result<bool, Error>> + Send;
 
-    /// Set a timeout on the `session_id`. After the timeout has expired,
-    /// the `session_id` will be automatically deleted.
+    /// Extends the TTL of a specific `field` belonging to `session_id`.
+    /// Returns `true` if the field existed and was active, `false` if it was missing or expired.
     ///
-    /// A value of `-1` or `0` immediately expires the `session_id`.
-    fn expire(
+    /// A `ttl` of [`Ttl::ZERO`] removes the field instead of extending it, and
+    /// reports whether it was there to remove.
+    fn expire_field(
         &self,
         session_id: &Id,
-        ttl_secs: i64,
+        field: &str,
+        ttl: Ttl,
     ) -> impl Future<Output = Result<bool, Error>> + Send;
 }

@@ -8,6 +8,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use fred::clients::Client;
 use fred::interfaces::ClientLike;
+use ruts::store::Ttl;
 use ruts::store::layered::LayeredStore;
 use ruts::store::postgres::{PostgresStore, PostgresStoreBuilder};
 use ruts::store::redis::RedisStore;
@@ -35,7 +36,10 @@ fn routes() -> Router<()> {
                     name: "Default User".into(),
                 };
                 // This will be written to both Redis and Postgres.
-                session.set("user_1", &user, None, None).await.unwrap();
+                session
+                    .set("user_1", &user, Ttl::new(60).unwrap(), None)
+                    .await
+                    .unwrap();
             }),
         )
         // cap the TTL on the hot cache.
@@ -53,8 +57,8 @@ fn routes() -> Router<()> {
                     .set(
                         "user_2",
                         &user,
-                        Some(long_term_expiry),
-                        Some(short_term_hot_cache_expiry),
+                        Ttl::new(long_term_expiry).unwrap(),
+                        Some(Ttl::new(short_term_hot_cache_expiry).unwrap()),
                     )
                     .await
                     .unwrap();
@@ -69,7 +73,15 @@ fn routes() -> Router<()> {
                     name: "Cold Only User".into(),
                 };
                 // This will be written to Postgres, but NOT to Redis.
-                session.set("user_3", &user, None, Some(0)).await.unwrap();
+                session
+                    .set(
+                        "user_3",
+                        &user,
+                        Ttl::new(60).unwrap(),
+                        Some(Ttl::new(0).unwrap()),
+                    )
+                    .await
+                    .unwrap();
             }),
         )
         .route(
@@ -82,7 +94,10 @@ fn routes() -> Router<()> {
                 };
                 session.prepare_regenerate();
                 // This will be written to both Redis and Postgres.
-                session.set("user_4", &user, None, None).await.unwrap();
+                session
+                    .set("user_4", &user, Ttl::new(60).unwrap(), None)
+                    .await
+                    .unwrap();
             }),
         )
         .route(

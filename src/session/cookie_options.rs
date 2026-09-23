@@ -6,6 +6,11 @@ use tower_cookies::Key;
 
 /// Configuration options for session cookies.
 ///
+/// `max_age` is the single source of truth for the cookie's lifetime; it is
+/// never derived from field TTLs. `Some(seconds)` emits a persistent cookie
+/// with that `Max-Age`; `None` emits a session cookie (no `Max-Age`, cleared
+/// when the browser closes).
+///
 /// # Example
 ///
 /// ```rust
@@ -16,7 +21,7 @@ use tower_cookies::Key;
 ///         .http_only(true)
 ///         .same_site(cookie::SameSite::Lax)
 ///         .secure(true)
-///         .max_age(1 * 60)
+///         .max_age(60)
 ///         .path("/");
 /// ```
 #[derive(Clone, Debug)]
@@ -27,7 +32,8 @@ pub struct CookieOptions {
     pub path: Option<&'static str>,
     pub same_site: SameSite,
     pub secure: bool,
-    pub max_age: i64,
+    /// `Some(seconds)` = persistent cookie with that `Max-Age`; `None` = session cookie.
+    pub max_age: Option<u64>,
     #[cfg(feature = "signed")]
     pub signing_key: Option<Arc<Key>>,
 }
@@ -41,7 +47,7 @@ impl Default for CookieOptions {
             path: None,
             same_site: SameSite::Lax,
             secure: true,
-            max_age: 10 * 60,
+            max_age: Some(10 * 60),
             #[cfg(feature = "signed")]
             signing_key: None,
         }
@@ -85,8 +91,16 @@ impl CookieOptions {
         self
     }
 
-    pub fn max_age(mut self, seconds: i64) -> Self {
-        self.max_age = seconds;
+    /// Sets a persistent cookie `Max-Age`, in seconds.
+    pub fn max_age(mut self, seconds: u64) -> Self {
+        self.max_age = Some(seconds);
+        self
+    }
+
+    /// Makes this a session cookie: no `Max-Age` is emitted, so the browser
+    /// clears it when it closes.
+    pub fn session_cookie(mut self) -> Self {
+        self.max_age = None;
         self
     }
 

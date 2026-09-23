@@ -6,6 +6,7 @@
 
 use axum::routing::get;
 use axum::{Json, Router};
+use ruts::store::Ttl;
 use ruts::store::postgres::{PostgresStore, PostgresStoreBuilder};
 use ruts::{CookieOptions, Session, SessionLayer};
 use serde::{Deserialize, Serialize};
@@ -51,25 +52,23 @@ fn routes() -> Router<()> {
                 };
 
                 session
-                    .set("app", &app_session, None, None)
+                    .set("app", &app_session, Ttl::new(60).unwrap(), None)
                     .await
-                    .expect("Failed to insert session data");
+                    .expect("Should insert session data");
             }),
         )
         .route(
             "/get",
             get(|session: PostgresSession| async move {
-                let app_session: Option<AppSession> = session
-                    .get("app")
-                    .await
-                    .expect("Failed to get session data");
+                let app_session: Option<AppSession> =
+                    session.get("app").await.expect("Should get session data");
                 Json(app_session.unwrap())
             }),
         )
         .route(
             "/delete",
             get(|session: PostgresSession| async move {
-                session.delete().await.expect("Failed to delete session");
+                session.delete().await.expect("Should delete session");
             }),
         )
 }
@@ -99,7 +98,7 @@ async fn main() {
     let cookie_options = CookieOptions::build()
         .name("session")
         .http_only(true)
-        .same_site(ruts::cookie::SameSite::Lax)
+        .same_site(cookie::SameSite::Lax)
         .secure(false) // Use `true` in production
         .max_age(60 * 60) // 1 hour
         .path("/");

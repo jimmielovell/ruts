@@ -6,6 +6,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use fred::clients::Client;
 use fred::interfaces::ClientLike;
+use ruts::store::Ttl;
 use ruts::store::redis::RedisStore;
 use ruts::{CookieOptions, Session, SessionLayer};
 use serde::{Deserialize, Serialize};
@@ -48,7 +49,7 @@ fn routes() -> Router {
 
                 session.prepare_regenerate();
                 session
-                    .set("app", &app_session, None, None)
+                    .set("app", &app_session, Ttl::new(60).unwrap(), None)
                     .await
                     .map_err(|e| e.to_string())
                     .unwrap();
@@ -58,7 +59,7 @@ fn routes() -> Router {
             "/update",
             get(|session: RedisSession| async move {
                 session
-                    .set("theme", &Theme::Light, None, None)
+                    .set("theme", &Theme::Light, Ttl::new(60).unwrap(), None)
                     .await
                     .map_err(|e| e.to_string())
                     .unwrap();

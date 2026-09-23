@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - Unreleased
+
+### Added
+
+- `ScyllaStore` and `ScyllaStoreBuilder`, behind the new `scylla-store` feature.
+- `MokaStore` and `MokaStoreBuilder`, behind the new `moka-store` feature.
+- `LayeredStore` can now pair a hot store with `ScyllaStore` as the cold tier.
+- `Ttl::ZERO`: writing a field with it removes the field instead of storing it,
+  and never leaves the old value behind. `Ttl::is_zero` tests for it.
+- A `hot_cache_ttl` of `Ttl::ZERO` keeps a field out of the hot store entirely,
+  persisted and read from the cold store, never cached, including on warming.
+- `Session::expire_field`, to extend one field's TTL.
+- `Session::cookie_max_age`, to read the cookie lifetime in effect.
+- A conformance suite every backend runs, plus integration coverage for
+  `LayeredStore`, which had none.
+
+### Breaking
+
+- TTLs are now a validated `Ttl` (`0..=i32::MAX` seconds) instead of `Option<i64>`
+  seconds, and there is no "never expires" any more.
+- `Session::set` returns `Result<()>`; `SessionStore` methods return `Result<()>`
+  or `Result<bool>` rather than the session TTL as `Result<i64>`.
+- `SessionStore::remove` returns `Result<bool>`. `Session::remove` still returns
+  `Result<bool>`, but it now means "the field was there to remove" rather than
+  "the session still exists".
+- `Session::expire` is gone: use `expire_field` for a field, `set_expiration` for
+  the cookie. `set_expiration` takes a `u64`.
+- `Id` is no longer `Copy`. It carries a write-once mapping id behind a shared
+  cell so a store can resolve a presented id once; it stays `Clone`, and `&Id`
+  call sites are unaffected.
+- `Id` is stored as 22 base64 bytes instead of 16 raw bytes, which breaks
+  `bincode` round-trips of a serialized `Id`.
+- `layered-store` no longer pulls in `redis-store` and `postgres-store`; declare
+  the combination you want.
+- `MemoryStore` is removed in favour of `MokaStore`.
+- `messagepack` takes precedence when both serialization features are enabled.
+
+### Performance
+
+- `Id::as_str` returns a slice without allocating.
+- Scylla rotations re-point a single mapping row instead of rewriting every
+  field, and batch the accompanying write into the same round trip.
+
+### Fixed
+
+- `LayeredStore::get` and `get_all` no longer panic when the cold store reports a
+  field without cache metadata; cold stores now report metadata for every field
+  they return, a field in its last second included.
+- `ScyllaStore` with a zero TTL made a field permanent.
+- `MokaStore::set_and_rename` with a zero TTL left a dead entry behind that kept
+  the session alive and made a later rename onto that id fail as a collision.
+- `PostgresStore` with a zero TTL wrote an already-expired row instead of
+  deleting, and `remove` reported a lapsed row as removed.
+- `postgres-store` builds without `layered-store`.
+
 ## [0.10.0] - 2026-05-18
 
 ### Changed
