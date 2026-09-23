@@ -41,6 +41,7 @@ where
     S: SessionStore,
 {
     /// Creates a new `Session` instance.
+    #[cfg(feature = "axum")]
     pub(crate) fn new(inner: Arc<Inner<S>>) -> Self {
         Self { inner }
     }
@@ -428,10 +429,11 @@ pub(crate) struct Inner<T: SessionStore> {
     pub(crate) pending_id: RwLock<Option<Id>>,
     /// Cookie `Max-Age`: `Some(seconds)` persistent, `None` session cookie.
     pub(crate) cookie_max_age: RwLock<Option<u64>>,
+    #[cfg(feature = "axum")]
     pub(crate) cookie_name: Option<&'static str>,
     pub(crate) cookies: OnceLock<Cookies>,
     pub(crate) store: Arc<T>,
-    #[cfg(feature = "signed")]
+    #[cfg(all(feature = "signed", feature = "axum"))]
     pub(crate) signing_key: Option<Arc<Key>>,
 }
 
@@ -442,15 +444,21 @@ impl<T: SessionStore> Inner<T> {
         cookie_max_age: Option<u64>,
         #[cfg(feature = "signed")] signing_key: Option<Arc<Key>>,
     ) -> Self {
+        #[cfg(not(feature = "axum"))]
+        let _ = cookie_name;
+        #[cfg(all(feature = "signed", not(feature = "axum")))]
+        let _ = signing_key;
+
         Self {
             state: AtomicU8::new(0),
             id: RwLock::new(None),
             pending_id: RwLock::new(None),
             cookie_max_age: RwLock::new(cookie_max_age),
+            #[cfg(feature = "axum")]
             cookie_name,
             cookies: OnceLock::new(),
             store,
-            #[cfg(feature = "signed")]
+            #[cfg(all(feature = "signed", feature = "axum"))]
             signing_key,
         }
     }
@@ -483,6 +491,7 @@ impl<T: SessionStore> Inner<T> {
             .with_max_age(max_age)
     }
 
+    #[cfg(feature = "axum")]
     pub(crate) fn set_id(&self, id: Option<Id>) {
         *self.id.write() = id;
     }
@@ -507,6 +516,7 @@ impl<T: SessionStore> Inner<T> {
         self.cookies.get()
     }
 
+    #[cfg(feature = "axum")]
     pub(crate) fn set_cookies_if_empty(&self, cookies: Cookies) -> bool {
         self.cookies.set(cookies).is_ok()
     }

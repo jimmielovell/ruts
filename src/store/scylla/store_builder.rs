@@ -206,6 +206,7 @@ impl ScyllaStoreBuilder {
                 false,
             )
                 .await?,
+            #[cfg(feature = "layered-store")]
             select_all_with_meta_stmt: prepare_stmt(
                 format!(
                     "select field, value, hot_cache_ttl, ttl(value) from {data} where mapping_id = ?"

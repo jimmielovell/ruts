@@ -1,6 +1,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+#[cfg(feature = "scylla-store")]
 use parking_lot::RwLock;
 use rand::Rng;
 use rand::prelude::StdRng;
@@ -9,6 +10,7 @@ use std::cell::RefCell;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::str::FromStr;
+#[cfg(feature = "scylla-store")]
 use std::sync::Arc;
 use std::{fmt, str};
 
@@ -32,9 +34,12 @@ fn as_str_unchecked(bytes: &[u8; LEN]) -> &str {
     str::from_utf8(bytes).expect("Encoded Id is valid UTF-8")
 }
 
+/// Where a session's data actually lives, for a store that indirects.
+#[cfg(feature = "scylla-store")]
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(crate) struct MappingId([u8; LEN]);
 
+#[cfg(feature = "scylla-store")]
 impl MappingId {
     #[inline]
     pub(crate) fn as_str(&self) -> &str {
@@ -46,6 +51,7 @@ impl MappingId {
 #[derive(Clone)]
 pub struct Id {
     cookie_id: [u8; LEN],
+    #[cfg(feature = "scylla-store")]
     mapping_id: Arc<RwLock<Option<[u8; LEN]>>>,
     max_age: Option<u64>,
 }
@@ -54,6 +60,7 @@ impl Default for Id {
     fn default() -> Self {
         Self {
             cookie_id: random_encoded(),
+            #[cfg(feature = "scylla-store")]
             mapping_id: Arc::new(RwLock::new(None)),
             max_age: None,
         }
@@ -67,21 +74,25 @@ impl Id {
     }
 
     #[inline]
+    #[cfg(feature = "scylla-store")]
     pub(crate) fn mapping_id(&self) -> Option<MappingId> {
         self.mapping_id.read().map(MappingId)
     }
 
     #[inline]
+    #[cfg(feature = "scylla-store")]
     pub(crate) fn set_mapping_id(&self, storage: &Id) -> MappingId {
         MappingId(*self.mapping_id.write().get_or_insert(storage.cookie_id))
     }
 
     #[inline]
+    #[cfg(feature = "scylla-store")]
     pub(crate) fn clear_mapping_id(&self) {
         *self.mapping_id.write() = None;
     }
 
     #[inline]
+    #[cfg(feature = "scylla-store")]
     pub(crate) fn max_age(&self) -> Option<u64> {
         self.max_age
     }
@@ -133,6 +144,7 @@ impl FromStr for Id {
         public.copy_from_slice(s.as_bytes());
         Ok(Self {
             cookie_id: public,
+            #[cfg(feature = "scylla-store")]
             mapping_id: Arc::new(RwLock::new(None)),
             max_age: None,
         })
@@ -149,6 +161,7 @@ impl<'de> Deserialize<'de> for Id {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(Self {
             cookie_id: <[u8; LEN]>::deserialize(deserializer)?,
+            #[cfg(feature = "scylla-store")]
             mapping_id: Arc::new(RwLock::new(None)),
             max_age: None,
         })
@@ -165,8 +178,10 @@ impl From<&Id> for fred::types::Key {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "scylla-store")]
     use std::collections::hash_map::DefaultHasher;
 
+    #[cfg(feature = "scylla-store")]
     fn hash_of(id: &Id) -> u64 {
         let mut hasher = DefaultHasher::new();
         id.hash(&mut hasher);
@@ -180,10 +195,12 @@ mod tests {
 
         assert_eq!(a.as_str().len(), LEN);
         assert_ne!(a.as_str(), b.as_str());
+        #[cfg(feature = "scylla-store")]
         assert!(a.mapping_id().is_none(), "a fresh id resolves to nothing");
         assert_eq!(a.as_str().parse::<Id>().unwrap().as_str(), a.as_str());
     }
 
+    #[cfg(feature = "scylla-store")]
     #[test]
     fn resolution_is_visible_through_other_clones() {
         let held_by_session = Id::default();
@@ -200,6 +217,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "scylla-store")]
     #[test]
     fn resolution_is_write_once() {
         let id = Id::default();
@@ -222,6 +240,7 @@ mod tests {
         assert_eq!(id.set_mapping_id(&second).as_str(), second.as_str());
     }
 
+    #[cfg(feature = "scylla-store")]
     #[test]
     fn clearing_is_visible_through_other_clones() {
         let held_by_session = Id::default();
@@ -237,6 +256,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "scylla-store")]
     #[test]
     fn independent_ids_do_not_share_resolution() {
         let a = Id::default();
@@ -255,6 +275,7 @@ mod tests {
         assert!(parsed_two.mapping_id().is_none());
     }
 
+    #[cfg(feature = "scylla-store")]
     #[test]
     fn concurrent_resolution_agrees_on_one_value() {
         for _ in 0..64 {
@@ -288,6 +309,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "scylla-store")]
     #[test]
     fn attaching_a_resolution_leaves_the_public_value_alone() {
         let id = Id::default();
@@ -301,6 +323,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "scylla-store")]
     #[test]
     fn identity_ignores_the_internal_value() {
         let id = Id::default();
@@ -316,6 +339,7 @@ mod tests {
         assert_eq!(hash_of(&id), hash_of(&parsed));
     }
 
+    #[cfg(feature = "scylla-store")]
     #[test]
     fn the_internal_value_cannot_arrive_from_outside() {
         let resolved = Id::default();

@@ -44,6 +44,7 @@ pub struct ScyllaStore {
     delete_all_stmt: PreparedStatement,
     select_field_stmt: PreparedStatement,
     select_all_stmt: PreparedStatement,
+    #[cfg(feature = "layered-store")]
     select_all_with_meta_stmt: PreparedStatement,
     select_field_with_meta_stmt: PreparedStatement,
     insert_with_ttl_stmt: PreparedStatement,
@@ -181,6 +182,7 @@ impl ScyllaStore {
         Ok(())
     }
 
+    #[cfg(feature = "layered-store")]
     async fn db_select_all_fields_values_ttls(
         &self,
         internal: &str,
