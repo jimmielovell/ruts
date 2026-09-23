@@ -50,6 +50,8 @@ where
     /// ## Example
     ///
     /// ```rust,no_run
+    /// # #[cfg(feature = "moka-store")]
+    /// # mod docs {
     /// use ruts::{Session};
     /// use serde::Deserialize;
     /// use ruts::store::moka::MokaStore;
@@ -63,6 +65,8 @@ where
     /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
     ///     session.get::<User>("user").await.unwrap();
     /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     #[tracing::instrument(name = "session-store: getting value for field", skip(self, field))]
     pub async fn get<T>(&self, field: &str) -> Result<Option<T>>
@@ -116,6 +120,8 @@ where
     /// ## Example
     ///
     /// ```rust,no_run
+    /// # #[cfg(feature = "moka-store")]
+    /// # mod docs {
     /// use ruts::{Session};
     /// use serde::Serialize;
     /// use ruts::store::moka::MokaStore;
@@ -132,6 +138,8 @@ where
     ///
     ///     session.set("app", &user, Ttl::new(3600).unwrap(), None).await.unwrap();
     /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     #[tracing::instrument(
         name = "session-store: updating field",
@@ -196,12 +204,16 @@ where
     /// ## Example
     ///
     /// ```rust,no_run
+    /// # #[cfg(feature = "moka-store")]
+    /// # mod docs {
     /// use ruts::{Session};
     /// use ruts::store::moka::MokaStore;
     ///
     /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
     ///     session.remove("user").await.unwrap();
     /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     #[tracing::instrument(name = "session-store: removing field", skip(self, field))]
     pub async fn remove(&self, field: &str) -> Result<bool> {
@@ -228,12 +240,16 @@ where
     /// ## Example
     ///
     /// ```rust,no_run
+    /// # #[cfg(feature = "moka-store")]
+    /// # mod docs {
     /// use ruts::{Session};
     /// use ruts::store::moka::MokaStore;
     ///
     /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
     ///     let deleted = session.delete().await.unwrap();
     /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     #[tracing::instrument(name = "session-store: deleting session", skip(self))]
     pub async fn delete(&self) -> Result<bool> {
@@ -266,6 +282,8 @@ where
     /// ## Example
     ///
     /// ```rust,no_run
+    /// # #[cfg(feature = "moka-store")]
+    /// # mod docs {
     /// use ruts::{Session};
     /// use ruts::store::Ttl;
     /// use ruts::store::moka::MokaStore;
@@ -273,6 +291,8 @@ where
     /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
     ///     session.expire_field("user", Ttl::new(3600).unwrap()).await.unwrap();
     /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     #[tracing::instrument(name = "updating field expiry", skip(self, ttl))]
     pub async fn expire_field(&self, field: &str, ttl: Ttl) -> Result<bool> {
@@ -314,12 +334,16 @@ where
     /// ## Example
     ///
     /// ```rust
+    /// # #[cfg(feature = "moka-store")]
+    /// # mod docs {
     /// use ruts::{Session};
     /// use ruts::store::moka::MokaStore;
     ///
     /// async fn some_handler_could_be_axum(session: Session<MokaStore>) {
     ///     let id = session.regenerate().await.unwrap();
     /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     ///
     /// **Note**: This does not renew any field's expiry.
@@ -357,6 +381,8 @@ where
     /// ## Example
     ///
     /// ```rust,no_run
+    /// # #[cfg(feature = "moka-store")]
+    /// # mod docs {
     /// use ruts::Session;
     /// use ruts::store::Ttl;
     /// use ruts::store::moka::MokaStore;
@@ -366,6 +392,8 @@ where
     ///     // The next set operation will use this new ID
     ///     session.set("field", &"value", Ttl::new(3600).unwrap(), None).await.unwrap();
     /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     pub fn prepare_regenerate(&self) -> Id {
         if self.id().is_none() {

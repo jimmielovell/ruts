@@ -92,6 +92,8 @@ where
 /// # Example
 ///
 /// ```rust
+/// # #[cfg(feature = "moka-store")]
+/// # fn docs() {
 /// use ruts::{CookieOptions, Session, SessionLayer};
 /// use ruts::store::moka::{MokaStore, MokaStoreBuilder};
 /// use std::sync::Arc;
@@ -107,6 +109,8 @@ where
 /// let store = MokaStoreBuilder::new().build();
 /// let session_layer = SessionLayer::new(Arc::new(store))
 ///     .with_cookie_options(cookie_options);
+/// # }
+/// # fn main() {}
 /// ```
 ///
 #[derive(Clone, Debug)]
