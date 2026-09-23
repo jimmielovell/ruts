@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ScyllaStore` wrote a session's mapping row once and never again, so an active
+  session stopped resolving at the horizon of the write that established it —
+  logged out on a schedule, with its fields still live. Every write now slides
+  that row forward, and `expire_field` extends it along with the field.
+- A `max_age` of `0` gave `ScyllaStore` a mapping row that never expired (`using
+  ttl 0` means "no expiry" in CQL), and one above 630720000 seconds — Scylla's
+  ceiling — failed the write outright. Mapping-row lifetimes are now held to
+  `1..=630720000`. Field TTLs are still passed through as given.
+- Deserializing an `Id` accepted any 22 bytes, so a payload that was not an
+  encoded id panicked later, when something printed it. `Deserialize` now
+  validates what `FromStr` always did and reports a serde error instead. The
+  wire form is unchanged.
 - Items that only one feature uses are now compiled out with it instead of built
   and warned about: `MappingId` and the mapping cell on `Id` (`scylla-store`),
   `Session::new` and the extractor's fields on `Inner` (`axum`, `signed`),

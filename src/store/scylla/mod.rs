@@ -20,11 +20,20 @@ fn backend_error<E: std::fmt::Display>(err: E) -> Error {
     Error::Backend(err.to_string())
 }
 
+/// The longest TTL Scylla accepts: 20 years, in seconds. A larger one is
+/// rejected outright rather than capped, so it is capped here.
+const MAX_TTL_SECS: u64 = 630_720_000;
+
+/// Fits a lifetime to what a CQL `using ttl` clause can express.
+fn clamp_mapping_ttl(secs: u64) -> i32 {
+    secs.clamp(1, MAX_TTL_SECS) as i32
+}
+
 /// How long a mapping row should live for `id`.
 fn mapping_ttl(id: &Id, field_ttl: Ttl) -> i32 {
     match id.max_age() {
-        Some(secs) => secs.min(i32::MAX as u64) as i32,
-        None => i32::from(field_ttl),
+        Some(secs) => clamp_mapping_ttl(secs),
+        None => clamp_mapping_ttl(u64::from(field_ttl)),
     }
 }
 
@@ -97,17 +106,16 @@ impl ScyllaStore {
 
     async fn db_get_mapping_row_ttl(&self, old: &Id, new: &Id) -> Result<i32, Error> {
         if let Some(secs) = new.max_age() {
-            return Ok(secs.min(i32::MAX as u64) as i32);
+            return Ok(clamp_mapping_ttl(secs));
         }
 
         let ttl = self
             .db_get_mapping_id(old.as_str())
             .await?
             .and_then(|(_, remaining)| remaining)
-            .unwrap_or(0);
+            .unwrap_or(1);
 
-        // `USING TTL 0` means "no expiry" in CQL.
-        Ok(ttl.max(1))
+        Ok(clamp_mapping_ttl(ttl.max(1) as u64))
     }
 
     async fn db_insert_mapping_id(
@@ -680,5 +688,36 @@ impl crate::store::LayeredColdStore for ScyllaStore {
 
         self.db_insert_field_value(mapping_id, field, value, field_ttl, hot_cache_ttl)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_mapping_row_gets_a_lifetime_the_clause_can_express() {
+        let field_ttl = Ttl::new(60).unwrap();
+
+        let immediate = Id::default().with_max_age(Some(0));
+        assert_eq!(mapping_ttl(&immediate, field_ttl), 1);
+
+        let forever = Id::default().with_max_age(Some(u64::MAX));
+        assert_eq!(mapping_ttl(&forever, field_ttl), MAX_TTL_SECS as i32);
+
+        let ordinary = Id::default().with_max_age(Some(600));
+        assert_eq!(mapping_ttl(&ordinary, field_ttl), 600);
+    }
+
+    #[test]
+    fn a_session_cookie_borrows_the_writes_horizon() {
+        let session_cookie = Id::default();
+
+        assert_eq!(mapping_ttl(&session_cookie, Ttl::new(60).unwrap()), 60);
+        assert_eq!(mapping_ttl(&session_cookie, Ttl::ZERO), 1);
+        assert_eq!(
+            mapping_ttl(&session_cookie, Ttl::new(i32::MAX as i64).unwrap()),
+            MAX_TTL_SECS as i32
+        );
     }
 }

@@ -68,6 +68,23 @@ impl Default for Id {
 }
 
 impl Id {
+    fn from_encoded(cookie_id: [u8; LEN]) -> Result<Self, &'static str> {
+        let mut decoded = [0u8; 16];
+        if URL_SAFE_NO_PAD
+            .decode_slice(cookie_id, &mut decoded)
+            .is_err()
+        {
+            return Err("Invalid ID characters: must be URL-safe Base64");
+        }
+
+        Ok(Self {
+            cookie_id,
+            #[cfg(feature = "scylla-store")]
+            mapping_id: Arc::new(RwLock::new(None)),
+            max_age: None,
+        })
+    }
+
     #[inline]
     pub fn as_str(&self) -> &str {
         as_str_unchecked(&self.cookie_id)
@@ -128,26 +145,12 @@ impl FromStr for Id {
     type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.len() != LEN {
-            return Err("Invalid ID length: must be exactly 22 characters");
-        }
+        let cookie_id: [u8; LEN] = s
+            .as_bytes()
+            .try_into()
+            .map_err(|_| "Invalid ID length: must be exactly 22 characters")?;
 
-        let mut decoded_buffer = [0u8; 16];
-        if URL_SAFE_NO_PAD
-            .decode_slice(s.as_bytes(), &mut decoded_buffer)
-            .is_err()
-        {
-            return Err("Invalid ID characters: must be URL-safe Base64");
-        }
-
-        let mut public = [0u8; LEN];
-        public.copy_from_slice(s.as_bytes());
-        Ok(Self {
-            cookie_id: public,
-            #[cfg(feature = "scylla-store")]
-            mapping_id: Arc::new(RwLock::new(None)),
-            max_age: None,
-        })
+        Self::from_encoded(cookie_id)
     }
 }
 
@@ -159,12 +162,8 @@ impl Serialize for Id {
 
 impl<'de> Deserialize<'de> for Id {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self {
-            cookie_id: <[u8; LEN]>::deserialize(deserializer)?,
-            #[cfg(feature = "scylla-store")]
-            mapping_id: Arc::new(RwLock::new(None)),
-            max_age: None,
-        })
+        let cookie_id = <[u8; LEN]>::deserialize(deserializer)?;
+        Self::from_encoded(cookie_id).map_err(serde::de::Error::custom)
     }
 }
 
@@ -371,6 +370,28 @@ mod tests {
         let mut bad = Id::default().to_string().into_bytes();
         bad[0] = b'!';
         assert!(str::from_utf8(&bad).unwrap().parse::<Id>().is_err());
+    }
+
+    #[test]
+    fn deserializing_rejects_what_could_not_be_printed() {
+        // The right length, but not an encoded id.
+        let mut bytes = vec![b'A'; LEN];
+        bytes[3] = 0xFF;
+        assert!(
+            serde_json::from_str::<Id>(&serde_json::to_string(&bytes).unwrap()).is_err(),
+            "an id that cannot be printed must not be constructible"
+        );
+
+        // A byte outside the base64url alphabet, and the wrong length, are
+        // turned away at the same door `FromStr` uses.
+        bytes[3] = b'!';
+        assert!(serde_json::from_str::<Id>(&serde_json::to_string(&bytes).unwrap()).is_err());
+        assert!(serde_json::from_str::<Id>("[65,65,65]").is_err());
+
+        // A real id still round-trips.
+        let id = Id::default();
+        let round_tripped: Id = serde_json::from_str(&serde_json::to_string(&id).unwrap()).unwrap();
+        assert_eq!(round_tripped.as_str(), id.as_str());
     }
 
     #[test]
