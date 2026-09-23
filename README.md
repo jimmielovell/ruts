@@ -6,11 +6,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.85.0%2B-blue.svg?maxAge=3600)](https://github.com/jimmielovell/ruts)
 
 `ruts` is a flexible session management middleware for Rust's Tower web
-framework, with a focus on performance, durability, and ergonomic design.
-
-Sessions are stored as **fields**, not as one blob: each field carries its own
-TTL, is read and written on its own, and expires without disturbing the rest of
-the session. A session exists for as long as it has one live field.
+framework.
 
 ## Quick Start
 
@@ -133,7 +129,7 @@ Every write takes a `Ttl`, a validated `0..=i32::MAX` number of seconds. There
 is no "no expiry": a field always has a horizon, and the session lives for as
 long as its longest-lived field.
 
-A `Ttl` of zero is the one special value — it means *do not store this*:
+A `Ttl` of zero means *do not store this*:
 
 ```rust,no_run
 # #[cfg(feature = "moka-store")]
@@ -143,35 +139,29 @@ use ruts::store::Ttl;
 use ruts::store::moka::MokaStore;
 
 async fn handler(session: Session<MokaStore>) {
-    // Writing with a zero TTL removes the field instead of storing it, and
-    // never leaves the previous value behind.
-    session.set("draft", &"discard me", Ttl::ZERO, None).await.unwrap();
+    // Writing with a zero TTL removes the field instead of persisting it.
+    session.set("hero", &"Thor", Ttl::ZERO, None).await.unwrap();
 
     // Expiring with a zero TTL removes the field rather than extending it.
-    let removed: bool = session.expire_field("draft", Ttl::ZERO).await.unwrap();
+    let removed: bool = session.expire_field("hero", Ttl::ZERO).await.unwrap();
 }
 # }
 # fn main() {}
 ```
 
-Every backend agrees on this: nothing is written, an existing field is cleared,
-and no session, row or cache entry is created to hold a value that is being
-discarded. A rename still happens — only the value is dropped.
-
 ## Stores
 
 `ruts` offers several backend stores for session data, each behind a feature flag.
 
-| Feature | Store | Use |
-| --- | --- | --- |
-| `redis-store` | `RedisStore` | Fast, shared; needs Redis 7.4+ |
-| `postgres-store` | `PostgresStore` | Durable, transactional |
-| `scylla-store` | `ScyllaStore` | Durable, horizontally scalable |
-| `moka-store` | `MokaStore` | In-process; tests, single nodes, hot tier |
-| `layered-store` | `LayeredStore` | A hot cache over a cold store |
+| Feature | Store |
+| --- | --- |
+| `redis-store` | `RedisStore` |
+| `postgres-store` | `PostgresStore` |
+| `scylla-store` | `ScyllaStore` |
+| `moka-store` | `MokaStore` |
+| `layered-store` | `LayeredStore` |
 
-`layered-store` does not pull in any backend of its own, so name the combination
-you want — for example `features = ["layered-store", "redis-store", "scylla-store"]`.
+`layered-store` does not pull in any backend of its own, so you can configure the combination you want; for example `features = ["layered-store", "redis-store", "scylla-store"]`.
 
 ### Redis
 
@@ -196,7 +186,7 @@ async fn main() {
     let client = Client::default();
     client.init().await.unwrap();
 
-    // `new` is async: it pre-loads the Lua scripts the store runs.
+    // Pre-loads the Lua scripts the store runs.
     let store = RedisStore::new(Arc::new(client)).await.unwrap();
 }
 # }
@@ -219,12 +209,12 @@ use ruts::store::postgres::PostgresStoreBuilder;
 
 #[tokio::main]
 async fn main() {
-    // 1. Set up your database connection pool.
+    // Set up your database connection pool.
     let database_url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL must be set");
     let pool = PgPool::connect(&database_url).await.unwrap();
 
-    // 2. Create the session store using the builder.
+    // Create the session store using the builder.
     let store = PostgresStoreBuilder::new(pool)
         // Creates the sessions table if it is missing.
         .create_table(true)
@@ -354,9 +344,8 @@ async fn handler(session: MySession) {
         .unwrap();
 
     // A hot-cache TTL of zero keeps a field out of the hot store entirely: it is
-    // persisted in the cold store and read from there, but never cached — on the
-    // write, and on the cache warming that follows a later read. Useful for
-    // write-once/read-once fields, where a cache entry is pure overhead.
+    // persisted in the cold store and read from there, but never cached in the
+    // hot store.
     session.set("idempotency-key", &user, long_term_expiry, Some(Ttl::ZERO))
         .await
         .unwrap();
