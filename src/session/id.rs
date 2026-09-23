@@ -34,6 +34,21 @@ fn as_str_unchecked(bytes: &[u8; LEN]) -> &str {
     str::from_utf8(bytes).expect("Encoded Id is valid UTF-8")
 }
 
+/// Only base64url characters survive this, and those are all ASCII, which is
+/// what lets [`Id::as_str`] convert without checking.
+fn validate_encoded(bytes: &[u8]) -> Result<[u8; LEN], &'static str> {
+    let encoded: [u8; LEN] = bytes
+        .try_into()
+        .map_err(|_| "Invalid ID length: must be exactly 22 characters")?;
+
+    let mut decoded = [0u8; 16];
+    if URL_SAFE_NO_PAD.decode_slice(encoded, &mut decoded).is_err() {
+        return Err("Invalid ID characters: must be URL-safe Base64");
+    }
+
+    Ok(encoded)
+}
+
 /// Where a session's data actually lives, for a store that indirects.
 #[cfg(feature = "scylla-store")]
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -42,8 +57,22 @@ pub(crate) struct MappingId([u8; LEN]);
 #[cfg(feature = "scylla-store")]
 impl MappingId {
     #[inline]
+    pub(crate) fn random() -> Self {
+        Self(random_encoded())
+    }
+
+    #[inline]
     pub(crate) fn as_str(&self) -> &str {
         as_str_unchecked(&self.0)
+    }
+}
+
+#[cfg(feature = "scylla-store")]
+impl FromStr for MappingId {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(validate_encoded(s.as_bytes())?))
     }
 }
 
@@ -58,31 +87,18 @@ pub struct Id {
 
 impl Default for Id {
     fn default() -> Self {
-        Self {
-            cookie_id: random_encoded(),
-            #[cfg(feature = "scylla-store")]
-            mapping_id: Arc::new(RwLock::new(None)),
-            max_age: None,
-        }
+        Self::new(random_encoded())
     }
 }
 
 impl Id {
-    fn from_encoded(cookie_id: [u8; LEN]) -> Result<Self, &'static str> {
-        let mut decoded = [0u8; 16];
-        if URL_SAFE_NO_PAD
-            .decode_slice(cookie_id, &mut decoded)
-            .is_err()
-        {
-            return Err("Invalid ID characters: must be URL-safe Base64");
-        }
-
-        Ok(Self {
+    fn new(cookie_id: [u8; LEN]) -> Self {
+        Self {
             cookie_id,
             #[cfg(feature = "scylla-store")]
             mapping_id: Arc::new(RwLock::new(None)),
             max_age: None,
-        })
+        }
     }
 
     #[inline]
@@ -98,8 +114,8 @@ impl Id {
 
     #[inline]
     #[cfg(feature = "scylla-store")]
-    pub(crate) fn set_mapping_id(&self, storage: &Id) -> MappingId {
-        MappingId(*self.mapping_id.write().get_or_insert(storage.cookie_id))
+    pub(crate) fn set_mapping_id(&self, mapping_id: MappingId) -> MappingId {
+        MappingId(*self.mapping_id.write().get_or_insert(mapping_id.0))
     }
 
     #[inline]
@@ -145,12 +161,7 @@ impl FromStr for Id {
     type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let cookie_id: [u8; LEN] = s
-            .as_bytes()
-            .try_into()
-            .map_err(|_| "Invalid ID length: must be exactly 22 characters")?;
-
-        Self::from_encoded(cookie_id)
+        Ok(Self::new(validate_encoded(s.as_bytes())?))
     }
 }
 
@@ -163,7 +174,9 @@ impl Serialize for Id {
 impl<'de> Deserialize<'de> for Id {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let cookie_id = <[u8; LEN]>::deserialize(deserializer)?;
-        Self::from_encoded(cookie_id).map_err(serde::de::Error::custom)
+        validate_encoded(&cookie_id)
+            .map(Self::new)
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -204,10 +217,10 @@ mod tests {
     fn resolution_is_visible_through_other_clones() {
         let held_by_session = Id::default();
         let handed_to_store = held_by_session.clone();
-        let storage = Id::default();
+        let storage = MappingId::random();
 
         assert!(held_by_session.mapping_id().is_none());
-        handed_to_store.set_mapping_id(&storage);
+        handed_to_store.set_mapping_id(storage);
 
         assert_eq!(
             held_by_session.mapping_id().map(|i| i.as_str().to_string()),
@@ -220,12 +233,12 @@ mod tests {
     #[test]
     fn resolution_is_write_once() {
         let id = Id::default();
-        let first = Id::default();
-        let second = Id::default();
+        let first = MappingId::random();
+        let second = MappingId::random();
 
-        assert_eq!(id.set_mapping_id(&first).as_str(), first.as_str());
+        assert_eq!(id.set_mapping_id(first).as_str(), first.as_str());
         assert_eq!(
-            id.set_mapping_id(&second).as_str(),
+            id.set_mapping_id(second).as_str(),
             first.as_str(),
             "a second resolution must not displace the first"
         );
@@ -236,7 +249,7 @@ mod tests {
 
         id.clear_mapping_id();
         assert!(id.mapping_id().is_none());
-        assert_eq!(id.set_mapping_id(&second).as_str(), second.as_str());
+        assert_eq!(id.set_mapping_id(second).as_str(), second.as_str());
     }
 
     #[cfg(feature = "scylla-store")]
@@ -244,7 +257,7 @@ mod tests {
     fn clearing_is_visible_through_other_clones() {
         let held_by_session = Id::default();
         let handed_to_store = held_by_session.clone();
-        handed_to_store.set_mapping_id(&Id::default());
+        handed_to_store.set_mapping_id(MappingId::random());
         assert!(held_by_session.mapping_id().is_some());
 
         handed_to_store.clear_mapping_id();
@@ -260,7 +273,7 @@ mod tests {
     fn independent_ids_do_not_share_resolution() {
         let a = Id::default();
         let b = Id::default();
-        a.set_mapping_id(&Id::default());
+        a.set_mapping_id(MappingId::random());
 
         assert!(
             b.mapping_id().is_none(),
@@ -270,7 +283,7 @@ mod tests {
         let text = a.to_string();
         let parsed_one: Id = text.parse().unwrap();
         let parsed_two: Id = text.parse().unwrap();
-        parsed_one.set_mapping_id(&Id::default());
+        parsed_one.set_mapping_id(MappingId::random());
         assert!(parsed_two.mapping_id().is_none());
     }
 
@@ -279,13 +292,14 @@ mod tests {
     fn concurrent_resolution_agrees_on_one_value() {
         for _ in 0..64 {
             let id = Id::default();
-            let candidates: Vec<Id> = (0..8).map(|_| Id::default()).collect();
+            let candidates: Vec<MappingId> = (0..8).map(|_| MappingId::random()).collect();
 
             let observed: Vec<String> = std::thread::scope(|scope| {
                 let handles: Vec<_> = candidates
                     .iter()
                     .map(|candidate| {
                         let id = id.clone();
+                        let candidate = *candidate;
                         scope.spawn(move || id.set_mapping_id(candidate).as_str().to_string())
                     })
                     .collect();
@@ -313,7 +327,7 @@ mod tests {
     fn attaching_a_resolution_leaves_the_public_value_alone() {
         let id = Id::default();
         let before = id.to_string();
-        id.set_mapping_id(&Id::default());
+        id.set_mapping_id(MappingId::random());
 
         assert_eq!(
             id.to_string(),
@@ -327,7 +341,7 @@ mod tests {
     fn identity_ignores_the_internal_value() {
         let id = Id::default();
         let clone = id.clone();
-        clone.set_mapping_id(&Id::default());
+        clone.set_mapping_id(MappingId::random());
 
         assert!(id == clone, "resolving must not change session identity");
         assert_eq!(hash_of(&id), hash_of(&clone));
@@ -342,7 +356,7 @@ mod tests {
     #[test]
     fn the_internal_value_cannot_arrive_from_outside() {
         let resolved = Id::default();
-        resolved.set_mapping_id(&Id::default());
+        resolved.set_mapping_id(MappingId::random());
         assert!(resolved.mapping_id().is_some());
 
         let reparsed: Id = resolved.to_string().parse().unwrap();

@@ -598,13 +598,14 @@ pub async fn run_sessions_are_isolated<S: SessionStore>(store: &S) {
     );
 }
 
-/// Concurrent first-writes through a single presented id.
+/// Concurrent first-writes through one presented id, as a handler doing several
+/// `set`s at once produces. Every write must survive: a store that establishes
+/// the session per-write would orphan all but one of them.
 ///
-/// This is the case we deliberately left unguarded: the store establishes a
-/// session without a conditional insert, so racing creations are possible. The
-/// assertion records what each backend actually does rather than presuming, and
-/// would flip from documenting divergence to asserting convergence if a
-/// conditional create were ever added.
+/// Two *separate* requests presenting the same unestablished id is a different
+/// case, and an unguarded one: each parses its own id, so a store that indirects
+/// can mint two locations and keep only the last. Guarding it would cost a
+/// conditional insert on every session creation.
 pub async fn run_concurrent_creation<S: SessionStore>(store: &S) {
     const WRITERS: usize = 8;
     let ttl = Ttl::new(60).unwrap();
@@ -922,10 +923,55 @@ pub async fn run_layered_cold<S: ruts::store::LayeredColdStore + SessionStore>(s
     }
 }
 
-/// `Ttl::ZERO` means "do not store this value". Every backend has to agree on
-/// it: the field must not be readable afterwards, an existing one must be
-/// cleared rather than left behind, and nothing may be established to hold a
-/// value that is being discarded.
+#[cfg(feature = "layered-store")]
+pub async fn run_layered_cold_zero_ttl<S: ruts::store::LayeredColdStore + SessionStore>(store: &S) {
+    let id = Id::default();
+    let ttl = Ttl::new(60).unwrap();
+    let data = create_test_data();
+
+    store
+        .set_with_meta(&id, "doomed", &data, ttl, None)
+        .await
+        .unwrap();
+    store
+        .set_with_meta(&id, "survivor", &data, ttl, None)
+        .await
+        .unwrap();
+
+    store
+        .set_with_meta(&id, "doomed", &data, Ttl::ZERO, None)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .get::<TestData>(&id, "doomed")
+            .await
+            .unwrap()
+            .is_none(),
+        "a zero field TTL must clear the field, not store it forever"
+    );
+
+    let rotated = Id::default();
+    store
+        .set_and_rename_with_meta(&id, &rotated, "doomed", &data, Ttl::ZERO, None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store.get::<TestData>(&rotated, "survivor").await.unwrap(),
+        Some(data),
+        "the session must rotate even when the write that carries it stores nothing"
+    );
+    assert!(
+        store
+            .get::<TestData>(&rotated, "doomed")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.get_all(&id).await.unwrap().is_none());
+}
+
 pub async fn run_zero_ttl_does_not_store<S: SessionStore>(store: &S) {
     let live = Ttl::new(60).unwrap();
 
@@ -1202,6 +1248,11 @@ macro_rules! define_layered_cold_store_tests {
         #[tokio::test]
         async fn test_cold_store_meta() {
             common::run_layered_cold(&*$setup().await).await;
+        }
+        #[cfg(feature = "layered-store")]
+        #[tokio::test]
+        async fn test_cold_store_zero_ttl() {
+            common::run_layered_cold_zero_ttl(&*$setup().await).await;
         }
     };
 }
