@@ -366,7 +366,7 @@ To use `MessagePack` instead of the default `bincode`, add this to your `Cargo.t
 
 ```toml
 [dependencies]
-ruts = { version = "0.11", default-features = false, features = ["axum", "messagepack"] }
+ruts = { version = "0.12", default-features = false, features = ["axum", "messagepack"] }
 ```
 
 Cargo features are additive, so enabling `messagepack` without turning the
@@ -400,7 +400,7 @@ feature in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-ruts = { version = "0.11", features = ["signed"] }
+ruts = { version = "0.12", features = ["signed"] }
 ```
 
 Then you can provide a `ruts::Key` (A re-export of `tower_cookies::Key`)
@@ -458,6 +458,9 @@ let router = app
 - Enable HTTPS in production and set `secure: true` in cookie options.
 - Use appropriate `SameSite` cookie settings (e.g., `Strict` or `Lax`).
 - Always set a session expiration time (`max_age`).
+- The cookie is only sent when its id is new or `session.set_expiration()` was
+  called in that request; field writes alone leave it as the client holds it. Call
+  `set_expiration` on the writes that should extend a session.
 - Regularly regenerate session ids using `session.regenerate()` or
   `session.prepare_regenerate()`, especially after a change in privilege level
   (like logging in).
