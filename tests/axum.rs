@@ -18,6 +18,7 @@ use tower::ServiceExt;
 use tower_cookies::CookieManagerLayer;
 
 const COOKIE_MAX_AGE: u64 = 15;
+const EXTENDED_MAX_AGE: u64 = 3600;
 
 async fn insert_handler(session: Session<MokaStore>) -> Result<String, StatusCode> {
     let data = create_test_data();
@@ -52,6 +53,25 @@ async fn delete_handler(session: Session<MokaStore>) -> Result<String, StatusCod
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok("deleted".to_string())
+}
+
+async fn extend_handler(session: Session<MokaStore>) -> Result<String, StatusCode> {
+    session.set_expiration(EXTENDED_MAX_AGE);
+    session
+        .set("data", &create_test_data(), Ttl::new(60).unwrap(), None)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok("extended".to_string())
+}
+
+async fn remove_handler(session: Session<MokaStore>) -> Result<String, StatusCode> {
+    session
+        .remove("data")
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok("removed".to_string())
 }
 
 pub async fn run_session_operations<S: SessionStore>(session: &Session<S>) {
@@ -252,6 +272,8 @@ pub fn create_axum_app() -> Router {
         .route("/set", get(insert_handler))
         .route("/get", get(get_handler))
         .route("/delete", get(delete_handler))
+        .route("/extend", get(extend_handler))
+        .route("/remove", get(remove_handler))
         .route("/test_ops", get(ops_handler))
         .route("/test_regen", get(test_regen_handler))
         .layer(session_layer)
@@ -329,6 +351,84 @@ async fn test_session_extraction_with_existing_cookie() {
     let body_str = String::from_utf8(body.to_vec()).unwrap();
 
     assert_eq!(body_str, r#"{"f1":1,"f2":"Test"}"#);
+}
+
+/// Requests `uri` carrying `cookie` and returns the response's Set-Cookie, if any.
+async fn set_cookie_after(app: &Router, uri: &str, cookie: &str) -> Option<String> {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response
+        .headers()
+        .get(SET_COOKIE)
+        .map(|v| v.to_str().unwrap().to_string())
+}
+
+async fn new_session_cookie(app: &Router) -> String {
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri("/set").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let set_cookie = response
+        .headers()
+        .get(SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    set_cookie.split(';').next().unwrap().to_string()
+}
+
+// A re-sent cookie would carry the configured Max-Age, cutting short a longer one
+// the client holds from an earlier `set_expiration`.
+#[tokio::test]
+async fn test_field_writes_on_an_existing_session_leave_the_cookie() {
+    let app = create_axum_app();
+    let cookie = new_session_cookie(&app).await;
+
+    assert_eq!(set_cookie_after(&app, "/set", &cookie).await, None);
+    assert_eq!(set_cookie_after(&app, "/remove", &cookie).await, None);
+}
+
+#[tokio::test]
+async fn test_set_expiration_reissues_the_cookie_with_its_lifetime() {
+    let app = create_axum_app();
+    let cookie = new_session_cookie(&app).await;
+
+    let reissued = set_cookie_after(&app, "/extend", &cookie)
+        .await
+        .expect("set_expiration must reissue the cookie");
+    assert!(
+        reissued.starts_with(&format!("{cookie};")),
+        "same id, got: {reissued}"
+    );
+    assert!(
+        reissued.contains(&format!("Max-Age={EXTENDED_MAX_AGE}")),
+        "got: {reissued}"
+    );
+}
+
+#[tokio::test]
+async fn test_regenerating_reissues_the_cookie_with_the_new_id() {
+    let app = create_axum_app();
+    let cookie = new_session_cookie(&app).await;
+
+    let reissued = set_cookie_after(&app, "/test_regen", &cookie)
+        .await
+        .expect("a regenerated id must reach the client");
+    assert!(
+        !reissued.starts_with(&format!("{cookie};")),
+        "got: {reissued}"
+    );
 }
 
 #[tokio::test]

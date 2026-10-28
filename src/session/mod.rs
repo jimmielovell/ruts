@@ -14,7 +14,7 @@ use crate::store::{SessionMap, SessionStore, Ttl};
 use parking_lot::RwLock;
 use serde::{Serialize, de::DeserializeOwned};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::{result, sync::Arc};
 
 use thiserror::Error;
@@ -175,6 +175,7 @@ where
                     })?;
 
                 *self.inner.id.write() = Some(new_id);
+                self.inner.set_reissue_cookie();
             }
             None => {
                 self.inner
@@ -199,7 +200,7 @@ where
     /// missing or had already lapsed.
     ///
     /// If this was the last live field, the session ceases to exist at the
-    /// store. The session cookie is reissued (the server remains authoritative;
+    /// store. The cookie is left as it is (the server remains authoritative;
     /// a presented id with no live fields is simply treated as a fresh session).
     ///
     /// ## Example
@@ -322,10 +323,12 @@ where
     /// Overrides the cookie's `Max-Age` for this request cycle.
     ///
     /// The response cookie built by the middleware will use this value instead
-    /// of [`CookieOptions::max_age`]. This is the only way a field operation's
-    /// caller influences cookie lifetime — it is never derived implicitly.
+    /// of [`CookieOptions::max_age`], and is sent once the session changes even
+    /// if its id did not. This is the only way a field operation's caller
+    /// influences cookie lifetime — it is never derived implicitly.
     pub fn set_expiration(&self, seconds: u64) {
         *self.inner.cookie_max_age.write() = Some(seconds);
+        self.inner.set_reissue_cookie();
     }
 
     /// Regenerates the session with a new ID.
@@ -368,6 +371,7 @@ where
 
         if renamed {
             *self.inner.id.write() = Some(new_id.clone());
+            self.inner.set_reissue_cookie();
             self.inner.set_changed();
             return Ok(Some(new_id));
         }
@@ -425,6 +429,7 @@ use tower_cookies::Key;
 
 pub(crate) struct Inner<T: SessionStore> {
     pub(crate) state: AtomicU8,
+    pub(crate) reissue_cookie: AtomicBool,
     pub(crate) id: RwLock<Option<Id>>,
     pub(crate) pending_id: RwLock<Option<Id>>,
     /// Cookie `Max-Age`: `Some(seconds)` persistent, `None` session cookie.
@@ -451,6 +456,7 @@ impl<T: SessionStore> Inner<T> {
 
         Self {
             state: AtomicU8::new(0),
+            reissue_cookie: AtomicBool::new(false),
             id: RwLock::new(None),
             pending_id: RwLock::new(None),
             cookie_max_age: RwLock::new(cookie_max_age),
@@ -486,7 +492,10 @@ impl<T: SessionStore> Inner<T> {
         let max_age = self.get_cookie_max_age();
         self.id
             .write()
-            .get_or_insert_with(Id::default)
+            .get_or_insert_with(|| {
+                self.set_reissue_cookie();
+                Id::default()
+            })
             .clone()
             .with_max_age(max_age)
     }
@@ -510,6 +519,14 @@ impl<T: SessionStore> Inner<T> {
 
     pub(crate) fn set_changed(&self) {
         self.state.store(SESSION_STATE_CHANGED, Ordering::Relaxed);
+    }
+
+    pub(crate) fn set_reissue_cookie(&self) {
+        self.reissue_cookie.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn should_reissue_cookie(&self) -> bool {
+        self.reissue_cookie.load(Ordering::Relaxed)
     }
 
     pub(crate) fn set_deleted(&self) {

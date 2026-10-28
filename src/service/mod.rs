@@ -189,7 +189,7 @@ where
                 }
                 cookies.remove(removal.build());
             }
-        } else if this.inner_session.is_changed() {
+        } else if this.inner_session.is_changed() && this.inner_session.should_reissue_cookie() {
             if let (Some(cookie_options), Some(cookies)) = (
                 this.cookie_options.as_ref(),
                 this.inner_session.get_cookies(),

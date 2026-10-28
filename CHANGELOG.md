@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-10-28
+
+### Changed
+
+- The session cookie is now sent only when the client's copy is out of date: a
+  new id (a session created in this request, `regenerate`, or the rename staged by
+  `prepare_regenerate`), or a lifetime set by `set_expiration`. A `set`, `remove`
+  or `expire_field` on a session the client already holds no longer re-sends it.
+
+### Fixed
+
+- A field write re-sent the cookie with `CookieOptions::max_age`, so a write in a
+  request that did not call `set_expiration` cut a longer lifetime set earlier
+  back to the default.
+
 ## [0.11.1] - 2026-09-23
 
 ### Fixed
