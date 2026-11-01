@@ -21,6 +21,11 @@ thread_local! {
 /// Encoded length of an id: 128 bits as unpadded base64url.
 const LEN: usize = 22;
 
+/// Leading characters an id hands down to its successor. Four characters are
+/// exactly three bytes, so the splice stays valid base64url and leaves 104
+/// fresh bits.
+const LINEAGE_LEN: usize = 4;
+
 fn random_encoded() -> [u8; LEN] {
     let mut raw = [0u8; 16];
     RNG.with(|rng| rng.borrow_mut().fill_bytes(&mut raw));
@@ -106,6 +111,15 @@ impl Id {
         as_str_unchecked(&self.cookie_id)
     }
 
+    /// A fresh id for this session to move to. It keeps this id's first
+    /// [`LINEAGE_LEN`] characters, which the redis store hashes a key on, so a
+    /// rename never crosses cluster slots.
+    pub(crate) fn successor(&self) -> Self {
+        let mut cookie_id = random_encoded();
+        cookie_id[..LINEAGE_LEN].copy_from_slice(&self.cookie_id[..LINEAGE_LEN]);
+        Self::new(cookie_id)
+    }
+
     #[inline]
     #[cfg(feature = "scylla-store")]
     pub(crate) fn mapping_id(&self) -> Option<MappingId> {
@@ -180,10 +194,13 @@ impl<'de> Deserialize<'de> for Id {
     }
 }
 
+/// `{abcd}efgh…`: the lineage characters as a hash tag, so every id a session
+/// is renamed through lands in the same cluster slot.
 #[cfg(feature = "redis-store")]
 impl From<&Id> for fred::types::Key {
     fn from(value: &Id) -> Self {
-        value.as_str().into()
+        let (lineage, rest) = value.as_str().split_at(LINEAGE_LEN);
+        format!("{{{lineage}}}{rest}").into()
     }
 }
 
@@ -210,6 +227,40 @@ mod tests {
         #[cfg(feature = "scylla-store")]
         assert!(a.mapping_id().is_none(), "a fresh id resolves to nothing");
         assert_eq!(a.as_str().parse::<Id>().unwrap().as_str(), a.as_str());
+    }
+
+    #[test]
+    fn a_successor_keeps_the_lineage_and_redraws_the_rest() {
+        let id = Id::default();
+        let next = id.successor();
+
+        assert_eq!(next.as_str()[..LINEAGE_LEN], id.as_str()[..LINEAGE_LEN]);
+        assert_ne!(next.as_str()[LINEAGE_LEN..], id.as_str()[LINEAGE_LEN..]);
+        assert_eq!(
+            next.as_str().parse::<Id>().unwrap().as_str(),
+            next.as_str(),
+            "a successor must be an id the cookie can carry back"
+        );
+    }
+
+    #[cfg(feature = "redis-store")]
+    #[test]
+    fn renames_stay_in_the_first_ids_cluster_slot() {
+        use fred::types::Key;
+        use fred::util::redis_keyslot;
+
+        let first = Id::default();
+        let slot = redis_keyslot(&first.as_str().as_bytes()[..LINEAGE_LEN]);
+
+        let mut id = first.clone();
+        for _ in 0..16 {
+            assert_eq!(
+                redis_keyslot(Key::from(&id).as_bytes()),
+                slot,
+                "the key must hash on its lineage alone"
+            );
+            id = id.successor();
+        }
     }
 
     #[cfg(feature = "scylla-store")]
