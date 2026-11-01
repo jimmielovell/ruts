@@ -358,7 +358,9 @@ where
             Error::UnInitialized
         })?;
 
-        let new_id = Id::default().with_max_age(self.inner.get_cookie_max_age());
+        let new_id = old_id
+            .successor()
+            .with_max_age(self.inner.get_cookie_max_age());
         let renamed = self
             .inner
             .store
@@ -401,13 +403,13 @@ where
     /// # fn main() {}
     /// ```
     pub fn prepare_regenerate(&self) -> Id {
-        if self.id().is_none() {
-            self.inner.get_or_set_id()
-        } else {
-            let new_id = Id::default();
-            self.inner.set_pending_id(Some(new_id.clone()));
-            new_id
-        }
+        let Some(current_id) = self.id() else {
+            return self.inner.get_or_set_id();
+        };
+
+        let new_id = current_id.successor();
+        self.inner.set_pending_id(Some(new_id.clone()));
+        new_id
     }
 
     /// Returns the session ID, if it exists.

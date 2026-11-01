@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-11-01
+
+### Changed
+
+- `RedisStore` keeps a session under `{abcd}efgh…`, its id with the first four
+  characters as a hash tag, instead of the bare id.
+- `regenerate` and `prepare_regenerate` keep the first four characters of the id
+  they replace and draw the other eighteen fresh: 104 random bits instead of 128.
+
+### Fixed
+
+- On a Redis Cluster, `regenerate` and the rename staged by `prepare_regenerate`
+  failed with `CROSSSLOT`: the rename is one script over the old and new keys,
+  and two unrelated ids hash to different slots. A session's ids now share their
+  hash tag, and so their slot.
+- `RedisStore` ran its scripts with a bare `EVALSHA`, so a node that had never
+  loaded them added after the store was built, or left with an empty script
+  cache by a restart or failover failed every session write until
+  `reload_scripts` was called. A `NOSCRIPT` now loads the script into every
+  primary and retries.
+
 ## [0.12.0] - 2026-10-28
 
 ### Changed

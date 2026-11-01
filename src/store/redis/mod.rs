@@ -8,6 +8,7 @@ use crate::store::{Error, SessionMap, SessionStore, Ttl, deserialize_value, seri
 use fred::clients::Pool;
 use fred::interfaces::{HashesInterface, KeysInterface, LuaInterface};
 use fred::types::scripts::Script;
+use fred::types::{FromValue, MultipleKeys, MultipleValues};
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use std::{fmt::Debug, sync::Arc};
@@ -28,10 +29,14 @@ use fred::types::Value;
 ///
 /// # Redis Cluster
 ///
-/// `set_and_rename` and `rename_session_id` operate on two keys (`old` and
-/// `new`) within a single script, so in cluster mode both ids must hash to the
-/// same slot. Use a common hash tag (e.g. `{user42}:old` / `{user42}:new`) so
-/// the keys co-locate; otherwise the rename will fail at runtime.
+/// A session is stored under `{abcd}efgh…`: its id, with the first four
+/// characters as a hash tag. The ids `regenerate` and `prepare_regenerate` hand
+/// out keep those four characters, so `set_and_rename` and `rename_session_id`
+/// touch two keys in one slot and stay a single atomic script. Calling either
+/// directly with two unrelated ids fails with `CROSSSLOT` on a cluster.
+///
+/// Scripts are loaded into every primary when the store is built, and again
+/// on any node that answers `NOSCRIPT`.
 #[derive(Clone, Debug)]
 pub struct RedisStore<C: HashesInterface + KeysInterface + LuaInterface + Send + Sync = Pool> {
     client: Arc<C>,
@@ -67,6 +72,33 @@ where
         }
     }
     Ok(())
+}
+
+async fn evalsha<C, R, K, V>(
+    client: &C,
+    script: &Script,
+    keys: K,
+    args: V,
+) -> Result<R, fred::error::Error>
+where
+    C: LuaInterface + Send + Sync,
+    R: FromValue,
+    K: Into<MultipleKeys> + Send,
+    V: TryInto<MultipleValues> + Send,
+    V::Error: Into<fred::error::Error> + Send,
+{
+    let keys = keys.into();
+    let args = args.try_into().map_err(Into::into)?;
+
+    match script.evalsha(client, keys.clone(), args.clone()).await {
+        Err(err) if err.details().starts_with("NOSCRIPT") => {
+            if let Some(lua) = script.lua() {
+                let _: () = client.script_load_cluster(lua.clone()).await?;
+            }
+            script.evalsha(client, keys, args).await
+        }
+        result => result,
+    }
 }
 
 impl<C> SessionStore for RedisStore<C>
@@ -157,9 +189,13 @@ where
         old_session_id: &Id,
         new_session_id: &Id,
     ) -> Result<bool, Error> {
-        let result: i64 = RENAME_SCRIPT
-            .evalsha(&*self.client, vec![old_session_id, new_session_id], ())
-            .await?;
+        let result: i64 = evalsha(
+            &*self.client,
+            &RENAME_SCRIPT,
+            vec![old_session_id, new_session_id],
+            (),
+        )
+        .await?;
 
         Ok(result == 1)
     }
@@ -175,9 +211,13 @@ where
     }
 
     async fn expire_field(&self, session_id: &Id, field: &str, ttl: Ttl) -> Result<bool, Error> {
-        let result: i64 = EXPIRE_FIELD_SCRIPT
-            .evalsha(&*self.client, vec![session_id], (field, i64::from(ttl)))
-            .await?;
+        let result: i64 = evalsha(
+            &*self.client,
+            &EXPIRE_FIELD_SCRIPT,
+            vec![session_id],
+            (field, i64::from(ttl)),
+        )
+        .await?;
 
         Ok(result == 1)
     }
@@ -197,13 +237,13 @@ where
 {
     let serialized_value = serialize_value(value)?;
 
-    let _: () = script
-        .evalsha(
-            client,
-            session_ids,
-            (field, serialized_value.as_slice(), i64::from(field_ttl)),
-        )
-        .await?;
+    let _: () = evalsha(
+        client,
+        script,
+        session_ids,
+        (field, serialized_value.as_slice(), i64::from(field_ttl)),
+    )
+    .await?;
 
     Ok(())
 }
@@ -230,9 +270,7 @@ where
             args.push(Value::Integer((*ttl).into()));
         }
 
-        let _: () = SET_MULTIPLE_SCRIPT
-            .evalsha(&*self.client, vec![session_id], args)
-            .await?;
+        let _: () = evalsha(&*self.client, &SET_MULTIPLE_SCRIPT, vec![session_id], args).await?;
 
         Ok(())
     }
